@@ -1,0 +1,12 @@
+{
+  "name": "@pac/engine",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@pac/workflow": "0.1.0",
+    "dotenv": "^17.4.2"
+  }
+}

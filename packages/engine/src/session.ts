@@ -1,0 +1,36 @@
+import type { JsonRecord, SessionContext } from "@pac/workflow";
+import type { CreateSessionInput, EngineSession } from "./types.js";
+
+export function createEngineSession(input: CreateSessionInput): EngineSession {
+  return {
+    sessionId: input.sessionId,
+    userId: input.userId,
+    activeWorkflowIds: [...(input.activeWorkflowIds ?? [])],
+    facts: { ...(input.facts ?? {}) },
+    preferences: { ...(input.preferences ?? {}) },
+    goals: [...(input.goals ?? [])],
+    constraints: [...(input.constraints ?? [])],
+    sharedCache: new Map<string, unknown>(),
+    routingMemory: {
+      lastMatchedWorkflowIds: [],
+    },
+    workflowInstances: new Map(),
+  };
+}
+
+export function sessionForLlm(session: EngineSession): Omit<SessionContext, "sharedCache"> & {
+  sharedCache: JsonRecord;
+} {
+  return {
+    sessionId: session.sessionId,
+    userId: session.userId,
+    activeWorkflowIds: session.activeWorkflowIds,
+    facts: session.facts,
+    preferences: session.preferences,
+    goals: session.goals,
+    constraints: session.constraints,
+    conversationSummary: session.conversationSummary,
+    sharedCache: Object.fromEntries(session.sharedCache.entries()),
+    routingMemory: session.routingMemory,
+  };
+}

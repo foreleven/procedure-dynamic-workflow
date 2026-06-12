@@ -1,0 +1,23 @@
+{
+  "name": "pac",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "check": "tsc -p tsconfig.json --noEmit",
+    "chat": "tsx packages/engine/src/cli.ts",
+    "chat:maintenance": "tsx packages/engine/src/cli.ts --workflow scenarios/maintenance/maintenance_booking.workflow.ts --connectors scenarios/maintenance/connectors.ts --user-id user_feng",
+    "scenario:maintenance": "tsx scenarios/maintenance/run.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "openai": "^6.42.0",
+    "zod": "^4.4.3"
+  }
+}
