@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import YAML from "yaml";
 import { z } from "@pac/workflow";
-import { WorkflowEngine, createOpenAiLlmFromEnv } from "@pac/engine";
+import { createLlmClient, WorkflowEngine } from "@pac/engine";
 import maintenanceBookingWorkflow, {
   type MaintenanceState,
 } from "./maintenance_booking.workflow.js";
@@ -36,7 +36,7 @@ const ResponseJudgementSchema = z.object({
 
 type WorkflowCase = z.infer<typeof WorkflowCaseSchema>;
 
-const llm = createOpenAiLlmFromEnv();
+const llm = createLlmClient();
 
 const engine = new WorkflowEngine({
   workflows: [maintenanceBookingWorkflow],
