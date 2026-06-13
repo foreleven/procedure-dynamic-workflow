@@ -7,6 +7,7 @@ import {
 import type { EngineSession, EngineTraceEvent, RuntimeInstance, WorkflowEngineOptions } from "../types.js";
 import { RuntimeTracer } from "./tracer.js";
 import { appendWorkflowMessage, messagesForRender } from "../utils/messages.js";
+import { safeJsonStringify } from "../utils/json.js";
 import { normalizeRenderResponse, normalizeStreamTextEvent, renderText } from "../utils/rendering.js";
 import { preStateFor } from "../utils/state.js";
 import { TurnChangeTracker } from "../utils/turn.js";
@@ -113,6 +114,7 @@ export class ResponseRenderer {
       return normalizeRenderResponse(instance.id, response);
     }
 
+    const instruction = renderInstructionForRuntime(render.instruction, instance.state);
     this.tracer.progress(traces, instance.id, {
       node: render.name,
       stage: "render",
@@ -122,7 +124,7 @@ export class ResponseRenderer {
 
     const request = {
       name: render.name,
-      instruction: render.instruction,
+      instruction,
       messages: messagesForRender(instance.state),
     };
 
@@ -146,4 +148,34 @@ export class ResponseRenderer {
 
     return { text: text.trim() };
   }
+}
+
+/**
+ * Adds the authoritative workflow state to LLM render policy prompts.
+ * Input: workflow-owned render instruction and runtime state after patch/nodes.
+ * Output: provider-facing render instruction with state but without runtime message history.
+ * Boundary: this only supplies facts to the renderer; it does not choose business branches in code.
+ */
+function renderInstructionForRuntime(instruction: string, state: JsonRecord): string {
+  return [
+    instruction.trim(),
+    "",
+    "Runtime render contract:",
+    "- The current workflow state below is authoritative after the latest user turn, patch extraction, invalidation, and workflow nodes.",
+    "- Use the state to decide which facts are already collected. A null field means that fact is not collected.",
+    "- Render must only produce the next user-visible assistant message.",
+    "- No connector tools are available during render; never emit tool-call markup, JSON, internal state names, or workflow labels.",
+    "",
+    "Current workflow state:",
+    safeJsonStringify(stateForRender(state), 2),
+  ].join("\n");
+}
+
+function stateForRender(state: JsonRecord): JsonRecord {
+  const snapshot: JsonRecord = {};
+  for (const [key, value] of Object.entries(state)) {
+    if (key === "messages") continue;
+    snapshot[key] = value;
+  }
+  return snapshot;
 }

@@ -11,21 +11,25 @@ const VehicleSchema = z.object({
   id: z.string(), label: z.string(), make: z.string(), model: z.string(), year: z.number(),
   trim: z.string(), vinLast6: z.string(), plateNumber: z.string(), mileage: z.number(),
   powertrain: z.enum(["gasoline", "hybrid", "electric"]), nextRecommendedServiceMileage: z.number(),
-});
+}).describe("Full vehicle record already present in runtime context or message history; never invent vehicle fields.");
 
 const DealerSchema = z.object({
   id: z.string(), name: z.string(), city: z.string(), address: z.string(), phone: z.string(),
   brands: z.array(z.string()), distanceKm: z.number(),
   serviceLevel: z.enum(["brand_certified", "independent_specialist", "ev_specialist"]),
   openingHours: z.string(),
-});
+}).describe("Full dealer record selected by the user from known dealer candidates; never invent dealer fields.");
 
-const DateRangeSchema = z.object({ label: z.string(), start: z.string(), end: z.string() });
+const DateRangeSchema = z.object({
+  label: z.string().describe("Original user phrase for the desired appointment window, for example 明天下午."),
+  start: z.string().describe("Inclusive local ISO datetime with +08:00 offset for the start of the desired window."),
+  end: z.string().describe("Exclusive local ISO datetime with +08:00 offset for the end of the desired window."),
+}).describe("Desired appointment date/time window extracted from the latest user message; this is not a concrete available slot.");
 
 const SlotSchema = z.object({
   id: z.string(), label: z.string(), startsAt: z.string(), endsAt: z.string(),
   dealerId: z.string(), advisorName: z.string(), bayType: z.string(),
-});
+}).describe("Concrete arrival slot selected by the user from displayed available slots; never set from a vague date window.");
 
 const CustomerSchema = z.object({
   id: z.string(), name: z.string(), city: z.string(), tier: z.enum(["standard", "vip"]),
@@ -50,7 +54,7 @@ const MaintenanceStatusSchema = z.enum([
   "draft_confirmed",
   "booked",
   "cancelled",
-]);
+]).describe("Current maintenance booking flow status.");
 
 const MaintenanceStateSchema = z.object({
   status: MaintenanceStatusSchema,
@@ -114,15 +118,18 @@ const { patch, prefetch, derive, command, render } = workflow<
 patch({
   progress: "正在理解您的预约需求",
   state: {
-    status: MaintenanceStatusSchema,
-    vehicle: VehicleSchema,
-    dealer: DealerSchema,
-    preferredDate: DateRangeSchema,
-    slot: SlotSchema,
+    status: MaintenanceStatusSchema.describe("Set cancelled only for explicit cancellation; set draft_confirmed only for explicit draft confirmation."),
+    vehicle: VehicleSchema.describe("Selected full vehicle object, copied exactly from known vehicle facts."),
+    dealer: DealerSchema.describe("Selected full dealer object, copied exactly from known dealer candidates."),
+    preferredDate: DateRangeSchema.describe("Desired appointment date/time window from the latest user message, e.g. 明天下午 -> +08:00 local ISO range."),
+    slot: SlotSchema.describe("Concrete displayed arrival slot selected by the user after available slots are shown."),
   },
   invalidates: maintenanceInvalidation,
   instruction: `
 Extract only these maintenance booking state fields: status, vehicle, dealer, preferredDate, and slot.
+
+You are extracting state, not replying to the user. Never generate a user-facing answer, XML/DSML, connector calls, or tool-call text.
+Use the latest user message as the only source of new facts; use prior assistant questions, tool results, and current state only to resolve references such as "1" or "明天下午".
 
 Selection extraction:
 - If the user says "1", "第一个", "就这个", or similar, map it to the option type requested by the immediately preceding assistant question: vehicle, dealer, arrival slot, or draft confirmation.
@@ -138,6 +145,8 @@ Slot and date extraction:
 - Do not set slot just because only one slot is available.
 - Set slot only when the user explicitly names a time/slot or answers an arrival-slot prompt.
 - Extract preferredDate when the user gives a real appointment date/time expression. Use the current date/time in Asia/Shanghai. Preserve the user's phrase as label, and write +08:00 local ISO start/end, never Z or UTC. For vague day parts use 上午 09:30-11:30, 中午 12:00-13:30, 下午 14:30-16:30, 晚上 18:30-20:30.
+- If vehicle and dealer are already selected and the latest user message only provides a desired appointment date/time such as "明天下午", set preferredDate and leave vehicle, dealer, and slot unchanged unless the user explicitly changes them.
+- A desired appointment date/time is not an arrival-slot selection until available slots have been shown.
 
 Status extraction:
 - Set status to cancelled only when the user explicitly cancels or stops this booking flow.
@@ -331,19 +340,21 @@ export default render({
 Write the next concise Chinese reply for a car maintenance booking assistant.
 
 Reply rules:
+Use the current workflow state from the runtime render context as authoritative. Tool results are supporting facts only; do not treat older candidate tool results as an unresolved choice when the current state already contains the selected object.
+
 1. If the user cancelled, briefly say the current maintenance booking flow has stopped or been cancelled.
 2. If the latest tool result is connectors.maintenance.confirmBooking, report the confirmed booking and include "预约成功".
 3. If the latest tool result is connectors.maintenance.createBookingDraft, show vehicle, dealer, and arrival time, then ask whether to confirm submission.
-4. If the latest tool result is connectors.maintenance.getAvailableSlots, list the available arrival slots and ask the user to choose one.
-5. If the latest tool result is connectors.maintenance.getDealerCandidates, the vehicle is already resolved; ask the user to choose or confirm a dealer and list the dealer options. Do not ask the user to choose a vehicle.
-6. If no vehicle has been resolved and no dealer candidates are available, list the vehicles and ask which vehicle to book.
-7. If vehicle and dealer are resolved but no appointment date/time is available, ask only for the desired appointment time.
+4. If vehicle and dealer are resolved but preferredDate is null, ask only for the desired appointment date/time. Do not ask the user to choose a dealer again, and do not try to query slots.
+5. If the latest tool result is connectors.maintenance.getAvailableSlots and preferredDate is resolved, list the available arrival slots and ask the user to choose one.
+6. If the latest tool result is connectors.maintenance.getDealerCandidates and dealer is still null, the vehicle is already resolved; ask the user to choose or confirm a dealer and list the dealer options. Do not ask the user to choose a vehicle.
+7. If no vehicle has been resolved and no dealer candidates are available, list the vehicles and ask which vehicle to book.
 8. If the user asks a follow-up about the dealer, slot, vehicle, or draft, answer it before asking for the next action.
 9. If the user asks about service items, maintenance contents, or price, explain that this booking workflow only confirms vehicle, dealer, and arrival time; service details are handled by a later procedure.
 
 Offer candidates as choices, not as selected facts, unless the conversation or booking data already confirms the choice.
 Do not recommend service items or prices in this booking workflow.
-Return concise Chinese. Number options when listing choices. No markdown, internal state names, JSON, or workflow terms.
+Return concise Chinese. Number options when listing choices. No markdown, internal state names, JSON, workflow terms, DSML, XML-like tags, or tool-call markup.
   `,
 });
 

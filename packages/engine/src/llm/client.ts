@@ -80,7 +80,7 @@ class PiAiLlmClient implements LlmClient {
     const startedAt = logStart(this.logger, "text", {
       name: request.name ?? "unnamed",
       model: model.id,
-      inputChars: requestInputChars(request),
+      messages: request.messages,
     });
 
     try {
@@ -107,7 +107,7 @@ class PiAiLlmClient implements LlmClient {
     const startedAt = logStart(this.logger, "text.stream", {
       name: request.name ?? "unnamed",
       model: model.id,
-      inputChars: requestInputChars(request),
+      messages: request.messages,
     });
     let finalText = "";
 
@@ -216,18 +216,6 @@ function textFromAssistant(message: AssistantMessage): string {
     .filter((block): block is { type: "text"; text: string } => block.type === "text")
     .map((block) => block.text)
     .join("");
-}
-
-function requestInputChars(request: LlmTextRequest | LlmStructuredRequest<z.ZodType>): number {
-  return request.messages.map(messageTextForLog).join("\n").length;
-}
-
-function messageTextForLog(message: Message): string {
-  if (message.role === "user") {
-    return typeof message.content === "string" ? message.content : safeJsonStringify(message.content);
-  }
-  if (message.role === "toolResult") return safeJsonStringify(message.content);
-  return safeJsonStringify(message.content);
 }
 
 function usageFromPi(usage: Usage | undefined): LlmUsage | undefined {

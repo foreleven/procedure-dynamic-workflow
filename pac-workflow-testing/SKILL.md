@@ -1,68 +1,266 @@
 ---
 name: pac-workflow-testing
-description: Build deterministic PAC workflow scenario tests that verify workflow metadata, connector wiring, runtime state transitions, command guards, invalidation, and 100% workflow.yaml business-case coverage.
+description: PAC workflow goal-driven scenario testing with formal-user simulation. Use when Codex needs to debug or test a workflow through CLI/engine by setting a user goal, generating one send+expected turn at a time, preserving a live session, evaluating actual replies/state/traces, scoring the scenario, and saving a reviewable transcript file without prewritten scripts or statePatch assertions.
 ---
 
 # PAC Workflow Testing
 
-Use this skill when a user asks to test a PAC workflow, validate a generated workflow, or prove business scenario coverage.
+用于测试 PAC workflow 的真实多轮交互表现。默认测试方式是“设定目标 -> 每轮生成 `send + expected` -> 真实发送 -> 评估本轮结果 -> 再决定下一轮”，不是把整段剧本提前写死。
 
-## Testing Model
+## 核心原则
 
-Workflow tests have two layers:
+- 只设定本轮测试的用户目标，例如“完成一次保养预约”“草稿前改时间”“草稿后追问保养项目”“中途取消”。
+- 每一轮只生成下一条用户消息 `send` 和本轮预期 `expected`。下一轮必须基于实际 assistant 回复、compact state、trace 和 transcript 再生成。
+- 必须走真实 workflow runtime：真实 patch extraction、真实 render、真实 connector registry、真实 session state。
+- 不准预写完整多轮剧本。
+- 不准构造、排队、断言或检查 `statePatch` / `MessagePatch.statePatch`。
+- 不用硬断言中断场景测试；记录 evaluator verdict、bug signals、runtime error 和 transcript，让测试能继续暴露更多问题。
+- 测试结束必须给场景打 0-100 分，并把完整过程写入 review 文件，供用户后续审阅。
 
-- Deterministic runtime verification: a fake structured LLM returns schema-valid state patches so tests can focus on workflow semantics, connector wiring, invalidation, and command boundaries.
-- Optional manual LLM scenario runs: real model extraction and render quality are checked separately because responses can vary.
+## 准备输入
 
-The required quality gate for generated scenarios is deterministic runtime verification with 100% `workflow.yaml` case coverage.
+开始前确认这些信息：
 
-## Workflow
+- workflow 文件路径，例如 `scenarios/maintenance/maintenance_booking.workflow.ts`
+- connector 文件路径，例如 `scenarios/maintenance/connectors.ts`
+- user id，例如 `user_feng`、`user_alex`
+- session id；如果没有，先生成一个，例如 `maintenance_test_${Date.now()}`
+- 测试目标 goal，用一句话描述用户最终想达成什么
+- turn budget，例如最多 8 轮
+- review 输出目录；如果用户未指定，默认写到 `scenarios/<scenario-name>/test-reports/`
 
-1. Read the procedure, `workflow.yaml`, workflow file, connectors, and mock data.
-2. Parse `workflow.yaml` with a schema that includes all declared `cases`.
-3. Verify static wiring:
-   - workflow id/version/description/routing match metadata
-   - case ids are unique
-   - cases reference known mock users or accounts
-   - connector catalog ids match registered connector tools
-   - every `context.call("...")` id in workflow source is registered
-4. Verify mock data consistency:
-   - no dangling references
-   - products/options used in cases exist
-   - boundary fixtures for missing data and failures exist
-5. Build a deterministic engine per runtime path:
-   - inject the workflow artifact
-   - inject the scenario connector registry
-   - inject a scripted LLM that returns queued `statePatch` objects
-   - inject a fixed clock for relative-date or time-sensitive behavior
-6. For each business case, run the user turns and assert state, context, tool messages, and command results.
-7. Add extra runtime paths for important failure and boundary conditions, especially:
-   - missing prerequisite data
-   - user changes upstream decisions
-   - follow-up questions that must not trigger commands
-   - prefetch connector failure isolation where applicable
-   - command connector failure behavior
-8. Compute coverage as:
-   - `covered workflow.yaml case ids / declared workflow.yaml case ids`
-   - fail if any declared case is not mapped to a deterministic runtime path
-   - print `100% business case coverage` only when the sets match exactly
+注意：当前 CLI session 是进程内存态。要保留上下文，必须在同一个 CLI/runner 进程里连续发送多轮；重启进程后仅复用 session id 不会恢复历史状态。
 
-## Script Rules
+## 标准流程
 
-- Keep verifier scripts standalone and runnable with `tsx`.
-- Use small assertion helpers instead of bringing in a test framework unless the repo already has one for scenario checks.
-- Add comments to verifier helpers explaining input, output, and boundary.
-- Do not use real LLM calls in deterministic scenario checks.
-- Do not swallow command failures unless the workflow explicitly models a recoverable error state.
-- Prefer checking workflow state and connector side effects over brittle response text.
+1. 启动一个真实 workflow session。
+   - 手工 CLI 调试可用 `npm run chat:maintenance -- --session-id <id> --no-stream`
+   - 自动 runner 优先直接使用 `WorkflowEngine`，因为同一进程里更容易保留 session、读取 state 和 traces
+2. 给“用户模拟器”这些输入：
+   - goal
+   - user id
+   - turn index / max turns
+   - 上一轮 assistant 回复
+   - compact state
+   - 已发生 transcript
+3. 用户模拟器只输出本轮：
+   ```json
+   {
+     "send": "1",
+     "expected": "系统应识别用户选择了第一家门店，并展示可预约时段，不能创建草稿或提交预约。",
+     "stop": false
+   }
+   ```
+4. 把 `send` 真实发给 workflow。
+5. 记录本轮实际结果：
+   - assistant reply
+   - compact state
+   - trace phases
+   - runtime error
+6. 用“本轮评估器”比较 `expected` 和实际结果，输出：
+   ```json
+   {
+     "verdict": "pass | warn | fail",
+     "reason": "简短说明",
+     "bugSignals": ["confirmation_after_draft_did_not_commit"]
+   }
+   ```
+7. 把本轮追加进 transcript，再进入下一轮。不要回头改上一轮，也不要提前补全后续剧本。
+8. 测试结束后为整个场景计算评分，生成 review 文件，并在最终回复里给出文件路径。
 
-## Done Criteria
+## 用户模拟器要求
 
-A workflow scenario passes Testing only when:
+用户模拟器负责生成“真实用户下一句话”，不是测试脚本。
 
-- metadata, connector, and fixture checks pass
-- every declared business case is executed by deterministic runtime tests
-- upstream-change invalidation is tested
-- irreversible commands require explicit state evidence
-- command failure does not create committed records
-- the script reports 100% business case coverage
+- 只输出当前轮的 `send` 和 `expected`。
+- `send` 要像真实用户：可以短句、序号、改口、追问、确认、取消。
+- `expected` 写业务层预期，不写内部实现细节。
+- 如果助手列选项，可以回复“1”“第一个”“就这个”“还是上次那家”。
+- 如果目标是改时间，不要提前规划整条路径；等实际出现草稿或时间选择后再自然改口。
+- 如果目标已完成或取消，输出 `stop: true`。
+
+好的 `expected` 示例：
+
+- `系统应要求用户选择车辆，不能猜测多车用户要预约哪一辆。`
+- `系统应展示门店候选项，不能直接选择最近门店。`
+- `系统应生成待确认草稿，但不能表示预约已经成功。`
+- `系统应正式提交预约并给出成功信息。`
+
+不好的 `expected` 示例：
+
+- `statePatch.dealer 应该等于 dealer_hoboken_bmw`
+- `下一轮我要说 1，然后再说确认`
+- `断言 patch 里必须有 preferredDate`
+
+## 评估器要求
+
+评估器只判断当前轮 `expected` 是否被真实结果满足。
+
+- 可以看 assistant reply、compact state 和 trace phases。
+- 不看、不构造、不评价 `statePatch`。
+- `pass`：满足当前轮预期。
+- `warn`：可以继续，但有歧义、遗漏或体验问题。
+- `fail`：明显错误推进、错误提交、该确认没确认、该取消没取消、运行时报错或回复与 state 矛盾。
+
+常见 bug signals：
+
+- `runtime_error`
+- `asked_wrong_next_action`
+- `claimed_success_without_booking`
+- `confirmation_after_draft_did_not_commit`
+- `created_draft_too_early`
+- `committed_without_explicit_confirmation`
+- `cancelled_but_status_not_cancelled`
+- `stale_draft_after_time_change`
+
+## 场景评分
+
+每次完整测试结束后输出一个 `score`，范围 0-100。评分用于用户 review，不作为硬断言。
+
+推荐评分结构：
+
+- 目标完成度 40 分：目标达成且终态合理给满分；目标部分推进但未完成给 10-30；跑偏或无法继续给 0-10。
+- 逐轮预期满足度 30 分：`pass` 轮次占比折算；`warn` 按半分计算；`fail` 不计分。
+- 业务边界安全 20 分：没有提前创建草稿、没有未确认提交、没有成功话术与 state 矛盾、取消/改时间后无 stale state。
+- 对话体验 10 分：回复清楚、下一步明确、能处理追问或改口、没有无意义循环。
+
+严重问题扣分建议：
+
+- runtime error：至少扣 30。
+- 未明确确认就提交正式预约：至少扣 40。
+- assistant 声称成功但 compact state 没有 committed record：至少扣 30。
+- 用户取消后仍推进预约：至少扣 25。
+- 改时间后沿用旧草稿或旧时段：至少扣 20。
+- 连续两轮无法给出正确下一步：扣 10-20。
+
+评分输出示例：
+
+```json
+{
+  "score": 72,
+  "grade": "needs_review",
+  "reason": "目标推进到草稿，但确认后未正式提交；其余轮次可继续。",
+  "passTurns": 4,
+  "warnTurns": 1,
+  "failTurns": 1,
+  "bugSignals": ["confirmation_after_draft_did_not_commit"]
+}
+```
+
+`grade` 建议使用：
+
+- `pass`：85-100
+- `needs_review`：60-84
+- `fail`：0-59
+
+## Compact State
+
+场景 transcript 里只记录调试需要的 compact state，避免输出整段 message history：
+
+```json
+{
+  "status": "collecting",
+  "vehicle": "veh_bmw_x3",
+  "dealer": "dealer_hoboken_bmw",
+  "preferredDate": "明天下午",
+  "slot": null,
+  "bookingDraft": null,
+  "booking": null,
+  "messageCount": 6
+}
+```
+
+## Review 文件
+
+每次测试运行必须保存一个 review 文件。用户没有指定目录时，默认写入：
+
+```text
+scenarios/<scenario-name>/test-reports/<YYYYMMDD-HHmmss>_<session-id>.md
+```
+
+如果测试不属于某个 `scenarios/<name>` 目录，写入：
+
+```text
+workflow-test-reports/<workflow-id>/<YYYYMMDD-HHmmss>_<session-id>.md
+```
+
+目录不存在时创建目录。一个测试 run 对应一个文件；多 run 时每个 run 单独成文件，或在文件名里追加 `run-<n>`。
+
+Review 文件必须包含：
+
+```text
+SESSION maintenance_test_1781370222019
+WORKFLOW maintenance_booking@1.0.0
+GOAL 完成一次保养预约，直到正式预约成功
+USER user_feng
+SCORE 72/100 needs_review
+SUMMARY 目标推进到草稿，但确认后未正式提交。
+
+TURN 1
+SEND: 我想预约保养，明天下午
+EXPECTED: 系统应确认单车用户车辆并要求选择门店，不能直接创建草稿。
+ACTUAL: ...
+STATE: {"status":"collecting","vehicle":"veh_bmw_x3","dealer":null,...}
+TRACES: routing.active, node.withPatch.customerProfile, patch, node.afterPatch.dealerCandidates, render
+VERDICT: pass
+
+TURN 2
+SEND: 1
+EXPECTED: 系统应识别第一家门店并展示可预约时段。
+...
+```
+
+建议文件结构：
+
+````markdown
+# Workflow Scenario Test Report
+
+- Session: ...
+- Workflow: ...
+- User: ...
+- Goal: ...
+- Score: 72/100
+- Grade: needs_review
+- Model: ...
+- Started at: ...
+- Finished at: ...
+
+## Summary
+
+...
+
+## Score Breakdown
+
+...
+
+## Transcript
+
+### Turn 1
+
+- Send: ...
+- Expected: ...
+- Actual: ...
+- Verdict: pass
+- Bug signals: []
+- State:
+  ```json
+  {}
+  ```
+- Traces: ...
+
+## Final State
+
+```json
+{}
+```
+
+## Reviewer Notes
+
+留空，供用户 review 时填写。
+````
+
+如果发现 bug，最终回复必须包含 review 文件路径、score、grade、主要 bug signals 和复现用 session id / user id / goal。
+
+## 适用边界
+
+这种测试用于“正式用户多轮随机/探索场景”的黑盒或灰盒验证。它不能替代 engine unit test，也不用于证明每条业务分支 100% 覆盖。需要固定业务不变量时，另写 runtime 单元测试，但仍不要断言 `statePatch` 中间产物。

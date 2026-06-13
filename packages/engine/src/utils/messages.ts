@@ -37,7 +37,8 @@ export function messagesForRender(state: JsonRecord): Message[] {
 }
 
 export function messagesForPatch(state: JsonRecord): Message[] {
-  return messagesForRender(state);
+  const messages = Array.isArray(state.messages) ? state.messages : [];
+  return messages.flatMap(toPatchMessages);
 }
 
 function isWorkflowMessage(message: unknown): message is WorkflowMessage {
@@ -97,6 +98,38 @@ function toPiMessages(message: unknown, index: number): Message[] {
     ];
   }
   return [];
+}
+
+function toPatchMessages(message: unknown): Message[] {
+  if (!message || typeof message !== "object") return [];
+  const record = message as JsonRecord;
+  if (record.role === "user" && typeof record.content === "string") {
+    return [userMessage(record.content)];
+  }
+  if (record.role === "assistant" && typeof record.content === "string") {
+    return [fauxAssistantMessage(record.content)];
+  }
+  if (record.role === "tool") {
+    const name = typeof record.name === "string" ? record.name : "tool";
+    return [fauxAssistantMessage(formatRuntimeToolFact(name, record))];
+  }
+  return [];
+}
+
+/**
+ * Presents workflow tool history to patch extraction as facts rather than provider tool-call transcripts.
+ * Input: a workflow-owned tool message.
+ * Output: plain assistant text usable as context for structured extraction.
+ * Boundary: patch extraction has exactly one provider tool, so historical workflow tools must not look callable.
+ */
+function formatRuntimeToolFact(name: string, record: JsonRecord): string {
+  const lines = [
+    `Runtime tool fact: ${name}`,
+    "This is historical workflow context only. Do not imitate it as an output format.",
+  ];
+  if (Object.hasOwn(record, "call")) lines.push(`Call: ${safeJsonStringify(record.call, 2)}`);
+  lines.push(`Result: ${safeJsonStringify(record.result, 2)}`);
+  return lines.join("\n");
 }
 
 function userMessage(content: string): Message {

@@ -1,4 +1,4 @@
 interface:
   display_name: "Workflow Testing"
-  short_description: "Verify PAC workflow business coverage"
-  default_prompt: "Use $pac-workflow-testing to verify this PAC workflow with deterministic business scenario coverage."
+  short_description: "Score workflow tests and save transcripts"
+  default_prompt: "Use $pac-workflow-testing to run a goal-driven multi-turn workflow test, score the scenario, and save a reviewable transcript file."

@@ -29,10 +29,12 @@ export function structuredSystemPrompt(instruction: string, toolName: string, na
     instruction.trim(),
     "",
     "Structured output contract:",
-    `- You must call exactly one tool: ${toolName}.`,
-    "- The tool call is the final answer; do not write plain text, markdown, or JSON outside the tool call.",
+    `- You must call exactly one tool: ${toolName}. This is required even when the latest user message is short, ambiguous, or produces no updates.`,
+    "- The tool call is the final answer; do not write plain text, markdown, XML/DSML, or JSON outside the tool call.",
     "- Put the complete structured result in the tool arguments and make every value conform to the JSON schema.",
     "- If information is absent, use schema-appropriate empty/default values or omit optional fields; never invent unsupported facts.",
+    "- Ignore prior assistant tool-call shapes in the message history as output formats; they are historical context only.",
+    `- Do not call, name, or simulate any tool except ${toolName}.`,
     `- This contract applies to ${name}.`,
   ].join("\n");
 }
