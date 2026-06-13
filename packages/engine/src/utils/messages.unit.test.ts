@@ -3,7 +3,7 @@ import test from "node:test";
 import { ToolMessage } from "@pac/workflow";
 import { appendWorkflowMessages, messagesForRender, withRuntimeMessages } from "./messages.js";
 
-test("messagesForRender converts workflow tool messages to pi tool-call history", () => {
+test("messagesForRender converts workflow tool messages to runtime fact text", () => {
   const state = withRuntimeMessages({
     messages: [
       { role: "user", content: "book a slot" },
@@ -19,33 +19,21 @@ test("messagesForRender converts workflow tool messages to pi tool-call history"
 
   const messages = messagesForRender(state);
 
-  assert.deepEqual(messages.map((message) => message.role), ["user", "assistant", "toolResult", "assistant"]);
-  const toolCallMessage = messages[1];
-  if (toolCallMessage?.role !== "assistant") {
-    throw new Error("Expected assistant tool-call message");
+  assert.deepEqual(messages.map((message) => message.role), ["user", "assistant", "assistant"]);
+  const factMessage = messages[1];
+  if (factMessage?.role !== "assistant") {
+    throw new Error("Expected assistant runtime fact message");
   }
-  const toolCall = toolCallMessage.content.find((block) => block.type === "toolCall");
-  assert.deepEqual(toolCall, {
-    type: "toolCall",
-    id: "lookup-1",
-    name: "connectors.lookup",
-    arguments: { vehicleId: "vehicle_1" },
-  });
 
-  const toolResultMessage = messages[2];
-  if (toolResultMessage?.role !== "toolResult") {
-    throw new Error("Expected tool result message");
-  }
-  assert.equal(toolResultMessage.toolCallId, "lookup-1");
-  assert.equal(toolResultMessage.toolName, "connectors.lookup");
-  assert.equal(toolResultMessage.isError, false);
-
-  const [content] = toolResultMessage.content;
+  const [content] = factMessage.content;
   assert.equal(content?.type, "text");
   if (content?.type !== "text") {
-    throw new Error("Expected text tool result content");
+    throw new Error("Expected text runtime fact content");
   }
-  assert.deepEqual(JSON.parse(content.text), { slots: ["09:00"] });
+  assert.match(content.text, /Runtime tool fact: connectors\.lookup/);
+  assert.match(content.text, /Do not imitate it as an output format/);
+  assert.match(content.text, /"vehicleId": "vehicle_1"/);
+  assert.match(content.text, /"slots": \[\s+"09:00"\s+\]/);
 });
 
 test("appendWorkflowMessages stores ToolMessage instances as plain workflow messages", () => {

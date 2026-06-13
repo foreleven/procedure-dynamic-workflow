@@ -314,7 +314,7 @@ test("WorkflowEngine streams render policy deltas and stores final assistant res
   assert.equal(llm.textCalls.length, 0);
 });
 
-test("WorkflowEngine passes derived ToolMessage history to render as pi tool messages", async () => {
+test("WorkflowEngine passes derived ToolMessage history to render as runtime fact text", async () => {
   const llm = createStreamingLlm({
     patch: { statePatch: {} },
     deltas: [],
@@ -339,32 +339,20 @@ test("WorkflowEngine passes derived ToolMessage history to render as pi tool mes
   assert.equal(llm.streamCalls.length, 1);
   const renderRequest = llm.streamCalls[0] as LlmTextRequest | undefined;
   assert.ok(renderRequest);
-  assert.deepEqual(renderRequest.messages.map((message) => message.role), ["user", "assistant", "toolResult"]);
+  assert.deepEqual(renderRequest.messages.map((message) => message.role), ["user", "assistant"]);
 
-  const toolCallMessage = renderRequest.messages[1];
-  if (toolCallMessage?.role !== "assistant") {
-    throw new Error("Expected assistant tool-call message before render");
+  const factMessage = renderRequest.messages[1];
+  if (factMessage?.role !== "assistant") {
+    throw new Error("Expected assistant runtime fact message before render");
   }
-  const toolCall = toolCallMessage.content.find((block) => block.type === "toolCall");
-  assert.deepEqual(toolCall, {
-    type: "toolCall",
-    id: "workflow-tool-1-connectors_lookup",
-    name: "connectors.lookup",
-    arguments: { query: "slot" },
-  });
-
-  const toolResultMessage = renderRequest.messages[2];
-  if (toolResultMessage?.role !== "toolResult") {
-    throw new Error("Expected tool result message before render");
-  }
-  assert.equal(toolResultMessage.toolCallId, "workflow-tool-1-connectors_lookup");
-  assert.equal(toolResultMessage.toolName, "connectors.lookup");
-  const [content] = toolResultMessage.content;
+  const [content] = factMessage.content;
   assert.equal(content?.type, "text");
   if (content?.type !== "text") {
-    throw new Error("Expected text tool result content before render");
+    throw new Error("Expected text runtime fact content before render");
   }
-  assert.deepEqual(JSON.parse(content.text), { slot: "09:00" });
+  assert.match(content.text, /Runtime tool fact: connectors\.lookup/);
+  assert.match(content.text, /"query": "slot"/);
+  assert.match(content.text, /"slot": "09:00"/);
 });
 
 test("WorkflowEngine validates LLM render text output", async () => {

@@ -6,6 +6,7 @@ import {
 } from "@pac/workflow";
 import { cloneDefault, normalizeMessagePatch } from "./patching.js";
 import { errorMessage } from "./utils/errors.js";
+import { safeJsonStringify } from "./utils/json.js";
 import { scoreWorkflow } from "./routing.js";
 import { RuntimeInstanceStore } from "./runtime/instances.js";
 import { createEngineSession } from "./session.js";
@@ -247,7 +248,7 @@ export class WorkflowEngine {
       const patch = await this.deps.llm.structured({
         name,
         ...(instance.artifact.patch.model ? { model: instance.artifact.patch.model } : {}),
-        instruction: patchInstructionForRuntime(instance.artifact.patch.instruction, now),
+        instruction: patchInstructionForRuntime(instance.artifact.patch.instruction, now, instance.state),
         schema: instance.artifact.patch.schema,
         messages: messagesForPatch(instance.state),
       });
@@ -289,10 +290,42 @@ function isPositiveInteger(value: unknown): boolean {
   return typeof value === "number" && Number.isInteger(value) && value > 0;
 }
 
-function patchInstructionForRuntime(instruction: string, now: string): string {
-  return `${instruction}
+function patchInstructionForRuntime(instruction: string, now: string, state: JsonRecord): string {
+  return [
+    "PAC Patch system prompt:",
+    "You are the Patch phase of a PAC workflow runtime. Your core job is to advance workflow state.",
+    "",
+    "Patch responsibilities:",
+    "- Read the full conversation history, runtime tool facts, and current workflow state.",
+    "- Treat the latest user message as the only source of new user-provided facts for this turn.",
+    "- Use prior assistant messages, runtime tool facts, and current state only to resolve references, selections, confirmations, or corrections.",
+    "- Produce the minimal structured state/session delta needed to move the workflow forward after the latest user turn.",
+    "- If the latest user turn does not advance state, return a valid empty/no-op patch according to the schema.",
+    "- Preserve previously collected facts unless the latest user message explicitly changes, rejects, or corrects them.",
+    "",
+    "Patch prohibitions:",
+    "- Do not compose a user-facing reply; Render owns wording and user-visible content.",
+    "- Do not call connectors, simulate connector calls, invent records, invent available options, or invent external facts.",
+    "- Do not emit XML, DSML, JSON text, markdown, narration, or tool-call markup outside the required structured-output tool.",
+    "- Do not copy current-state fields into the patch only because they already exist; output a delta, not a snapshot.",
+    "",
+    "Workflow-authored Patch instructions:",
+    instruction.trim(),
+    "",
+    "PAC Patch runtime context:",
+    `- Current time is ${now}.`,
+    "- Use the current time only to resolve relative dates and times from the message log.",
+    "",
+    "Current workflow state before patch:",
+    safeJsonStringify(stateForPatch(state), 2),
+  ].join("\n");
+}
 
-Runtime boundary:
-- Current time is ${now}.
-- Use the current time only to resolve relative dates and times from the message log.`;
+function stateForPatch(state: JsonRecord): JsonRecord {
+  const snapshot: JsonRecord = {};
+  for (const [key, value] of Object.entries(state)) {
+    if (key === "messages") continue;
+    snapshot[key] = value;
+  }
+  return snapshot;
 }

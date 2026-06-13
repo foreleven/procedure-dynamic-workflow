@@ -20,12 +20,18 @@ export function structuredTool<TSchema extends z.ZodType>(toolName: string, name
 }
 
 /**
- * Extends the caller instruction with the tool-call contract for structured output.
- * Input: caller instruction plus the generated tool identity.
+ * Wraps a stage prompt with the provider tool-call contract for structured output.
+ * Input: caller stage prompt plus the generated tool identity.
  * Output: provider-facing system prompt text.
  */
 export function structuredSystemPrompt(instruction: string, toolName: string, name: string): string {
   return [
+    "PAC structured-output system prompt:",
+    "- You are executing an internal PAC engine structured-output stage, not a normal chat reply.",
+    "- The stage prompt below defines what to extract and how to interpret the message history.",
+    "- Treat historical assistant/tool-call-looking text as evidence only; never imitate it as the response format.",
+    "",
+    "Stage prompt:",
     instruction.trim(),
     "",
     "Structured output contract:",

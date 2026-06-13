@@ -1,4 +1,4 @@
-import { fauxAssistantMessage, fauxToolCall, type Message } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, type Message } from "@earendil-works/pi-ai";
 import type { JsonRecord, WorkflowMessage, WorkflowRuntimeState } from "@pac/workflow";
 import { safeJsonStringify } from "./json.js";
 
@@ -28,17 +28,17 @@ export function withRuntimeMessages(state: JsonRecord): WorkflowRuntimeState<Jso
 /**
  * Converts workflow-owned message history into provider-facing pi-ai messages.
  * Input: runtime workflow state containing user, assistant, and tool messages.
- * Output: pi-ai messages safe for patch extraction and rendering prompts.
- * Boundary: workflow tool messages become paired pi assistant toolCall and toolResult messages.
+ * Output: pi-ai messages for patch extraction and render prompts.
+ * Boundary: workflow tool messages become plain runtime facts so models cannot imitate tool-call formats.
  */
 export function messagesForRender(state: JsonRecord): Message[] {
   const messages = Array.isArray(state.messages) ? state.messages : [];
-  return messages.flatMap(toPiMessages);
+  return messages.flatMap(toRuntimeFactMessages);
 }
 
 export function messagesForPatch(state: JsonRecord): Message[] {
   const messages = Array.isArray(state.messages) ? state.messages : [];
-  return messages.flatMap(toPatchMessages);
+  return messages.flatMap(toRuntimeFactMessages);
 }
 
 function isWorkflowMessage(message: unknown): message is WorkflowMessage {
@@ -77,30 +77,7 @@ function normalizeWorkflowMessage(message: WorkflowMessage): WorkflowMessage {
   return normalized;
 }
 
-function toPiMessages(message: unknown, index: number): Message[] {
-  if (!message || typeof message !== "object") return [];
-  const record = message as JsonRecord;
-  if (record.role === "user" && typeof record.content === "string") {
-    return [userMessage(record.content)];
-  }
-  if (record.role === "assistant" && typeof record.content === "string") {
-    return [fauxAssistantMessage(record.content)];
-  }
-  if (record.role === "tool") {
-    const name = typeof record.name === "string" ? record.name : "tool";
-    const toolCallId = toolCallIdFor(record, index, name);
-    return [
-      fauxAssistantMessage(
-        fauxToolCall(name, toolArguments(record.call), { id: toolCallId }),
-        { stopReason: "toolUse" },
-      ),
-      toolResultMessage(toolCallId, name, record.result, record.isError === true),
-    ];
-  }
-  return [];
-}
-
-function toPatchMessages(message: unknown): Message[] {
+function toRuntimeFactMessages(message: unknown): Message[] {
   if (!message || typeof message !== "object") return [];
   const record = message as JsonRecord;
   if (record.role === "user" && typeof record.content === "string") {
@@ -117,10 +94,10 @@ function toPatchMessages(message: unknown): Message[] {
 }
 
 /**
- * Presents workflow tool history to patch extraction as facts rather than provider tool-call transcripts.
+ * Presents workflow tool history as facts rather than provider tool-call transcripts.
  * Input: a workflow-owned tool message.
- * Output: plain assistant text usable as context for structured extraction.
- * Boundary: patch extraction has exactly one provider tool, so historical workflow tools must not look callable.
+ * Output: plain assistant text usable as context for Patch and Render LLM calls.
+ * Boundary: historical workflow tools must never look callable to model stages.
  */
 function formatRuntimeToolFact(name: string, record: JsonRecord): string {
   const lines = [
@@ -134,41 +111,4 @@ function formatRuntimeToolFact(name: string, record: JsonRecord): string {
 
 function userMessage(content: string): Message {
   return { role: "user", content, timestamp: Date.now() };
-}
-
-function toolResultMessage(
-  toolCallId: string,
-  toolName: string,
-  result: unknown,
-  isError: boolean,
-): Message {
-  return {
-    role: "toolResult",
-    toolCallId,
-    toolName,
-    content: [{
-      type: "text",
-      text: safeJsonStringify(result, 2),
-    }],
-    isError,
-    timestamp: Date.now(),
-  };
-}
-
-function toolArguments(call: unknown): Record<string, unknown> {
-  if (call === undefined) return {};
-  if (isPlainRecord(call)) return call;
-  return { input: call };
-}
-
-function toolCallIdFor(record: JsonRecord, index: number, name: string): string {
-  if (typeof record.id === "string" && record.id.trim().length > 0) return record.id;
-  const normalizedName = name.replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "") || "tool";
-  return `workflow-tool-${index}-${normalizedName.slice(0, 48)}`;
-}
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
 }
