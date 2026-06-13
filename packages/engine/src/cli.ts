@@ -109,7 +109,7 @@ function parseArgs(argv: string[]): CliOptions {
     if (!arg.startsWith("-") && !options.workflowPath) {
       options.workflowPath = arg;
       continue;
-
+    }
   }
 
   if (!options.workflowPath) {
