@@ -35,15 +35,21 @@ pac-dynamic-workflow/
 
 `connectors.ts` defines external tool contracts and demo implementations. Workflow code calls connectors through `context.call("connectors.xxx", input)`.
 
-`state.messages` is the workflow conversation log. User turns, simulated tool calls/results, and rendered assistant replies are appended by the runtime or workflow steps so patch/render can use the latest conversation context.
+`messages` is a runtime-owned conversation log on each workflow instance. User turns, tool messages, and rendered assistant replies are appended by the runtime or explicit workflow message outputs. Workflow schemas, default state, and state patches must not declare or overwrite the reserved `messages` field.
+
+## API Reference
+
+Public package APIs are documented in `docs/API.md`.
+
+Open-source readiness status is tracked in `docs/OPEN_SOURCE_READINESS.md`.
 
 ## Install
 
 ```bash
-npm install
+npm ci
 ```
 
-Set OpenAI-compatible credentials in `.env` or the shell:
+The local CLI and manual LLM smoke tests read OpenAI-compatible credentials from `.env` or the shell. `.env.example` documents the expected keys:
 
 ```bash
 OPENAI_API_KEY=...
@@ -51,12 +57,110 @@ OPENAI_MODEL=...
 OPENAI_BASE_URL=... # optional
 ```
 
+The verified development toolchain is Node.js `>=24.0.0` with `npm@11.12.1`.
+
 ## Commands
+
+Verify the local Node.js and npm versions:
+
+```bash
+npm run toolchain:check
+```
 
 Type-check the workspace:
 
 ```bash
 npm run check
+```
+
+Check source hygiene and tracked-file hygiene:
+
+```bash
+npm run source:check
+```
+
+Remove compiled package artifacts:
+
+```bash
+npm run clean
+```
+
+Build package artifacts:
+
+```bash
+npm run build
+```
+
+Run the local unit test suite:
+
+```bash
+npm test
+```
+
+Run the local CLI smoke checks:
+
+```bash
+npm run cli:check
+```
+
+Verify published package exports:
+
+```bash
+npm run smoke:packages
+```
+
+Verify published package declaration files from an external TypeScript consumer:
+
+```bash
+npm run smoke:types
+```
+
+Verify package tarball contents:
+
+```bash
+npm run smoke:tarballs
+```
+
+Verify package tarball installation from a temporary external project:
+
+```bash
+npm run smoke:install
+```
+
+Check package metadata:
+
+```bash
+npm run metadata:check
+```
+
+Check workspace publish lifecycle path safety:
+
+```bash
+npm run publish:lifecycle:check
+```
+
+Run the high-severity dependency audit:
+
+```bash
+npm run audit:check
+```
+
+Check documentation links and API coverage:
+
+```bash
+npm run docs:check
+```
+
+Run the default local verification set:
+
+```bash
+npm run ci
+```
+
+Run the manual LLM tool-call smoke test:
+
+```bash
+npm run test:llm
 ```
 
 Run the maintenance booking chat demo:
@@ -75,6 +179,12 @@ Run the maintenance scenario suite:
 
 ```bash
 npm run scenario:maintenance
+```
+
+Run deterministic maintenance scenario wiring and runtime path checks:
+
+```bash
+npm run scenario:maintenance:check
 ```
 
 Run the generic chat CLI with explicit files:
@@ -123,6 +233,28 @@ Keep workflow instructions focused:
 - baseline reads belong in `prefetch`.
 
 Avoid local text classifiers for user intent. Let patch extract structured state from the conversation, and let workflow steps resolve business state against connector data.
+
+## Contributing
+
+Read `CONTRIBUTING.md` before opening a change. The default local quality gate is:
+
+```bash
+npm run ci
+```
+
+Report suspected vulnerabilities through the process in `SECURITY.md`.
+
+Support expectations are documented in `SUPPORT.md`.
+
+Participation expectations are documented in `CODE_OF_CONDUCT.md`.
+
+Read `RELEASING.md` for versioning and package publishing steps.
+
+## Licensing
+
+This repository does not yet include a `LICENSE` file. It should not be treated as a formally released open-source project until maintainers choose and add an explicit license.
+
+Package publish attempts are guarded by `prepublishOnly` checks and will fail until a repository `LICENSE` exists and published package manifests declare the selected license.
 
 ## Status
 

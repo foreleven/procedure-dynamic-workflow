@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Pin npm
+        run: npm install -g npm@11.12.1
+
+      - name: Verify toolchain
+        run: npm run toolchain:check
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run local verification
+        run: npm run ci

@@ -1,9 +1,46 @@
 {
   "name": "@pac/workflow",
   "version": "0.1.0",
+  "description": "Workflow DSL, connector contracts, and runtime types for PAC dynamic workflows.",
   "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/foreleven/procedure-dynamic-workflow.git",
+    "directory": "packages/workflow"
+  },
+  "bugs": {
+    "url": "https://github.com/foreleven/procedure-dynamic-workflow/issues"
+  },
+  "homepage": "https://github.com/foreleven/procedure-dynamic-workflow/tree/main/packages/workflow#readme",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "keywords": [
+    "workflow",
+    "dsl",
+    "llm",
+    "agents"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
+    "prepublishOnly": "node ../../scripts/verify-publish-ready.mjs @pac/workflow"
   },
   "dependencies": {
     "yaml": "^2.9.0",

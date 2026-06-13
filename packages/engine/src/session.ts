@@ -21,7 +21,9 @@ export function createEngineSession(input: CreateSessionInput): EngineSession {
 export function sessionForLlm(session: EngineSession): Omit<SessionContext, "sharedCache"> & {
   sharedCache: JsonRecord;
 } {
-  return {
+  const snapshot: Omit<SessionContext, "sharedCache"> & {
+    sharedCache: JsonRecord;
+  } = {
     sessionId: session.sessionId,
     userId: session.userId,
     activeWorkflowIds: session.activeWorkflowIds,
@@ -29,8 +31,13 @@ export function sessionForLlm(session: EngineSession): Omit<SessionContext, "sha
     preferences: session.preferences,
     goals: session.goals,
     constraints: session.constraints,
-    conversationSummary: session.conversationSummary,
     sharedCache: Object.fromEntries(session.sharedCache.entries()),
     routingMemory: session.routingMemory,
   };
+
+  if (session.conversationSummary !== undefined) {
+    snapshot.conversationSummary = session.conversationSummary;
+  }
+
+  return snapshot;
 }

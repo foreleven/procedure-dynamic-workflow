@@ -1,0 +1,83 @@
+# Open Source Readiness
+
+This project is being prepared for a formal open-source release. The checklist below separates completed engineering work from release blockers that still require maintainer decisions.
+
+## Completed
+
+- Package build output is generated into `packages/*/dist`.
+- Published package exports point at compiled JavaScript and declaration files.
+- Published package manifests declare public npm access for scoped packages.
+- Package tarballs include README files, `dist/index.js`, and `dist/index.d.ts`.
+- Package tarball checks reject source maps and declaration maps that would point at unpublished source files.
+- Package tarball checks reject package README snippets that advertise repository-only `npm run` commands.
+- Package tarball checks tolerate npm lifecycle output before the final `npm pack --json` payload.
+- Local CI covers type checking, package builds, unit tests, package export smoke checks, external declaration-file smoke checks, tarball content checks, tarball install/import checks, and documentation link checks.
+- Local CI rejects tracked generated/local artifacts and high-risk source suppressions or type escapes.
+- Local CI covers CLI startup and required workflow argument validation without calling LLM providers.
+- Package export smoke checks validate both runtime exports and key public declaration names for published package roots.
+- Package type smoke checks assert connector registry call input and output inference from an external consumer.
+- Type checking rejects ambiguous optional-property writes, unused locals/parameters, implicit returns, switch fallthrough, unchecked indexed access, and inconsistent import casing.
+- Local CI covers deterministic maintenance scenario wiring plus happy path, cancellation, multi-vehicle selection, time-change invalidation, draft follow-up, explicit previous-dealer, no-availability fallback, prefetch connector failure, command connector failure, and no-vehicle runtime checks without calling LLM providers.
+- Local CI verifies the active Node/npm toolchain before running package metadata, workspace dependency, build, test, and smoke checks.
+- GitHub Actions pins the declared npm version and verifies the toolchain before dependency installation.
+- Package metadata checks keep published runtime dependencies exact, including blocking dev-only dependencies from publishable package manifests.
+- Package metadata checks keep the private workspace root free of runtime dependencies so package dependencies stay owned by publishable workspaces.
+- Package metadata checks verify repository ignore rules and an unpopulated `.env.example` for local model-provider configuration.
+- Source hygiene checks allow the tracked `.env.example` template while blocking real local `.env` files.
+- Package metadata checks require the source hygiene gate to stay wired into local CI.
+- Package publish attempts are guarded by `prepublishOnly` checks that require a repository `LICENSE` and package license metadata.
+- Publish lifecycle checks verify workspace `prepublishOnly` guards resolve the repository root even when npm runs them from package directories.
+- Published package manifests declare the same Node.js runtime requirement as the root workspace.
+- Local CI rejects high-severity dependency audit findings.
+- Local CI rejects lockfile tarball URLs from non-public registries.
+- Engine unit coverage includes ordered streaming output across multiple active workflows.
+- Engine construction validates runtime dependencies and option shapes before executing turns.
+- Engine construction validates cloneable state-schema parsed workflow default state.
+- Engine construction rejects malformed direct workflow artifacts, including bad patch metadata, invalidation dependencies, unknown routing thresholds, and duplicate node names.
+- Engine construction rejects duplicate workflow ids instead of silently overwriting workflow artifacts.
+- Engine session creation and turn execution reject malformed input, duplicate or unknown active workflow ids, and mismatched cached workflow instances.
+- Engine invalidation resets dependent fields with schema-valid default semantics, including deleting optional fields that are absent from the workflow default state.
+- Engine invalidation preserves same-turn message-patched dependent fields when later workflow nodes derive their source fields.
+- Engine rejects raw or parsed workflow default states that define reserved `messages` and ignores state patch attempts to overwrite runtime message history.
+- Engine validates workflow render responses and LLM render stream events before recording assistant messages.
+- Engine validates raw prefetch node results before merging runtime prefetch values.
+- Engine node execution separates prefetch cache/tool-message application from effect state/message/invalidation application.
+- Engine internal helper code is split into focused `utils/` modules instead of accumulating unrelated helpers in `engine.ts`.
+- Default LLM client construction and request entry points validate malformed options, model overrides, message payloads, and structured schemas before provider calls.
+- Engine and workflow change tracking compare JSON-native values structurally, avoiding false dirty fields from object key ordering.
+- Workflow routing metadata validates non-empty routing terms, known threshold names, and finite threshold values from `0` to `1`.
+- Direct workflow definitions validate metadata, routing, state defaults, patch policy, invalidation, nodes, duplicate node names, and render policy metadata during definition.
+- Workflow DSL rejects duplicate patch declarations and patch schemas that target reserved runtime state fields.
+- Program-style workflow DSL validates workflow metadata, node metadata, callbacks, invalidation config, and render policy metadata during definition.
+- Workflow patch policies reject malformed optional prompt metadata during definition.
+- Hook-style workflow DSL rejects malformed setup, node metadata, and render callbacks during definition.
+- Workflow action helpers reject malformed configuration before workflow execution.
+- Workflow action render helpers reject invalid dynamic text output before returning render responses.
+- Connector definition helpers reject malformed contracts before registry construction.
+- Connector registry public types avoid `any` while preserving schema-validated input and output inference.
+- Prefetch helpers reject malformed task collections and blank prefetch keys while preserving independent task failure isolation.
+- Workflow runtime context accepts non-serializable values and treats runtime object replacements as changes.
+- Engine and CLI diagnostics safely stringify non-serializable runtime values while distinguishing shared references from cycles.
+- GitHub Actions runs the local CI gate on pushes and pull requests.
+- Contribution, support, code of conduct, security, release, changelog, [root README](../README.md), and package README documents exist.
+- Documentation link checks discover all repository Markdown files instead of relying on a fixed document list.
+- API documentation checks require every public runtime export and key public type to appear in `API.md`.
+- Issue and pull request templates exist.
+- Tooling config includes `.editorconfig` and npm `engine-strict` for consistent local setup.
+- GitHub Actions uses read-only repository token permissions and does not persist checkout credentials.
+- LLM-dependent smoke tests are separated from the default local gate.
+
+## Blockers Before Public Release
+
+- Choose an explicit open-source license and add `LICENSE`.
+- Add the selected license to each published package manifest.
+- Review package names and npm organization ownership before publishing `@pac/*`.
+- Decide whether pre-1.0 releases should be published from `main` or a release branch.
+- Review security contact configuration after the repository is public.
+- Configure public maintainer contact for support and conduct reports after the repository is public.
+
+## Recommended Next Work
+
+- Add deterministic runtime checks for new scenario workflows as they are introduced.
+- Add generated API docs if public API volume grows beyond the manually maintained `API.md`.
+- Add release automation after the manual release process has been exercised once.

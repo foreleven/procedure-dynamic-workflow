@@ -343,11 +343,16 @@ Return concise Chinese. Number options when listing choices. No markdown, intern
 });
 
 function maintenanceFacts(context: MaintenanceContext): Partial<MaintenanceFacts> {
-  return {
-    customer: context.get<Customer>("customer"),
-    vehicles: context.get<Vehicle[]>("vehicles"),
-    recentDealer: context.get<Dealer | null>("recentDealer"),
-  };
+  const facts: Partial<MaintenanceFacts> = {};
+  const customer = context.get<Customer>("customer");
+  const vehicles = context.get<Vehicle[]>("vehicles");
+  const recentDealer = context.get<Dealer | null>("recentDealer");
+
+  if (customer !== undefined) facts.customer = customer;
+  if (vehicles !== undefined) facts.vehicles = vehicles;
+  if (recentDealer !== undefined) facts.recentDealer = recentDealer;
+
+  return facts;
 }
 
 function availabilityCacheKey(dealer: Dealer, preferredDate: DateRange): string {

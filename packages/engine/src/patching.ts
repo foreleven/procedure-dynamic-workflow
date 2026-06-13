@@ -1,13 +1,20 @@
 import type { JsonRecord, MessagePatch, SessionPatch } from "@pac/workflow";
+import { sameRuntimeValue } from "./utils/json.js";
 import type { EngineSession } from "./types.js";
+
+const RESERVED_STATE_FIELDS = new Set(["messages"]);
 
 export function normalizeMessagePatch(value: unknown): MessagePatch {
   if (!isRecord(value)) return {};
 
-  return {
-    sessionPatch: normalizeSessionPatch(value.sessionPatch),
-    statePatch: normalizeRecordPatch(value.statePatch),
-  };
+  const patch: MessagePatch = {};
+  const sessionPatch = normalizeSessionPatch(value.sessionPatch);
+  const statePatch = normalizeRecordPatch(value.statePatch);
+
+  if (sessionPatch) patch.sessionPatch = sessionPatch;
+  if (statePatch) patch.statePatch = statePatch;
+
+  return patch;
 }
 
 export function applySessionPatch(session: EngineSession, patch: SessionPatch | undefined): void {
@@ -23,7 +30,8 @@ export function applyObjectPatch(target: JsonRecord, patch: object): string[] {
   const dirtyFields: string[] = [];
 
   for (const [field, value] of Object.entries(patch)) {
-    if (!sameValue(target[field], value)) {
+    if (isReservedStateField(field)) continue;
+    if (!sameRuntimeValue(target[field], value)) {
       target[field] = value;
       dirtyFields.push(field);
     }
@@ -35,11 +43,6 @@ export function applyObjectPatch(target: JsonRecord, patch: object): string[] {
 export function cloneDefault<T>(value: T): T {
   if (value === undefined || value === null) return value;
   return structuredClone(value);
-}
-
-function sameValue(left: unknown, right: unknown): boolean {
-  if (Object.is(left, right)) return true;
-  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function unique(values: string[]): string[] {
@@ -76,6 +79,7 @@ function normalizeRecordPatch(value: unknown): JsonRecord | undefined {
   const patch: JsonRecord = {};
 
   for (const [key, fieldValue] of Object.entries(value)) {
+    if (isReservedStateField(key)) continue;
     if (fieldValue !== null && fieldValue !== undefined) {
       patch[key] = fieldValue;
     }
@@ -90,4 +94,8 @@ function isRecord(value: unknown): value is JsonRecord {
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isReservedStateField(field: string): boolean {
+  return RESERVED_STATE_FIELDS.has(field);
 }

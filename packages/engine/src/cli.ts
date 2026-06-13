@@ -13,6 +13,7 @@ import {
   type EngineTraceEvent,
   type WorkflowDefinitionInput,
 } from "./index.js";
+import { safeJsonStringify } from "./utils/json.js";
 
 interface CliOptions {
   workflowPath?: string;
@@ -48,44 +49,44 @@ function parseArgs(argv: string[]): CliOptions {
       process.exit(0);
     }
 
-    if ((arg === "--workflow" || arg === "-w") && next) {
-      options.workflowPath = next;
+    if (arg === "--workflow" || arg === "-w") {
+      options.workflowPath = readRequiredOptionValue(arg, next);
       index += 1;
       continue;
     }
 
-    if ((arg === "--connectors" || arg === "-c") && next) {
-      options.connectorsPath = next;
+    if (arg === "--connectors" || arg === "-c") {
+      options.connectorsPath = readRequiredOptionValue(arg, next);
       index += 1;
       continue;
     }
 
-    if (arg === "--model" && next) {
-      options.model = next;
+    if (arg === "--model") {
+      options.model = readRequiredOptionValue(arg, next);
       index += 1;
       continue;
     }
 
-    if (arg === "--base-url" && next) {
-      options.baseURL = next;
+    if (arg === "--base-url") {
+      options.baseURL = readRequiredOptionValue(arg, next);
       index += 1;
       continue;
     }
 
-    if (arg === "--user-id" && next) {
-      options.userId = next;
+    if (arg === "--user-id") {
+      options.userId = readRequiredOptionValue(arg, next);
       index += 1;
       continue;
     }
 
-    if (arg === "--session-id" && next) {
-      options.sessionId = next;
+    if (arg === "--session-id") {
+      options.sessionId = readRequiredOptionValue(arg, next);
       index += 1;
       continue;
     }
 
-    if ((arg === "--message" || arg === "-m" || arg === "--once") && next) {
-      options.messages.push(next);
+    if (arg === "--message" || arg === "-m" || arg === "--once") {
+      options.messages.push(readRequiredOptionValue(arg, next, { allowFlagLikeValue: true }));
       index += 1;
       continue;
     }
@@ -108,9 +109,7 @@ function parseArgs(argv: string[]): CliOptions {
     if (!arg.startsWith("-") && !options.workflowPath) {
       options.workflowPath = arg;
       continue;
-    }
 
-    throw new Error(`Unknown argument: ${arg}`);
   }
 
   if (!options.workflowPath) {
@@ -118,6 +117,24 @@ function parseArgs(argv: string[]): CliOptions {
   }
 
   return options;
+}
+
+/**
+ * Reads a required value for a CLI flag before the parser consumes the next token.
+ * Input: current option name, next argv token, and whether flag-like values are valid payloads.
+ * Output: the validated option value.
+ * Boundary: message payloads may intentionally start with `-`; file/config flags may not.
+ */
+function readRequiredOptionValue(
+  option: string,
+  value: string | undefined,
+  config: { allowFlagLikeValue?: boolean } = {},
+): string {
+  if (!value || (!config.allowFlagLikeValue && value.startsWith("-"))) {
+    throw new Error(`Missing value for ${option}`);
+  }
+
+  return value;
 }
 
 function printUsage(): void {
@@ -222,7 +239,7 @@ function printResponse(text: string): void {
 }
 
 function printJson(value: unknown): void {
-  console.log(JSON.stringify(value, mapToJson, 2));
+  console.log(safeJsonStringify(value, 2));
 }
 
 function createLogger(debug: boolean): (line: string) => void {
@@ -242,6 +259,34 @@ function createLogger(debug: boolean): (line: string) => void {
       console.log(llmDuration);
     }
   };
+}
+
+/**
+ * Builds the CLI LLM client from explicit flags first, then environment fallbacks.
+ * Input: parsed CLI options and a log sink shared with engine progress.
+ * Output: an LLM client configured for OpenAI-compatible completion APIs.
+ * Boundary: this helper only wires configuration; workflow-level model overrides still win per request.
+ */
+function createCliLlmClient(options: CliOptions, logger: (line: string) => void) {
+  const apiKey = firstConfigured(process.env.OPENAI_API_KEY);
+  const baseURL = firstConfigured(options.baseURL, process.env.OPENAI_BASE_URL);
+  const defaultModel = firstConfigured(options.model, process.env.OPENAI_MODEL);
+
+  return createLlmClient({
+    ...(apiKey ? { apiKey } : {}),
+    ...(baseURL ? { baseURL } : {}),
+    ...(defaultModel ? { defaultModel } : {}),
+    logger,
+  });
+}
+
+function firstConfigured(...values: Array<string | undefined>): string | undefined {
+  for (const value of values) {
+    const trimmed = value?.trim();
+    if (trimmed) return trimmed;
+  }
+
+  return undefined;
 }
 
 function progressFromLogLine(line: string): string | undefined {
@@ -268,14 +313,6 @@ function llmDurationFromLogLine(line: string): string | undefined {
   return `- LLM ${phase} 耗时: ${durationMs}ms`;
 }
 
-function mapToJson(_key: string, value: unknown): unknown {
-  if (value instanceof Map) {
-    return Object.fromEntries(value.entries());
-  }
-
-  return value;
-}
-
 function sessionSnapshot(session: EngineSession): unknown {
   return {
     sessionId: session.sessionId,
@@ -299,7 +336,7 @@ async function main(): Promise<void> {
   const workflow = await loadWorkflow(workflowPath);
   const connectors = await loadConnectors(options.connectorsPath);
   const logger = createLogger(options.debug);
-  const llm = createLlmClient();
+  const llm = createCliLlmClient(options, logger);
   let streamedChars = 0;
 
   const engine = new WorkflowEngine({
@@ -310,12 +347,14 @@ async function main(): Promise<void> {
       now: () => new Date(),
     },
     logger,
-    onResponseDelta: options.stream
-      ? ({ delta }) => {
-          streamedChars += delta.length;
-          process.stdout.write(delta);
+    ...(options.stream
+      ? {
+          onResponseDelta: ({ delta }: { workflowId: string; delta: string }) => {
+            streamedChars += delta.length;
+            process.stdout.write(delta);
+          },
         }
-      : undefined,
+      : {}),
   });
 
   const session = engine.createSession({

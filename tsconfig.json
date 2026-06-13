@@ -1,7 +1,22 @@
 {
   "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@pac/engine": [
+        "packages/engine/src/index.ts"
+      ],
+      "@pac/workflow": [
+        "packages/workflow/src/index.ts"
+      ]
+    }
+  },
   "include": [
     "packages/**/*.ts",
-    "scenarios/**/*.ts"
+    "scenarios/**/*.ts",
+    "scripts/**/*.ts"
+  ],
+  "exclude": [
+    "packages/*/dist"
   ]
 }

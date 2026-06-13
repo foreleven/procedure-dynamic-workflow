@@ -7,6 +7,7 @@ import type {
   RenderResponse,
   WorkflowFunction,
   WorkflowPatch,
+  WorkflowStatePatch,
   WorkflowRuntimeInput,
 } from "./workflow.js";
 
@@ -49,7 +50,7 @@ export function workflowActions<
       ) => MaybePromise<Record<string, MaybePromise<unknown>>>,
     ) => prefetchAction<TState, TConnectors>(load),
     hydrateContext: (keys: string[]) => hydrateContextAction<TState, TConnectors>(keys),
-    setState: <K extends keyof TState & string>(
+    setState: <K extends Exclude<keyof TState & string, "messages">>(
       field: K,
       resolve: (input: WorkflowActionInput<TState, TConnectors>) => MaybePromise<TState[K] | undefined>,
     ) => setStateAction<TState, TConnectors, K>(field, resolve),
@@ -77,6 +78,7 @@ export function prefetchAction<
     input: WorkflowActionInput<TState, TConnectors>,
   ) => MaybePromise<Record<string, MaybePromise<unknown>>>,
 ): PrefetchFunction<TState, TConnectors> {
+  assertFunction(load, "prefetch load");
   return async (input) => settlePrefetch(await load(input));
 }
 
@@ -86,6 +88,7 @@ export function hydrateContextAction<
 >(
   keys: string[],
 ): WorkflowFunction<TState, TConnectors> {
+  assertNonEmptyStringArray(keys, "hydrateContext keys");
   return async ({ context, prefetch }) => {
     for (const key of keys) {
       const value = prefetch.get(key);
@@ -100,14 +103,16 @@ export function hydrateContextAction<
 export function setStateAction<
   TState extends object,
   TConnectors extends ConnectorCatalog,
-  K extends keyof TState & string,
+  K extends Exclude<keyof TState & string, "messages">,
 >(
   field: K,
   resolve: (input: WorkflowActionInput<TState, TConnectors>) => MaybePromise<TState[K] | undefined>,
 ): WorkflowFunction<TState, TConnectors> {
+  assertNonEmptyString(field, "setState field");
+  assertFunction(resolve, "setState resolve");
   return async (input) => {
     const value = await resolve(input);
-    return value === undefined ? {} : { state: { [field]: value } as Partial<TState> };
+    return value === undefined ? {} : { state: { [field]: value } as WorkflowStatePatch<TState> };
   };
 }
 
@@ -118,6 +123,8 @@ export function setContextAction<
   key: string,
   resolve: (input: WorkflowActionInput<TState, TConnectors>) => MaybePromise<unknown>,
 ): WorkflowFunction<TState, TConnectors> {
+  assertNonEmptyString(key, "setContext key");
+  assertFunction(resolve, "setContext resolve");
   return async (input) => {
     const value = await resolve(input);
     if (value !== undefined) {
@@ -135,6 +142,7 @@ export function effectAction<
     input: WorkflowActionInput<TState, TConnectors>,
   ) => MaybePromise<WorkflowPatch<TState> | void>,
 ): WorkflowFunction<TState, TConnectors> {
+  assertFunction(run, "effect run");
   return async (input) => (await run(input)) ?? {};
 }
 
@@ -145,6 +153,9 @@ export function renderAction<
   cases: Array<RenderCase<TState, TConnectors>>,
   fallback: RenderCase<TState, TConnectors>,
 ): RenderFunction<TState, TConnectors> {
+  assertRenderCases(cases, "render cases");
+  assertRenderCase(fallback, "render fallback");
+
   return async (input) => {
     for (const renderCase of cases) {
       if (!renderCase.when || (await renderCase.when(input))) {
@@ -165,6 +176,54 @@ async function materializeRenderCase<
 ): Promise<RenderResponse> {
   const text = typeof renderCase.text === "function" ? await renderCase.text(input) : renderCase.text;
   const data = renderCase.data ? await renderCase.data(input) : undefined;
+  assertNonEmptyString(text, "render text result");
 
   return data === undefined ? { text } : { text, data };
+}
+
+function assertFunction(value: unknown, label: string): asserts value is (...args: never[]) => unknown {
+  if (typeof value !== "function") {
+    throw new Error(`${label} must be a function`);
+  }
+}
+
+function assertNonEmptyString(value: unknown, label: string): asserts value is string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`${label} must be a non-empty string`);
+  }
+}
+
+function assertNonEmptyStringArray(value: unknown, label: string): asserts value is string[] {
+  if (!Array.isArray(value) || value.length === 0 || !value.every((item) => typeof item === "string" && item.trim().length > 0)) {
+    throw new Error(`${label} must be a non-empty string array`);
+  }
+}
+
+function assertRenderCases<TState extends object, TConnectors extends ConnectorCatalog>(
+  cases: unknown,
+  label: string,
+): asserts cases is Array<RenderCase<TState, TConnectors>> {
+  if (!Array.isArray(cases)) {
+    throw new Error(`${label} must be an array`);
+  }
+
+  cases.forEach((renderCase, index) => assertRenderCase(renderCase, `${label}[${index}]`));
+}
+
+function assertRenderCase<TState extends object, TConnectors extends ConnectorCatalog>(
+  renderCase: unknown,
+  label: string,
+): asserts renderCase is RenderCase<TState, TConnectors> {
+  if (!renderCase || typeof renderCase !== "object") {
+    throw new Error(`${label} must be an object`);
+  }
+
+  const candidate = renderCase as Partial<RenderCase<TState, TConnectors>>;
+  if (candidate.when !== undefined) assertFunction(candidate.when, `${label}.when`);
+  if (typeof candidate.text === "string") {
+    assertNonEmptyString(candidate.text, `${label}.text`);
+  } else {
+    assertFunction(candidate.text, `${label}.text`);
+  }
+  if (candidate.data !== undefined) assertFunction(candidate.data, `${label}.data`);
 }

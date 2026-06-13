@@ -10,27 +10,28 @@ import {
   type Usage,
 } from "@earendil-works/pi-ai";
 import { z } from "zod";
+import { safeJsonStringify } from "./utils/json.js";
 
-type LlmTextRequest = {
-  name?: string;
-  model?: string;
+export type LlmTextRequest = {
+  name?: string | undefined;
+  model?: string | undefined;
   instruction: string;
   messages: Message[];
 };
 
-type LlmStructuredRequest<TSchema extends z.ZodType> = {
+export type LlmStructuredRequest<TSchema extends z.ZodType> = {
   name: string;
-  model?: string;
+  model?: string | undefined;
   instruction: string;
   schema: TSchema;
   messages: Message[];
 };
 
-type LlmUsage = { inputTokens: number; outputTokens: number; totalTokens: number };
+export type LlmUsage = { inputTokens: number; outputTokens: number; totalTokens: number };
 
-type LlmTextStreamEvent =
+export type LlmTextStreamEvent =
   | { type: "text_delta"; delta: string }
-  | { type: "done"; text: string; usage?: LlmUsage };
+  | { type: "done"; text: string; usage?: LlmUsage | undefined };
 
 export interface LlmClient {
   text(request: LlmTextRequest): Promise<string>;
@@ -42,26 +43,29 @@ export interface LlmClient {
 
 type PiAiOpenAiModel = Model<"openai-completions">;
 
-interface LlmClientOptions {
-  apiKey?: string;
-  baseURL?: string;
-  defaultModel: string;
-  model?: PiAiOpenAiModel;
-  logger?: (line: string) => void;
+const DEFAULT_MODEL = "deepseek-v4-flash";
+
+export interface LlmClientOptions {
+  apiKey?: string | undefined;
+  baseURL?: string | undefined;
+  defaultModel?: string | undefined;
+  model?: PiAiOpenAiModel | undefined;
+  logger?: ((line: string) => void) | undefined;
 }
 
-export function createLlmClient(options: LlmClientOptions = { defaultModel: "deepseek-v4-flash" }): LlmClient {
+export function createLlmClient(options: LlmClientOptions = {}): LlmClient {
+  validateLlmClientOptions(options);
   return new PiAiLlmClient(options);
 }
 
 class PiAiLlmClient implements LlmClient {
-  private readonly apiKey?: string;
+  private readonly apiKey: string | undefined;
   private readonly baseModel: PiAiOpenAiModel;
-  private readonly logger?: (line: string) => void;
+  private readonly logger: ((line: string) => void) | undefined;
 
   constructor(options: LlmClientOptions) {
     this.apiKey = options.apiKey;
-    const model = getModel("deepseek", "deepseek-v4-flash");
+    const model = createBaseModel(options);
     this.baseModel = options.model ?? model;
     this.logger = options.logger;
   }
@@ -70,6 +74,7 @@ class PiAiLlmClient implements LlmClient {
    * Runs plain assistant text generation through pi-ai without mutating workflow state.
    */
   async text(request: LlmTextRequest): Promise<string> {
+    validateTextRequest(request, "LLM text request");
     const model = this.model(request.model);
     const startedAt = logStart(this.logger, "text", {
       name: request.name ?? "unnamed",
@@ -96,6 +101,7 @@ class PiAiLlmClient implements LlmClient {
    * Streams render text deltas while preserving the final assistant text for session history.
    */
   async *streamText(request: LlmTextRequest): AsyncIterable<LlmTextStreamEvent> {
+    validateTextRequest(request, "LLM streamText request");
     const model = this.model(request.model);
     const startedAt = logStart(this.logger, "text.stream", {
       name: request.name ?? "unnamed",
@@ -122,7 +128,8 @@ class PiAiLlmClient implements LlmClient {
             outputChars: finalText.length,
             usage: usageForLog(event.message.usage),
           });
-          yield { type: "done", text: finalText, usage: usageFromPi(event.message.usage) };
+          const usage = usageFromPi(event.message.usage);
+          yield usage ? { type: "done", text: finalText, usage } : { type: "done", text: finalText };
           return;
         }
 
@@ -146,6 +153,7 @@ class PiAiLlmClient implements LlmClient {
   async structured<TSchema extends z.ZodType>(
     request: LlmStructuredRequest<TSchema>,
   ): Promise<z.infer<TSchema>> {
+    validateStructuredRequest(request);
     const model = this.model(request.model);
     const toolName = "emit_structured_result";
     const tool = structuredTool(toolName, request.name, request.schema);
@@ -176,7 +184,7 @@ class PiAiLlmClient implements LlmClient {
 
       const parsed = request.schema.parse(toolCall.arguments);
       logDone(this.logger, "structured.tool", startedAt, {
-        argumentChars: JSON.stringify(toolCall.arguments).length,
+        argumentChars: safeJsonStringify(toolCall.arguments).length,
         usage: usageForLog(message.usage),
       });
       return parsed;
@@ -187,6 +195,7 @@ class PiAiLlmClient implements LlmClient {
   }
 
   private model(requestModel: string | undefined): PiAiOpenAiModel {
+    validateOptionalNonEmptyString(requestModel, "LLM request.model");
     if (!requestModel || requestModel === this.baseModel.id) return this.baseModel;
     return { ...this.baseModel, id: requestModel, name: requestModel };
   }
@@ -195,6 +204,246 @@ class PiAiLlmClient implements LlmClient {
     return this.apiKey ? { apiKey: this.apiKey } : {};
   }
 
+}
+
+/**
+ * Validates public LLM client construction options before pi-ai model wiring.
+ * Input: caller supplied options.
+ * Output: narrows options to `LlmClientOptions` or throws a stable configuration error.
+ * Boundary: this does not validate provider credentials against the network.
+ */
+function validateLlmClientOptions(options: unknown): asserts options is LlmClientOptions {
+  if (!isPlainRecord(options)) {
+    throw new Error("LLM client options must be an object");
+  }
+
+  validateOptionalNonEmptyString(options.apiKey, "LLM client options.apiKey");
+  validateOptionalNonEmptyString(options.baseURL, "LLM client options.baseURL");
+  validateOptionalNonEmptyString(options.defaultModel, "LLM client options.defaultModel");
+  if (options.baseURL !== undefined) validateUrl(options.baseURL, "LLM client options.baseURL");
+  if (options.logger !== undefined && typeof options.logger !== "function") {
+    throw new Error("LLM client options.logger must be a function");
+  }
+  if (options.model !== undefined) validateOpenAiModel(options.model, "LLM client options.model");
+}
+
+/**
+ * Validates text generation requests before a provider call can be attempted.
+ * Input: user or engine supplied text request.
+ * Output: narrows to `LlmTextRequest`.
+ * Boundary: message content is validated only to the pi-ai structural contract, not to provider policy.
+ */
+function validateTextRequest(value: unknown, label: string): asserts value is LlmTextRequest {
+  if (!isPlainRecord(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+
+  validateOptionalNonEmptyString(value.name, `${label}.name`);
+  validateOptionalNonEmptyString(value.model, `${label}.model`);
+  validateRequiredNonEmptyString(value.instruction, `${label}.instruction`);
+  validateMessages(value.messages, `${label}.messages`);
+}
+
+/**
+ * Validates structured extraction requests before converting Zod schemas into tool parameters.
+ * Input: user or engine supplied structured request.
+ * Output: narrows to `LlmStructuredRequest`.
+ * Boundary: schema validation proves local parse and JSON-schema conversion only.
+ */
+function validateStructuredRequest(value: unknown): asserts value is LlmStructuredRequest<z.ZodType> {
+  validateTextRequest(value, "LLM structured request");
+  const request = value as Record<string, unknown>;
+  validateRequiredNonEmptyString(request.name, "LLM structured request.name");
+  validateJsonSchemaCompatibleZodSchema(request.schema, "LLM structured request.schema");
+}
+
+function validateMessages(value: unknown, label: string): asserts value is Message[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} must be an array`);
+  }
+
+  value.forEach((message, index) => validateMessage(message, `${label}[${index}]`));
+}
+
+function validateMessage(value: unknown, label: string): asserts value is Message {
+  if (!isPlainRecord(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+
+  switch (value.role) {
+    case "user":
+      validateUserMessage(value, label);
+      return;
+    case "assistant":
+      validateAssistantMessage(value, label);
+      return;
+    case "toolResult":
+      validateToolResultMessage(value, label);
+      return;
+    default:
+      throw new Error(`${label}.role must be user, assistant, or toolResult`);
+  }
+}
+
+function validateUserMessage(message: Record<string, unknown>, label: string): void {
+  if (typeof message.content === "string") return;
+  validateContentBlocks(message.content, `${label}.content`);
+}
+
+function validateAssistantMessage(message: Record<string, unknown>, label: string): void {
+  validateContentBlocks(message.content, `${label}.content`);
+}
+
+function validateToolResultMessage(message: Record<string, unknown>, label: string): void {
+  validateRequiredNonEmptyString(message.toolCallId, `${label}.toolCallId`);
+  validateRequiredNonEmptyString(message.toolName, `${label}.toolName`);
+  validateContentBlocks(message.content, `${label}.content`);
+  if (typeof message.isError !== "boolean") {
+    throw new Error(`${label}.isError must be a boolean`);
+  }
+}
+
+function validateContentBlocks(value: unknown, label: string): void {
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} must be a string or content block array`);
+  }
+
+  value.forEach((block, index) => validateContentBlock(block, `${label}[${index}]`));
+}
+
+function validateContentBlock(value: unknown, label: string): void {
+  if (!isPlainRecord(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+
+  switch (value.type) {
+    case "text":
+      if (typeof value.text !== "string") throw new Error(`${label}.text must be a string`);
+      return;
+    case "thinking":
+      if (typeof value.thinking !== "string") throw new Error(`${label}.thinking must be a string`);
+      return;
+    case "image":
+      validateRequiredNonEmptyString(value.data, `${label}.data`);
+      validateRequiredNonEmptyString(value.mimeType, `${label}.mimeType`);
+      return;
+    case "toolCall":
+      validateRequiredNonEmptyString(value.id, `${label}.id`);
+      validateRequiredNonEmptyString(value.name, `${label}.name`);
+      if (!isPlainRecord(value.arguments)) throw new Error(`${label}.arguments must be an object`);
+      return;
+    default:
+      throw new Error(`${label}.type must be text, thinking, image, or toolCall`);
+  }
+}
+
+function validateOpenAiModel(value: unknown, label: string): asserts value is PiAiOpenAiModel {
+  if (!isPlainRecord(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+
+  validateRequiredNonEmptyString(value.id, `${label}.id`);
+  validateRequiredNonEmptyString(value.name, `${label}.name`);
+  if (value.api !== "openai-completions") {
+    throw new Error(`${label}.api must be openai-completions`);
+  }
+  validateRequiredNonEmptyString(value.provider, `${label}.provider`);
+  validateRequiredNonEmptyString(value.baseUrl, `${label}.baseUrl`);
+  validateUrl(value.baseUrl, `${label}.baseUrl`);
+  if (typeof value.reasoning !== "boolean") {
+    throw new Error(`${label}.reasoning must be a boolean`);
+  }
+  validateModelInput(value.input, `${label}.input`);
+  validateModelCost(value.cost, `${label}.cost`);
+  validatePositiveFiniteNumber(value.contextWindow, `${label}.contextWindow`);
+  validatePositiveFiniteNumber(value.maxTokens, `${label}.maxTokens`);
+}
+
+function validateModelInput(value: unknown, label: string): void {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`${label} must be a non-empty array`);
+  }
+  for (const item of value) {
+    if (item !== "text" && item !== "image") {
+      throw new Error(`${label} entries must be text or image`);
+    }
+  }
+}
+
+function validateModelCost(value: unknown, label: string): void {
+  if (!isPlainRecord(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+
+  for (const key of ["input", "output", "cacheRead", "cacheWrite"]) {
+    validateNonNegativeFiniteNumber(value[key], `${label}.${key}`);
+  }
+}
+
+function validateJsonSchemaCompatibleZodSchema(value: unknown, label: string): asserts value is z.ZodType {
+  if (!hasParser(value)) {
+    throw new Error(`${label} must be a Zod schema`);
+  }
+
+  try {
+    z.toJSONSchema(value as z.ZodType);
+  } catch (error) {
+    throw new Error(`${label} must be convertible to JSON Schema: ${errorMessage(error)}`);
+  }
+}
+
+function validateRequiredNonEmptyString(value: unknown, label: string): asserts value is string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`${label} must be a non-empty string`);
+  }
+}
+
+function validateOptionalNonEmptyString(value: unknown, label: string): asserts value is string | undefined {
+  if (value === undefined) return;
+  validateRequiredNonEmptyString(value, label);
+}
+
+function validateUrl(value: string, label: string): void {
+  try {
+    new URL(value);
+  } catch {
+    throw new Error(`${label} must be a valid absolute URL`);
+  }
+}
+
+function validateNonNegativeFiniteNumber(value: unknown, label: string): asserts value is number {
+  if (!Number.isFinite(value) || typeof value !== "number" || value < 0) {
+    throw new Error(`${label} must be a non-negative finite number`);
+  }
+}
+
+function validatePositiveFiniteNumber(value: unknown, label: string): asserts value is number {
+  if (!Number.isFinite(value) || typeof value !== "number" || value <= 0) {
+    throw new Error(`${label} must be a positive finite number`);
+  }
+}
+
+function hasParser(value: unknown): value is { parse: (input: unknown) => unknown } {
+  return Boolean(value) && typeof value === "object" && typeof (value as { parse?: unknown }).parse === "function";
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function createBaseModel(options: LlmClientOptions): PiAiOpenAiModel {
+  if (shouldUseOpenAiCompatibleModel(options)) {
+    return createOpenAiCompatibleModel(options.defaultModel ?? DEFAULT_MODEL, options.baseURL);
+  }
+
+  return getModel("deepseek", DEFAULT_MODEL);
+}
+
+function shouldUseOpenAiCompatibleModel(options: LlmClientOptions): boolean {
+  // Preserve the historical local default unless the caller explicitly opts into OpenAI-compatible wiring.
+  return Boolean(options.apiKey || options.baseURL || options.defaultModel);
 }
 
 function createOpenAiCompatibleModel(model: string, baseURL: string | undefined): PiAiOpenAiModel {
@@ -266,9 +515,11 @@ function requestInputChars(request: LlmTextRequest | LlmStructuredRequest<z.ZodT
 }
 
 function messageTextForLog(message: Message): string {
-  if (message.role === "user") return typeof message.content === "string" ? message.content : JSON.stringify(message.content);
-  if (message.role === "toolResult") return JSON.stringify(message.content);
-  return JSON.stringify(message.content);
+  if (message.role === "user") {
+    return typeof message.content === "string" ? message.content : safeJsonStringify(message.content);
+  }
+  if (message.role === "toolResult") return safeJsonStringify(message.content);
+  return safeJsonStringify(message.content);
 }
 
 function usageFromPi(usage: Usage | undefined): LlmUsage | undefined {
@@ -296,7 +547,7 @@ function logDone(
 
 function formatLogLine(phase: string, status: "start" | "done", durationMs?: number, detail?: unknown): string {
   const duration = durationMs === undefined ? "" : ` ${durationMs}ms`;
-  const suffix = detail === undefined ? "" : ` ${JSON.stringify(detail)}`;
+  const suffix = detail === undefined ? "" : ` ${safeJsonStringify(detail)}`;
   return `[llm] ${phase} ${status}${duration}${suffix}`;
 }
 

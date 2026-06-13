@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Support
+    url: https://github.com/foreleven/procedure-dynamic-workflow/blob/main/SUPPORT.md
+    about: Read support expectations before opening general questions.
+  - name: Security Vulnerability
+    url: https://github.com/foreleven/procedure-dynamic-workflow/security/advisories/new
+    about: Report suspected vulnerabilities privately. See SECURITY.md before disclosing details publicly.

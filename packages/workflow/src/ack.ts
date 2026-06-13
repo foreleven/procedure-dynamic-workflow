@@ -76,6 +76,8 @@ function parseOrdinal(value: string): number | undefined {
   const numericMatch = value.match(/(?:第)?([1-9]\d*)(?:个|项|家|辆|号)?/);
   if (numericMatch?.[1]) return Number(numericMatch[1]);
 
+  // Users often attach a classifier to Chinese ordinals, for example "第二个" or "第三辆".
+  const valueWithoutClassifier = value.replace(/(?:个|项|家|辆|号)$/, "");
   const chineseOrdinals: Record<string, number> = {
     一: 1,
     第一: 1,
@@ -91,7 +93,7 @@ function parseOrdinal(value: string): number | undefined {
     第五: 5,
   };
 
-  return chineseOrdinals[value];
+  return chineseOrdinals[valueWithoutClassifier] ?? chineseOrdinals[value];
 }
 
 function isPositiveConfirmation(value: string): boolean {

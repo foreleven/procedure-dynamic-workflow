@@ -5,10 +5,10 @@ import {
   getModel,
   Type,
   type Message,
-  type Model,
   type Tool,
   type ToolCall,
 } from "@earendil-works/pi-ai";
+import { safeJsonStringify } from "./utils/json.js";
 
 const toolName = "emit_structured_result";
 
@@ -24,6 +24,11 @@ const tool: Tool = {
   }),
 };
 
+if (process.argv.includes("--help") || process.argv.includes("-h")) {
+  printUsage();
+  process.exit(0);
+}
+
 const attempts = Number(process.env.TYPEBOX_TOOL_TEST_ATTEMPTS ?? "5");
 const messages: Message[] = [{
   role: "user",
@@ -38,7 +43,7 @@ for (let attempt = 1; attempt <= attempts; attempt += 1) {
   try {
     const toolCall = await callTypeBoxTool(attempt);
     successCount += 1;
-    console.log(`ok ${attempt}: ${JSON.stringify(toolCall.arguments)}`);
+    console.log(`ok ${attempt}: ${safeJsonStringify(toolCall.arguments)}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     failures.push(`attempt ${attempt}: ${message}`);
@@ -49,8 +54,29 @@ for (let attempt = 1; attempt <= attempts; attempt += 1) {
 console.log(`TypeBox tool calls: ${successCount}/${attempts}`);
 assert.equal(failures.length, 0, failures.join("\n"));
 
+/**
+ * Prints the manual smoke test contract without calling a model.
+ * Input: none.
+ * Output: usage text on stdout.
+ * Boundary: this function must stay side-effect free beyond printing.
+ */
+function printUsage(): void {
+  console.log(`Usage:
+  npm run test:llm
+
+Environment:
+  TYPEBOX_TOOL_TEST_ATTEMPTS  Number of tool-call attempts to run, defaults to 5
+`);
+}
+
+/**
+ * Calls the configured model once and verifies that pi-ai returns the required tool call.
+ * Input: attempt number for diagnostics.
+ * Output: the matching tool call.
+ * Boundary: this is a manual network smoke test, not part of the default local test suite.
+ */
 async function callTypeBoxTool(attempt: number): Promise<ToolCall> {
-  const model =getModel("deepseek", "deepseek-v4-flash")
+  const model = getModel("deepseek", "deepseek-v4-flash");
   const message = await complete(
     model,
     {
@@ -67,7 +93,7 @@ async function callTypeBoxTool(attempt: number): Promise<ToolCall> {
     },
   );
 
-  console.log(`Message content: ${JSON.stringify(message)}`);
+  console.log(`Message content: ${safeJsonStringify(message)}`);
 
   const toolCall = message.content.find(
     (block): block is ToolCall => block.type === "toolCall" && block.name === toolName,
@@ -78,7 +104,7 @@ async function callTypeBoxTool(attempt: number): Promise<ToolCall> {
       [
         `missing ${toolName}`,
         `stopReason=${message.stopReason}`,
-        `content=${JSON.stringify(message.content)}`,
+        `content=${safeJsonStringify(message.content)}`,
         `responseModel=${message.responseModel ?? model.id}`,
         `attempt=${attempt}`,
       ].join(" "),
@@ -87,4 +113,3 @@ async function callTypeBoxTool(attempt: number): Promise<ToolCall> {
 
   return toolCall;
 }
-
