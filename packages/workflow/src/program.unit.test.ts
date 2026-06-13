@@ -19,11 +19,7 @@ test("workflow program requires patch before render", () => {
   );
 });
 
-test("workflow program rejects malformed workflow config", () => {
-  assert.throws(
-    () => workflow(null as never),
-    /Workflow program config must be an object/,
-  );
+test("workflow program rejects invalid workflow config invariants", () => {
   assert.throws(
     () =>
       workflow({
@@ -39,25 +35,13 @@ test("workflow program rejects malformed workflow config", () => {
   assert.throws(
     () =>
       workflow({
-        id: "bad_schema",
-        version: "0.1.0",
-        description: "Invalid schema fixture.",
-        routing,
-        stateSchema: {} as never,
-        state: { count: 0 },
-      }),
-    /Workflow bad_schema stateSchema must provide parse/,
-  );
-  assert.throws(
-    () =>
-      workflow({
         id: "bad_invalidation",
         version: "0.1.0",
         description: "Invalid invalidation fixture.",
         routing,
         stateSchema: z.object({ count: z.number() }),
         state: { count: 0 },
-        invalidation: { count: [" "] } as never,
+        invalidation: { count: [] },
       }),
     /Workflow bad_invalidation invalidation\.count must be an array of non-empty strings/,
   );
@@ -81,7 +65,7 @@ test("workflow program rejects duplicate node names", () => {
   );
 });
 
-test("workflow program rejects malformed node config", () => {
+test("workflow program rejects invalid node config invariants", () => {
   const program = createProgram("bad_node_config");
   program.patch({ state: { count: z.number() } });
 
@@ -105,17 +89,6 @@ test("workflow program rejects malformed node config", () => {
       }),
     /Workflow bad_node_config node bad_progress progress must be a non-empty string/,
   );
-  assert.throws(
-    () =>
-      program.prefetch("bad_cache_key", {
-        progress: "Loading data",
-        description: "Invalid cache key fixture.",
-        when: () => true,
-        cacheKey: "not-a-function" as never,
-        run: () => ({ baseline: "loaded" }),
-      }),
-    /Workflow bad_node_config prefetch bad_cache_key cacheKey must be a function/,
-  );
 });
 
 test("workflow program rejects duplicate patch declarations", () => {
@@ -129,14 +102,14 @@ test("workflow program rejects duplicate patch declarations", () => {
   );
 });
 
-test("workflow program rejects malformed patch invalidates and render config", () => {
+test("workflow program rejects invalid patch invalidates and render config", () => {
   const program = createProgram("bad_render_config");
 
   assert.throws(
     () =>
       program.patch({
         state: { count: z.number() },
-        invalidates: { count: [] as never },
+        invalidates: { count: [] },
       }),
     /Workflow bad_render_config patch invalidates\.count must be an array of non-empty strings/,
   );

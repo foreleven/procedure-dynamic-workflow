@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
-import { loadWorkflowMetadata } from "./workflowMetadata.js";
+import { loadWorkflowMetadata } from "./workflow-metadata.js";
 
 test("loadWorkflowMetadata rejects invalid routing thresholds", () => {
   const tempDir = mkdtempSync(resolve(tmpdir(), "pac-workflow-metadata-"));

@@ -1,5 +1,5 @@
 export { WorkflowEngine } from "./engine.js";
-export { createLlmClient } from "./llm.js";
+export { createLlmClient } from "./llm/client.js";
 export type {
   LlmClient,
   LlmClientOptions,
@@ -7,7 +7,7 @@ export type {
   LlmTextRequest,
   LlmTextStreamEvent,
   LlmUsage,
-} from "./llm.js";
+} from "./llm/client.js";
 export type {
   CreateSessionInput,
   EngineDeps,

@@ -14,6 +14,7 @@ This project is being prepared for a formal open-source release. The checklist b
 - Local CI covers type checking, package builds, unit tests, package export smoke checks, external declaration-file smoke checks, tarball content checks, tarball install/import checks, and documentation link checks.
 - Local CI rejects tracked generated/local artifacts and high-risk source suppressions or type escapes.
 - Local CI covers CLI startup and required workflow argument validation without calling LLM providers.
+- Local CI discovers package unit tests recursively under package `src` directories so source subdirectory tests cannot be skipped by shell glob limits.
 - Package export smoke checks validate both runtime exports and key public declaration names for published package roots.
 - Package type smoke checks assert connector registry call input and output inference from an external consumer.
 - Type checking rejects ambiguous optional-property writes, unused locals/parameters, implicit returns, switch fallthrough, unchecked indexed access, and inconsistent import casing.
@@ -31,31 +32,37 @@ This project is being prepared for a formal open-source release. The checklist b
 - Local CI rejects high-severity dependency audit findings.
 - Local CI rejects lockfile tarball URLs from non-public registries.
 - Engine unit coverage includes ordered streaming output across multiple active workflows.
-- Engine construction validates runtime dependencies and option shapes before executing turns.
+- Engine construction trusts typed options and validates runtime invariants that TypeScript cannot express before executing turns.
 - Engine construction validates cloneable state-schema parsed workflow default state.
-- Engine construction rejects malformed direct workflow artifacts, including bad patch metadata, invalidation dependencies, unknown routing thresholds, and duplicate node names.
+- Engine construction rejects malformed runtime workflow state boundaries, including non-cloneable default state, schema-invalid default state, and reserved runtime state fields.
 - Engine construction rejects duplicate workflow ids instead of silently overwriting workflow artifacts.
-- Engine session creation and turn execution reject malformed input, duplicate or unknown active workflow ids, and mismatched cached workflow instances.
+- Engine session creation and turn execution reject duplicate or unknown active workflow ids and mismatched cached workflow instances.
 - Engine invalidation resets dependent fields with schema-valid default semantics, including deleting optional fields that are absent from the workflow default state.
 - Engine invalidation preserves same-turn message-patched dependent fields when later workflow nodes derive their source fields.
 - Engine rejects raw or parsed workflow default states that define reserved `messages` and ignores state patch attempts to overwrite runtime message history.
 - Engine validates workflow render responses and LLM render stream events before recording assistant messages.
 - Engine validates raw prefetch node results before merging runtime prefetch values.
 - Engine node execution separates prefetch cache/tool-message application from effect state/message/invalidation application.
-- Engine internal helper code is split into focused `utils/` modules instead of accumulating unrelated helpers in `engine.ts`.
-- Default LLM client construction and request entry points validate malformed options, model overrides, message payloads, and structured schemas before provider calls.
+- Engine internal helper code is grouped under `cli/`, `llm/`, `runtime/`, and `utils/` with kebab-case multiword filenames instead of accumulating unrelated helpers in `engine.ts`.
+- CLI dynamic workflow and connector module loading is isolated from argument parsing and uses schema-backed export boundary checks.
+- Default LLM client construction and request entry points use boundary schemas to reject malformed options, model overrides, message payloads, and structured schemas before provider calls.
+- Default LLM provider model resolution and structured-output tool contract generation are isolated from request execution and response logging.
+- Engine boundary schema helpers are centralized in `utils/` so CLI and LLM boundaries do not duplicate low-level Zod parsing helpers.
 - Engine and workflow change tracking compare JSON-native values structurally, avoiding false dirty fields from object key ordering.
 - Workflow routing metadata validates non-empty routing terms, known threshold names, and finite threshold values from `0` to `1`.
-- Direct workflow definitions validate metadata, routing, state defaults, patch policy, invalidation, nodes, duplicate node names, and render policy metadata during definition.
+- Direct workflow definitions trust TypeScript shape and assert metadata, routing, state default, patch policy, invalidation, node, duplicate node name, and render policy invariants during definition.
 - Workflow DSL rejects duplicate patch declarations and patch schemas that target reserved runtime state fields.
-- Program-style workflow DSL validates workflow metadata, node metadata, callbacks, invalidation config, and render policy metadata during definition.
-- Workflow patch policies reject malformed optional prompt metadata during definition.
-- Hook-style workflow DSL rejects malformed setup, node metadata, and render callbacks during definition.
-- Workflow action helpers reject malformed configuration before workflow execution.
+- Program-style workflow DSL asserts workflow metadata, node metadata, invalidation config, and render policy invariants through Zod-backed definition guards.
+- Workflow internal helper code is grouped under `definition/`, `runtime/`, and `utils/` with kebab-case multiword filenames while preserving root package exports.
+- Workflow patch policies use definition schemas to reject malformed optional prompt metadata.
+- Hook-style workflow DSL node option guards are isolated from hook registration and assert metadata, stage, and `when` invariants during definition.
+- Workflow action helper configuration checks are isolated in Zod-backed definition guards before workflow execution.
 - Workflow action render helpers reject invalid dynamic text output before returning render responses.
-- Connector definition helpers reject malformed contracts before registry construction.
+- Workflow runtime context storage is isolated from workflow artifact/type definitions while preserving the public `WorkflowContextStore` export.
+- Workflow runtime message and `ToolMessage` construction logic is isolated from workflow artifact/type definitions while preserving public exports.
+- Connector definition helper guards are isolated from registry execution and use boundary schemas to reject malformed contracts before construction.
 - Connector registry public types avoid `any` while preserving schema-validated input and output inference.
-- Prefetch helpers reject malformed task collections and blank prefetch keys while preserving independent task failure isolation.
+- Prefetch helpers use schema-backed record/key checks for task collections and blank prefetch keys while preserving independent task failure isolation.
 - Workflow runtime context accepts non-serializable values and treats runtime object replacements as changes.
 - Engine and CLI diagnostics safely stringify non-serializable runtime values while distinguishing shared references from cycles.
 - GitHub Actions runs the local CI gate on pushes and pull requests.

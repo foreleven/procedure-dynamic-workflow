@@ -1,5 +1,11 @@
 import { z } from "zod";
 import type { MaybePromise } from "./common.js";
+import {
+  validateConnectorCatalogObject,
+  validateConnectorRef,
+  validateConnectorTool,
+} from "./definition/connector-guards.js";
+import { parseSchema } from "./utils/schema.js";
 
 export interface ConnectorRef<TId extends string = string, TInput = unknown, TOutput = unknown> {
   id: TId;
@@ -60,9 +66,7 @@ export function defineConnectorTool<TId extends string, TInput, TOutput>(
   execute: (input: TInput) => MaybePromise<TOutput>,
 ): ConnectorTool<TId, TInput, TOutput> {
   validateConnectorRef(ref, "Connector ref");
-  if (typeof execute !== "function") {
-    throw new Error(`Connector tool ${ref.id} execute must be a function`);
-  }
+  validateConnectorTool({ ...ref, execute });
 
   return {
     ...ref,
@@ -75,9 +79,7 @@ export class ConnectorRegistry<TCatalog extends ConnectorCatalog = ConnectorCata
   private readonly catalog: TCatalog;
 
   constructor(tools: readonly AnyConnectorTool[], catalog?: TCatalog) {
-    if (!Array.isArray(tools)) {
-      throw new Error("ConnectorRegistry tools must be an array");
-    }
+    parseSchema(z.array(z.unknown(), { message: "ConnectorRegistry tools must be an array" }), tools);
     const effectiveCatalog = catalog ?? catalogFromTools(tools);
     validateConnectorCatalogObject(effectiveCatalog);
     this.catalog = effectiveCatalog as TCatalog;
@@ -180,48 +182,4 @@ function parseConnectorOutput<TConnector extends AnyConnectorRef>(
   output: unknown,
 ): ConnectorOutput<TConnector> {
   return ref.outputSchema.parse(output) as ConnectorOutput<TConnector>;
-}
-
-function validateConnectorTool(tool: unknown): asserts tool is AnyConnectorTool {
-  validateConnectorRef(tool, `Connector tool ${connectorIdForLabel(tool)}`);
-  const candidate = tool as AnyConnectorTool;
-  if (typeof candidate.execute !== "function") {
-    throw new Error(`Connector tool ${candidate.id} execute must be a function`);
-  }
-}
-
-function validateConnectorRef(ref: unknown, label: string): asserts ref is AnyConnectorRef {
-  if (!isRecord(ref)) {
-    throw new Error(`${label} must be an object`);
-  }
-  if (typeof ref.id !== "string" || ref.id.trim().length === 0) {
-    throw new Error(`${label} id must be a non-empty string`);
-  }
-  if (ref.description !== undefined && (typeof ref.description !== "string" || ref.description.trim().length === 0)) {
-    throw new Error(`${label} description must be a non-empty string`);
-  }
-  if (!hasParser(ref.inputSchema)) {
-    throw new Error(`${label} inputSchema must provide parse(input)`);
-  }
-  if (!hasParser(ref.outputSchema)) {
-    throw new Error(`${label} outputSchema must provide parse(input)`);
-  }
-}
-
-function hasParser(value: unknown): value is { parse: (input: unknown) => unknown } {
-  return Boolean(value) && typeof value === "object" && typeof (value as { parse?: unknown }).parse === "function";
-}
-
-function validateConnectorCatalogObject(value: unknown): asserts value is ConnectorCatalog {
-  if (!isRecord(value) || Array.isArray(value)) {
-    throw new Error("Connector catalog must be an object");
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object";
-}
-
-function connectorIdForLabel(value: unknown): string {
-  return isRecord(value) ? String(value.id) : "unknown";
 }

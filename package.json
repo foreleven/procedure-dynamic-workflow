@@ -23,7 +23,7 @@
     "check": "tsc -p tsconfig.json --noEmit",
     "source:check": "node scripts/verify-source-hygiene.mjs",
     "build": "npm run build -w @pac/workflow && npm run build -w @pac/engine",
-    "test:unit": "tsx --test packages/workflow/src/*.unit.test.ts packages/engine/src/*.unit.test.ts",
+    "test:unit": "node scripts/run-unit-tests.mjs",
     "test": "npm run build && npm run test:unit",
     "cli:check": "node scripts/verify-cli-smoke.mjs",
     "smoke:packages": "npm run build && node scripts/verify-package-exports.mjs",

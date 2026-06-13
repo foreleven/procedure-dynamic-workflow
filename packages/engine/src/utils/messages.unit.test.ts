@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ToolMessage } from "@pac/workflow";
-import { appendWorkflowMessages, messagesForRender, withRuntimeMessages } from "./utils/messages.js";
+import { appendWorkflowMessages, messagesForRender, withRuntimeMessages } from "./messages.js";
 
 test("messagesForRender converts workflow tool messages to pi tool-call history", () => {
   const state = withRuntimeMessages({

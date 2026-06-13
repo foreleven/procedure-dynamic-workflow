@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   safeJsonStringify,
   sameRuntimeValue,
-} from "./utils/json.js";
+} from "./json.js";
 
 test("safeJsonStringify serializes diagnostic values that JSON.stringify rejects", () => {
   const circular: { self?: unknown } = {};

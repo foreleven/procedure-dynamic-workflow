@@ -1,29 +1,44 @@
 import type {
   JsonRecord,
+  MaybePromise,
+  PatchPolicy,
+  RenderPolicy,
   RenderResponse,
+  RoutingProfile,
   SessionContext,
   WorkflowDefinition,
   WorkflowDeps,
   WorkflowId,
   WorkflowInstance,
+  WorkflowNodeStage,
   WorkflowRuntimeState,
 } from "@pac/workflow";
-import type { LlmClient } from "./llm.js";
+import type { LlmClient } from "./llm/client.js";
 
 export type RuntimeWorkflow = WorkflowDefinition<JsonRecord, unknown>;
 export type RuntimeInstance = WorkflowInstance<JsonRecord>;
+
+export interface WorkflowDefinitionNodeInput {
+  kind: "prefetch" | "effect";
+  name: string;
+  stage: WorkflowNodeStage;
+  progress: string;
+  description: string;
+  when?: (input: never) => MaybePromise<boolean>;
+  run: (input: never) => MaybePromise<unknown>;
+}
 
 export interface WorkflowDefinitionInput {
   id: string;
   version: string;
   description: string;
-  routing: unknown;
-  stateSchema: unknown;
-  state: unknown;
-  nodes: unknown;
-  patch: unknown;
-  invalidation: unknown;
-  render: unknown;
+  routing: RoutingProfile;
+  stateSchema: { parse(input: unknown): object };
+  state: object;
+  nodes: WorkflowDefinitionNodeInput[];
+  patch: PatchPolicy<unknown>;
+  invalidation: Partial<Record<string, string[]>>;
+  render: RenderPolicy | ((input: never) => MaybePromise<RenderResponse>);
 }
 
 export type EngineSession = SessionContext;

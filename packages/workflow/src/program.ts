@@ -3,8 +3,15 @@ import type { PatchPolicy } from "./builders.js";
 import { definePatch } from "./builders.js";
 import type { ConnectorCatalog } from "./connectors.js";
 import type { MaybePromise, RoutingProfile, SessionContext, WorkflowId } from "./common.js";
-import { sameRuntimeValue } from "./equality.js";
-import { settlePrefetch } from "./prefetch.js";
+import { sameRuntimeValue } from "./runtime/equality.js";
+import { settlePrefetch } from "./runtime/prefetch.js";
+import {
+  assertPatchInvalidationInvariants,
+  assertProgramNodeInvariants,
+  assertProgramNodeStage,
+  assertProgramWorkflowInvariants,
+  assertRenderConfigInvariants,
+} from "./definition/program-guards.js";
 import type {
   WorkflowContext,
   WorkflowDefinition,
@@ -133,7 +140,7 @@ export function workflow<
 >(
   config: ProgramWorkflowConfig<TState, TConnectors>,
 ): WorkflowProgram<TState, TConnectors> {
-  validateProgramWorkflowConfig(config);
+  assertProgramWorkflowInvariants(config);
   const nodes: Array<WorkflowNode<TState, TConnectors>> = [];
   let patchPolicy: PatchPolicy<unknown> | undefined;
   let invalidation = config.invalidation ?? {};
@@ -143,7 +150,7 @@ export function workflow<
       if (patchPolicy) {
         throw new Error(`Workflow ${config.id} already declared patch`);
       }
-      validatePatchInvalidation(patchConfig.invalidates, `Workflow ${config.id} patch invalidates`);
+      assertPatchInvalidationInvariants(patchConfig.invalidates, `Workflow ${config.id} patch invalidates`);
       patchPolicy = definePatch(patchConfig);
       invalidation = patchConfig.invalidates ?? invalidation;
     },
@@ -160,7 +167,7 @@ export function workflow<
       if (!patchPolicy) {
         throw new Error(`Workflow ${config.id} must declare patch before render`);
       }
-      validateRenderConfig(renderConfig, `Workflow ${config.id} render`);
+      assertRenderConfigInvariants(renderConfig, `Workflow ${config.id} render`);
 
       return defineWorkflowDefinition({
         id: config.id,
@@ -181,7 +188,7 @@ export function workflow<
     name: string,
     prefetchConfig: ProgramPrefetchConfig<TState, TConnectors>,
   ): void {
-    validateProgramNodeConfig(name, prefetchConfig, `Workflow ${config.id} prefetch`);
+    assertProgramNodeInvariants(name, prefetchConfig, `Workflow ${config.id} prefetch`);
     const cacheKeyName = `${name}:cacheKey`;
     registerNode({
       kind: "prefetch",
@@ -215,7 +222,7 @@ export function workflow<
     name: string,
     effectConfig: ProgramEffectConfig<TState, TConnectors>,
   ): void {
-    validateProgramNodeConfig(name, effectConfig, `Workflow ${config.id} node`);
+    assertProgramNodeInvariants(name, effectConfig, `Workflow ${config.id} node`);
     registerNode({
       kind: "effect",
       name,
@@ -244,7 +251,7 @@ export function workflow<
   }
 
   function registerNode(node: WorkflowNode<TState, TConnectors>): void {
-    validateWorkflowNode(node, `Workflow ${config.id} node`);
+    assertProgramNodeStage(node, `Workflow ${config.id} node`);
     if (nodes.some((existing) => existing.name === node.name)) {
       throw new Error(`Duplicate workflow node: ${node.name}`);
     }
@@ -287,111 +294,4 @@ async function shouldRunPrefetch<
   }
 
   return true;
-}
-
-function validateProgramWorkflowConfig(value: unknown): asserts value is ProgramWorkflowConfig<object> {
-  if (!isRecord(value)) {
-    throw new Error("Workflow program config must be an object");
-  }
-  if (!isNonEmptyString(value.id)) {
-    throw new Error("Workflow program id must be a non-empty string");
-  }
-  if (!isNonEmptyString(value.version)) {
-    throw new Error(`Workflow ${value.id} version must be a non-empty string`);
-  }
-  if (!isNonEmptyString(value.description)) {
-    throw new Error(`Workflow ${value.id} description must be a non-empty string`);
-  }
-  if (!isRecord(value.routing)) {
-    throw new Error(`Workflow ${value.id} routing must be an object`);
-  }
-  if (!hasParser(value.stateSchema)) {
-    throw new Error(`Workflow ${value.id} stateSchema must provide parse(input)`);
-  }
-  if (!isRecord(value.state) || Array.isArray(value.state)) {
-    throw new Error(`Workflow ${value.id} state must be an object`);
-  }
-  validatePatchInvalidation(value.invalidation, `Workflow ${value.id} invalidation`);
-}
-
-function validateProgramNodeConfig(
-  name: unknown,
-  config: unknown,
-  label: string,
-): void {
-  if (!isNonEmptyString(name)) {
-    throw new Error(`${label} name must be a non-empty string`);
-  }
-  if (!isRecord(config)) {
-    throw new Error(`${label} ${name} config must be an object`);
-  }
-  if (!isNonEmptyString(config.progress)) {
-    throw new Error(`${label} ${name} progress must be a non-empty string`);
-  }
-  if (!isNonEmptyString(config.description)) {
-    throw new Error(`${label} ${name} description must be a non-empty string`);
-  }
-  if (typeof config.when !== "function") {
-    throw new Error(`${label} ${name} when must be a function`);
-  }
-  if (typeof config.run !== "function") {
-    throw new Error(`${label} ${name} run must be a function`);
-  }
-  if (config.cacheKey !== undefined && typeof config.cacheKey !== "function") {
-    throw new Error(`${label} ${name} cacheKey must be a function`);
-  }
-}
-
-function validateWorkflowNode<TState extends object, TConnectors extends ConnectorCatalog>(
-  node: WorkflowNode<TState, TConnectors>,
-  label: string,
-): void {
-  if (!isNonEmptyString(node.name)) {
-    throw new Error(`${label} name must be a non-empty string`);
-  }
-  if (node.stage !== "withPatch" && node.stage !== "afterPatch") {
-    throw new Error(`${label} ${node.name} stage must be withPatch or afterPatch`);
-  }
-}
-
-function validateRenderConfig(value: unknown, label: string): asserts value is ProgramRenderConfig {
-  if (!isRecord(value)) {
-    throw new Error(`${label} config must be an object`);
-  }
-  if (!isNonEmptyString(value.name)) {
-    throw new Error(`${label} name must be a non-empty string`);
-  }
-  if (!isNonEmptyString(value.instruction)) {
-    throw new Error(`${label} instruction must be a non-empty string`);
-  }
-  if (!isNonEmptyString(value.progress)) {
-    throw new Error(`${label} progress must be a non-empty string`);
-  }
-}
-
-function validatePatchInvalidation(value: unknown, label: string): void {
-  if (value === undefined) return;
-  if (!isRecord(value) || Array.isArray(value)) {
-    throw new Error(`${label} must be an object`);
-  }
-  for (const [field, dependents] of Object.entries(value)) {
-    if (!isNonEmptyString(field)) {
-      throw new Error(`${label} field must be a non-empty string`);
-    }
-    if (!Array.isArray(dependents) || dependents.length === 0 || !dependents.every(isNonEmptyString)) {
-      throw new Error(`${label}.${field} must be an array of non-empty strings`);
-    }
-  }
-}
-
-function hasParser(value: unknown): value is { parse: (input: unknown) => unknown } {
-  return isRecord(value) && typeof value.parse === "function";
-}
-
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object";
 }

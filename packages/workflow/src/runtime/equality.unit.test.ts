@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createConnectorRegistry } from "./connectors.js";
+import { createConnectorRegistry } from "../connectors.js";
+import { WorkflowContextStore } from "./context.js";
 import { sameRuntimeValue } from "./equality.js";
-import { WorkflowContextStore } from "./workflow.js";
 
 test("sameRuntimeValue treats non-serializable values as changed instead of throwing", () => {
   const left: { self?: unknown } = {};

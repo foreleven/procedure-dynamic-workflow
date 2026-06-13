@@ -10,7 +10,7 @@ import {
   z,
 } from "@pac/workflow";
 import { WorkflowEngine } from "./engine.js";
-import type { LlmClient, LlmTextRequest } from "./llm.js";
+import type { LlmClient, LlmTextRequest } from "./llm/client.js";
 import type { WorkflowDefinitionInput } from "./types.js";
 
 interface TestState {
@@ -520,7 +520,7 @@ test("WorkflowEngine keeps routing to active workflows instead of rematching loc
   assert.equal(llm.structuredCalls.length, 1);
 });
 
-test("WorkflowEngine validates createSession input and active workflow ids", () => {
+test("WorkflowEngine rejects invalid active workflow ids during session creation", () => {
   const engine = new WorkflowEngine({
     workflows: [createTestWorkflow()],
     deps: {
@@ -529,23 +529,6 @@ test("WorkflowEngine validates createSession input and active workflow ids", () 
     },
   });
 
-  assert.throws(
-    () => engine.createSession(null as never),
-    /Invalid create session input: input must be an object/,
-  );
-  assert.throws(
-    () => engine.createSession({ sessionId: "", userId: "user_1" }),
-    /sessionId must be a non-empty string/,
-  );
-  assert.throws(
-    () =>
-      engine.createSession({
-        sessionId: "session_bad_facts",
-        userId: "user_1",
-        facts: [] as never,
-      }),
-    /facts must be an object/,
-  );
   assert.throws(
     () =>
       engine.createSession({
@@ -598,96 +581,9 @@ test("WorkflowEngine validates onMessage input and active workflow ids", async (
   );
 });
 
-test("WorkflowEngine rejects malformed workflow definitions during construction", () => {
+test("WorkflowEngine rejects runtime workflow state invariants during construction", () => {
   const workflow = createTestWorkflow();
-  const validNode = workflow.nodes[0]!;
 
-  assert.throws(
-    () => createEngineWithWorkflow({ ...workflow, routing: null }),
-    /routing must be an object/,
-  );
-  assert.throws(
-    () =>
-      createEngineWithWorkflow({
-        ...workflow,
-        routing: {
-          ...workflow.routing,
-          thresholds: {
-            ...workflow.routing.thresholds,
-            localAccept: 1.5,
-          },
-        },
-      }),
-    /routing\.thresholds\.localAccept must be a finite number between 0 and 1/,
-  );
-  assert.throws(
-    () =>
-      createEngineWithWorkflow({
-        ...workflow,
-        routing: {
-          ...workflow.routing,
-          thresholds: {
-            ...workflow.routing.thresholds,
-            localAcept: 0.9,
-          },
-        },
-      }),
-    /routing\.thresholds\.localAcept is not supported/,
-  );
-  assert.throws(
-    () =>
-      createEngineWithWorkflow({
-        ...workflow,
-        patch: {
-          ...workflow.patch,
-          instruction: "",
-        },
-      }),
-    /patch\.instruction must be a non-empty string/,
-  );
-  assert.throws(
-    () =>
-      createEngineWithWorkflow({
-        ...workflow,
-        patch: {
-          ...workflow.patch,
-          model: " ",
-        },
-      }),
-    /patch\.model must be a non-empty string/,
-  );
-  assert.throws(
-    () =>
-      createEngineWithWorkflow({
-        ...workflow,
-        invalidation: {
-          selected: [" "],
-        },
-      }),
-    /invalidation\.selected must be an array of non-empty strings/,
-  );
-  assert.throws(
-    () => createEngineWithWorkflow({ ...workflow, nodes: [{ ...validNode, stage: "later" }] }),
-    /nodes\[0\] must be a valid workflow node/,
-  );
-  assert.throws(
-    () =>
-      createEngineWithWorkflow({
-        ...workflow,
-        nodes: [
-          validNode,
-          { ...validNode },
-        ],
-      }),
-    /duplicate node name: prepare_dependent/,
-  );
-  assert.throws(
-    () => createEngineWithWorkflow({
-      ...workflow,
-      render: { name: "render", instruction: "", progress: "Rendering" },
-    }),
-    /render must be a function or render policy/,
-  );
   assert.throws(
     () =>
       createEngineWithWorkflow({
@@ -728,35 +624,9 @@ test("WorkflowEngine rejects malformed workflow definitions during construction"
   );
 });
 
-test("WorkflowEngine rejects malformed engine options during construction", () => {
+test("WorkflowEngine rejects invalid engine option invariants during construction", () => {
   const workflow = createTestWorkflow();
 
-  assert.throws(
-    () => new WorkflowEngine(null as never),
-    /Invalid workflow engine options: options must be an object/,
-  );
-  assert.throws(
-    () =>
-      new WorkflowEngine({
-        workflows: [workflow],
-        deps: {
-          connectors: {},
-          llm: createPatchLlm({ statePatch: {} }),
-        },
-      } as never),
-    /deps\.connectors must provide call/,
-  );
-  assert.throws(
-    () =>
-      new WorkflowEngine({
-        workflows: [workflow],
-        deps: {
-          connectors: createConnectorRegistry(),
-          llm: { text: async () => "ok" },
-        },
-      } as never),
-    /deps\.llm must provide text\(request\) and structured\(request\)/,
-  );
   assert.throws(
     () =>
       new WorkflowEngine({

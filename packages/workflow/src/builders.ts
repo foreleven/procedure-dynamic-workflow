@@ -4,6 +4,12 @@ import {
   type RoutingProfile,
   type RoutingThresholds,
 } from "./common.js";
+import {
+  nonEmptyString,
+  nonEmptyStringArray,
+  parseSchema,
+  zodSchema,
+} from "./utils/schema.js";
 
 const RESERVED_STATE_FIELDS = new Set(["messages"]);
 
@@ -18,17 +24,13 @@ export function defineRouting(
     thresholds?: Partial<RoutingThresholds>;
   },
 ): RoutingProfile {
-  validateRoutingConfig(routing);
-  validateRoutingTerms(routing.examples, "routing.examples");
-  validateRoutingTerms(routing.entities, "routing.entities");
-  validateRoutingTerms(routing.neighbors, "routing.neighbors");
-  validateRoutingThresholdOverrides(routing.thresholds);
+  parseSchema(routingInputSchema(), routing);
 
   const thresholds = {
     ...DEFAULT_ROUTING_THRESHOLDS,
     ...routing.thresholds,
   };
-  validateRoutingThresholds(thresholds);
+  parseSchema(routingThresholdsSchema(), thresholds);
 
   return {
     examples: routing.examples,
@@ -80,7 +82,8 @@ export function definePatch<TStatePatchShape extends z.ZodRawShape>(
     instruction?: string | undefined;
   },
 ): PatchPolicy<PatchOutput<TStatePatchShape>> {
-  validatePatchConfig(config);
+  parseSchema(patchConfigSchema(), config);
+  assertPatchStateInvariants(config.state);
   const policy: PatchPolicy<PatchOutput<TStatePatchShape>> = {
     schema: patchSchema(config.state),
     instruction: config.instruction ?? DEFAULT_PATCH_INSTRUCTION,
@@ -99,83 +102,68 @@ function optionalNullableShape<TShape extends z.ZodRawShape>(shape: TShape): {
   return Object.fromEntries(entries) as { [K in keyof TShape]: z.ZodOptional<z.ZodNullable<TShape[K]>> };
 }
 
-function validateRoutingConfig(value: unknown): asserts value is Omit<RoutingProfile, "thresholds"> & {
-  thresholds?: Partial<RoutingThresholds>;
-} {
-  if (!isPlainRecord(value)) {
-    throw new Error("routing must be an object");
-  }
+function routingInputSchema() {
+  return z.object(
+    {
+      examples: nonEmptyStringArray("routing.examples"),
+      entities: nonEmptyStringArray("routing.entities"),
+      neighbors: nonEmptyStringArray("routing.neighbors"),
+      thresholds: routingThresholdOverridesSchema().optional(),
+    },
+    { message: "routing must be an object" },
+  );
 }
 
-function validateRoutingTerms(value: unknown, label: string): asserts value is string[] {
-  if (!Array.isArray(value) || !value.every((item) => typeof item === "string" && item.trim().length > 0)) {
-    throw new Error(`${label} must be an array of non-empty strings`);
-  }
-}
-
-function validateRoutingThresholdOverrides(value: unknown): asserts value is Partial<RoutingThresholds> | undefined {
-  if (value === undefined) return;
-  if (!isPlainRecord(value)) {
-    throw new Error("routing.thresholds must be an object");
-  }
-
+function routingThresholdOverridesSchema() {
   const supportedThresholds = new Set(Object.keys(DEFAULT_ROUTING_THRESHOLDS));
-  for (const key of Object.keys(value)) {
-    if (!supportedThresholds.has(key)) {
-      throw new Error(`routing.thresholds.${key} is not supported`);
-    }
-  }
+  return z
+    .record(z.string(), z.unknown(), { message: "routing.thresholds must be an object" })
+    .superRefine((thresholds, context) => {
+      for (const key of Object.keys(thresholds)) {
+        if (!supportedThresholds.has(key)) {
+          context.addIssue({
+            code: "custom",
+            message: `routing.thresholds.${key} is not supported`,
+            path: [key],
+          });
+        }
+      }
+    });
 }
 
-function validateRoutingThresholds(thresholds: RoutingThresholds): void {
-  for (const [key, value] of Object.entries(thresholds)) {
-    if (!Number.isFinite(value) || value < 0 || value > 1) {
-      throw new Error(`routing.thresholds.${key} must be a finite number between 0 and 1`);
-    }
-  }
+function routingThresholdsSchema() {
+  return z.object({
+    localAccept: routingThreshold("routing.thresholds.localAccept"),
+    localUncertain: routingThreshold("routing.thresholds.localUncertain"),
+    globalAccept: routingThreshold("routing.thresholds.globalAccept"),
+  });
 }
 
-function validatePatchConfig(
-  config: unknown,
-): asserts config is {
-  state: z.ZodRawShape;
-  model?: string | undefined;
-  progress?: string | undefined;
-  instruction?: string | undefined;
-} {
-  if (!isPlainRecord(config)) {
-    throw new Error("patch config must be an object");
-  }
-  if (!isPlainRecord(config.state)) {
-    throw new Error("patch state must be an object");
-  }
-  validateOptionalNonEmptyString(config.model, "patch model");
-  validateOptionalNonEmptyString(config.progress, "patch progress");
-  validateOptionalNonEmptyString(config.instruction, "patch instruction");
+function routingThreshold(label: string) {
+  return z
+    .number()
+    .finite(`${label} must be a finite number between 0 and 1`)
+    .min(0, `${label} must be a finite number between 0 and 1`)
+    .max(1, `${label} must be a finite number between 0 and 1`);
+}
 
-  for (const [field, schema] of Object.entries(config.state)) {
+function patchConfigSchema() {
+  return z.object(
+    {
+      state: z.record(z.string(), z.unknown(), { message: "patch state must be an object" }),
+      model: nonEmptyString("patch model").optional(),
+      progress: nonEmptyString("patch progress").optional(),
+      instruction: nonEmptyString("patch instruction").optional(),
+    },
+    { message: "patch config must be an object" },
+  );
+}
+
+function assertPatchStateInvariants(state: z.ZodRawShape): void {
+  for (const [field, schema] of Object.entries(state)) {
     if (RESERVED_STATE_FIELDS.has(field)) {
       throw new Error(`patch state field is reserved for runtime use: ${field}`);
     }
-    if (!hasParser(schema)) {
-      throw new Error(`patch state field ${field} must be a Zod schema`);
-    }
+    parseSchema(zodSchema(`patch state field ${field}`, `patch state field ${field} must be a Zod schema`), schema);
   }
-}
-
-function validateOptionalNonEmptyString(value: unknown, label: string): asserts value is string | undefined {
-  if (value === undefined) return;
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(`${label} must be a non-empty string`);
-  }
-}
-
-function hasParser(value: unknown): value is { parse: (input: unknown) => unknown } {
-  return Boolean(value) && typeof value === "object" && typeof (value as { parse?: unknown }).parse === "function";
-}
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
 }

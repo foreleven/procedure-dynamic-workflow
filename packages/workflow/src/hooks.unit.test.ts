@@ -46,15 +46,7 @@ test("defineWorkflowHooks builds a hook-based workflow definition", () => {
   assert.equal(typeof definition.render, "function");
 });
 
-test("defineWorkflowHooks rejects malformed hook setup and node configuration", () => {
-  assert.throws(
-    () => defineWorkflowHooks(null as never),
-    /Workflow hooks config must be an object/,
-  );
-  assert.throws(
-    () => defineWorkflowHooks({ id: "bad_setup", setup: null } as never),
-    /Workflow bad_setup setup must be a function/,
-  );
+test("defineWorkflowHooks rejects invalid hook registration invariants", () => {
   assert.throws(
     () =>
       createHookWorkflow("blank_node", (hooks) => {
@@ -62,14 +54,6 @@ test("defineWorkflowHooks rejects malformed hook setup and node configuration", 
         hooks.useRenderFunction(() => ({ text: "ok" }));
       }),
     /Workflow node name must be a non-empty string/,
-  );
-  assert.throws(
-    () =>
-      createHookWorkflow("bad_stage", (hooks) => {
-        hooks.useEffect("bad_stage_node", () => undefined, { stage: "later" as never });
-        hooks.useRenderFunction(() => ({ text: "ok" }));
-      }),
-    /Workflow node option stage must be beforePatch, withPatch, or afterPatch/,
   );
   assert.throws(
     () =>
@@ -81,10 +65,35 @@ test("defineWorkflowHooks rejects malformed hook setup and node configuration", 
   );
   assert.throws(
     () =>
-      createHookWorkflow("bad_render", (hooks) => {
-        hooks.useRenderFunction(null as never);
+      createHookWorkflow("bad_stage", (hooks) => {
+        hooks.useEffect("bad_stage_node", () => undefined, { stage: "later" as never });
+        hooks.useRenderFunction(() => ({ text: "ok" }));
       }),
-    /Workflow bad_render render must be a function/,
+    /Workflow node option stage must be beforePatch, withPatch, or afterPatch/,
+  );
+  assert.throws(
+    () =>
+      createHookWorkflow("bad_when", (hooks) => {
+        hooks.useEffect("bad_when_node", () => undefined, { when: "yes" as never });
+        hooks.useRenderFunction(() => ({ text: "ok" }));
+      }),
+    /Workflow node option when must be a function/,
+  );
+  assert.throws(
+    () =>
+      createHookWorkflow("duplicate_render", (hooks) => {
+        hooks.useEffect("ready", () => undefined);
+        hooks.useRenderFunction(() => ({ text: "ok" }));
+        hooks.useRenderFunction(() => ({ text: "ok" }));
+      }),
+    /Workflow duplicate_render registered render more than once/,
+  );
+  assert.throws(
+    () =>
+      createHookWorkflow("missing_render", (hooks) => {
+        hooks.useEffect("ready", () => undefined);
+      }),
+    /Workflow missing_render did not register render/,
   );
 });
 

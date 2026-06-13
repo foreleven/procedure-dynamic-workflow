@@ -10,14 +10,16 @@ This project explores a workflow runtime where a procedure is represented as a s
 - `command` performs irreversible or externally mutating actions.
 - `render` produces the next user-facing reply.
 
-The workflow owns business state and instructions. The runtime owns scheduling, connector injection, progress events, conversation message history, and LLM execution. The engine's `llm.ts` uses `@earendil-works/pi-ai` directly for OpenAI-compatible completion, structured tool calls, and streaming text.
+The workflow owns business state and instructions. The runtime owns scheduling, connector injection, progress events, conversation message history, and LLM execution. The engine's `llm/` modules use `@earendil-works/pi-ai` directly for OpenAI-compatible completion, structured tool calls, and streaming text.
 
 ## Repository Layout
 
 ```text
 packages/
   workflow/      Workflow DSL, connector contracts, schemas, and workflow artifact types.
+                 Internal code is grouped by definition guards, runtime stores, and shared utilities.
   engine/        Runtime engine, pi-ai LLM client, CLI, session handling, env wiring, patch application, node execution, and rendering.
+                 Internal code is grouped by CLI loading, LLM provider wiring, runtime execution, and shared utilities.
 
 scenarios/
   maintenance/  Example vehicle-maintenance booking procedure, workflow artifact, mock connectors, and scenario runner.
@@ -96,6 +98,8 @@ Run the local unit test suite:
 ```bash
 npm test
 ```
+
+Unit tests may live beside implementation files anywhere under `packages/*/src` as `*.unit.test.ts`.
 
 Run the local CLI smoke checks:
 

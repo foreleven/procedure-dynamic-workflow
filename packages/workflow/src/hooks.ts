@@ -4,11 +4,10 @@ import type { ConnectorCatalog } from "./connectors.js";
 import type { MaybePromise, RoutingProfile, WorkflowId } from "./common.js";
 import type { RenderCase, WorkflowActionInput } from "./actions.js";
 import { workflowActions } from "./actions.js";
+import { assertHookNodeInvariants } from "./definition/hook-guards.js";
 import type {
-  PrefetchFunction,
   RenderFunction,
   WorkflowDefinition,
-  WorkflowFunction,
   WorkflowNode,
   WorkflowNodeStage,
   WorkflowPatch,
@@ -117,7 +116,6 @@ export function defineWorkflowHooks<
 >(
   config: HookWorkflowConfig<TStateSchema, TPatch, TConnectors>,
 ): WorkflowDefinition<z.infer<TStateSchema>, TPatch, TConnectors> {
-  validateHookWorkflowConfig(config);
   type TState = z.infer<TStateSchema>;
 
   const action = workflowActions<TState, TConnectors>();
@@ -132,7 +130,7 @@ export function defineWorkflowHooks<
         ...nodeMetadata(name, options),
         stage: options?.stage ?? "beforePatch",
         ...(options?.when ? { when: options.when } : {}),
-        run: action.prefetch(load) as PrefetchFunction<TState, TConnectors>,
+        run: action.prefetch(load),
       });
     },
 
@@ -143,7 +141,7 @@ export function defineWorkflowHooks<
         ...nodeMetadata(name, options),
         stage: options?.stage ?? "afterPatch",
         ...(options?.when ? { when: options.when } : {}),
-        run: action.hydrateContext(keys) as WorkflowFunction<TState, TConnectors>,
+        run: action.hydrateContext(keys),
       });
     },
 
@@ -154,7 +152,7 @@ export function defineWorkflowHooks<
         ...nodeMetadata(name, options),
         stage: options?.stage ?? "afterPatch",
         ...(options?.when ? { when: options.when } : {}),
-        run: action.setContext(key, resolve) as WorkflowFunction<TState, TConnectors>,
+        run: action.setContext(key, resolve),
       });
     },
 
@@ -165,7 +163,7 @@ export function defineWorkflowHooks<
         ...nodeMetadata(name, options),
         stage: options?.stage ?? "afterPatch",
         ...(options?.when ? { when: options.when } : {}),
-        run: action.setState(field, resolve) as WorkflowFunction<TState, TConnectors>,
+        run: action.setState(field, resolve),
       });
     },
 
@@ -176,7 +174,7 @@ export function defineWorkflowHooks<
         ...nodeMetadata(name, options),
         stage: options?.stage ?? "afterPatch",
         ...(options?.when ? { when: options.when } : {}),
-        run: action.effect(run) as WorkflowFunction<TState, TConnectors>,
+        run: action.effect(run),
       });
     },
 
@@ -213,9 +211,6 @@ export function defineWorkflowHooks<
   return defineWorkflowDefinition(definition);
 
   function setRender(nextRender: RenderFunction<TState, TConnectors>): void {
-    if (typeof nextRender !== "function") {
-      throw new Error(`Workflow ${config.id} render must be a function`);
-    }
     if (render) {
       throw new Error(`Workflow ${config.id} registered render more than once`);
     }
@@ -231,7 +226,6 @@ function registerNode<
   nodes: Array<WorkflowNode<TState, TConnectors>>,
   node: WorkflowNode<TState, TConnectors>,
 ): void {
-  validateNode(node);
   if (nodes.some((existing) => existing.name === node.name)) {
     throw new Error(`Duplicate workflow node: ${node.name}`);
   }
@@ -246,8 +240,7 @@ function nodeMetadata<
   name: string,
   options: WorkflowNodeOptions<TState, TConnectors> | undefined,
 ): { progress: string; description: string } {
-  validateNodeName(name);
-  validateNodeOptions(options);
+  assertHookNodeInvariants(name, options);
   return {
     progress: options?.progress ?? name,
     description: options?.description ?? `Legacy hook node ${name}`,
@@ -255,71 +248,3 @@ function nodeMetadata<
 }
 
 export type { WorkflowActionInput };
-
-function validateHookWorkflowConfig(value: unknown): asserts value is {
-  id: string;
-  setup: (hooks: unknown) => void;
-} {
-  if (!isRecord(value)) {
-    throw new Error("Workflow hooks config must be an object");
-  }
-  if (typeof value.setup !== "function") {
-    throw new Error(`Workflow ${String(value.id)} setup must be a function`);
-  }
-}
-
-function validateNode<
-  TState extends object,
-  TConnectors extends ConnectorCatalog,
->(node: WorkflowNode<TState, TConnectors>): void {
-  validateNodeName(node.name);
-  if (!isWorkflowNodeStage(node.stage)) {
-    throw new Error(`Workflow node ${node.name} stage must be beforePatch, withPatch, or afterPatch`);
-  }
-  if (!isNonEmptyString(node.progress)) {
-    throw new Error(`Workflow node ${node.name} progress must be a non-empty string`);
-  }
-  if (!isNonEmptyString(node.description)) {
-    throw new Error(`Workflow node ${node.name} description must be a non-empty string`);
-  }
-  if (node.when !== undefined && typeof node.when !== "function") {
-    throw new Error(`Workflow node ${node.name} when must be a function`);
-  }
-}
-
-function validateNodeName(name: unknown): asserts name is string {
-  if (!isNonEmptyString(name)) {
-    throw new Error("Workflow node name must be a non-empty string");
-  }
-}
-
-function validateNodeOptions(options: unknown): void {
-  if (options === undefined) return;
-  if (!isRecord(options)) {
-    throw new Error("Workflow node options must be an object");
-  }
-  if (options.stage !== undefined && !isWorkflowNodeStage(options.stage)) {
-    throw new Error("Workflow node option stage must be beforePatch, withPatch, or afterPatch");
-  }
-  if (options.progress !== undefined && !isNonEmptyString(options.progress)) {
-    throw new Error("Workflow node option progress must be a non-empty string");
-  }
-  if (options.description !== undefined && !isNonEmptyString(options.description)) {
-    throw new Error("Workflow node option description must be a non-empty string");
-  }
-  if (options.when !== undefined && typeof options.when !== "function") {
-    throw new Error("Workflow node option when must be a function");
-  }
-}
-
-function isWorkflowNodeStage(value: unknown): value is WorkflowNodeStage {
-  return value === "beforePatch" || value === "withPatch" || value === "afterPatch";
-}
-
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object";
-}

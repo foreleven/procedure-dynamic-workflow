@@ -33,14 +33,14 @@ Output:
 - a `WorkflowProgram` with `patch(...)`, `prefetch(...)`, `derive(...)`, `command(...)`, and `render(...)`.
 
 Behavior:
-- validates workflow metadata, state schema shape, initial state shape, and invalidation config during definition;
-- validates node names, node metadata, predicates, callbacks, and prefetch cache-key callbacks during registration;
+- asserts non-empty workflow metadata and invalidation invariants during definition;
+- asserts non-empty node names, progress text, and descriptions during registration;
 - `patch(...)` must be called exactly once before `render(...)`;
 - duplicate node names are rejected;
-- validates render policy metadata before producing a workflow definition.
+- asserts render policy metadata before producing a workflow definition.
 
 Boundary:
-- this helper only declares the artifact; `@pac/engine` owns scheduling and execution.
+- this helper trusts TypeScript for typed config shape; `@pac/engine` owns scheduling and execution.
 
 #### `new ToolMessage(input)`
 
@@ -63,27 +63,28 @@ Boundary:
 
 #### `defineWorkflowDefinition(definition)`
 
-Returns a validated `WorkflowDefinition` after preserving its generic type information.
+Returns a `WorkflowDefinition` after checking runtime-only invariants and preserving its generic type information.
 
 Use this when building workflow artifacts without the program DSL.
 
 Behavior:
-- validates workflow metadata, routing profile shape, state schema parser, default state shape, patch policy, invalidation config, node metadata/callbacks, and render behavior during definition;
+- trusts the typed workflow definition shape;
+- asserts non-empty metadata, routing terms, finite routing thresholds, schema-valid default state, patch policy metadata, invalidation config, node metadata, and render policy metadata during definition;
 - rejects default workflow state that defines reserved runtime fields such as `messages`;
 - rejects direct definitions with no nodes;
 - rejects duplicate node names;
 - accepts either a render function or a render policy with non-empty `name`, `instruction`, and `progress`.
 
 Boundary:
-- this helper validates definition-time shape and metadata; it does not run workflow callbacks.
+- this helper checks typed definition invariants; unknown/dynamic artifact shape checks belong at loading boundaries.
 
 #### `defineWorkflowHooks(config)`
 
 Builds a workflow definition through the legacy hook-style DSL.
 
 Behavior:
-- validates hook setup and node metadata during definition;
-- rejects blank node names, invalid stages, blank progress/description text, non-function predicates, and non-function render callbacks;
+- rejects blank node names, invalid node stages, non-function `when` callbacks, and blank progress/description text during definition;
+- rejects duplicate render registration;
 - requires exactly one render registration.
 
 ### Routing and Patch Policies
@@ -112,6 +113,9 @@ Behavior:
 - rejects reserved runtime state fields such as `messages`.
 - rejects malformed optional prompt metadata, including blank `model`, `progress`, or `instruction` strings.
 
+Boundary:
+- definition-time config checks are backed by Zod schemas plus reserved-field invariants.
+
 ### Connector Contracts
 
 #### `defineConnectorRef(config)`
@@ -124,6 +128,9 @@ Creates a typed connector contract with:
 
 Behavior:
 - rejects malformed connector ids, blank descriptions, or schema objects during definition.
+
+Boundary:
+- connector contract checks are backed by Zod schemas; connector input/output payloads remain owned by each declared schema.
 
 #### `defineConnectorTool(ref, execute)`
 
@@ -232,9 +239,9 @@ Input:
 - `onResponseDelta`: optional stream delta callback.
 
 Behavior:
-- validates engine options and runtime dependencies during construction;
-- validates workflow artifact identity, routing, patch, node, invalidation, and render shape during construction;
-- rejects unknown routing threshold keys, blank patch instructions, blank patch model/progress overrides, malformed invalidation dependencies, and duplicate workflow node names;
+- trusts typed engine options and workflow definitions produced by `@pac/workflow`;
+- keeps unknown workflow artifact shape checks at dynamic loading boundaries;
+- rejects invalid engine invariants such as non-positive `maxProgramRounds`;
 - validates and stores cloneable state-schema parsed workflow default state during construction;
 - rejects raw or parsed workflow default states that define reserved runtime fields such as `messages`;
 - rejects duplicate workflow ids during construction;
@@ -264,7 +271,7 @@ Input:
 - optional facts, preferences, goals, and constraints
 
 Behavior:
-- validates session input shape before creating runtime state;
+- trusts typed session input before creating runtime state;
 - rejects duplicate or unknown active workflow ids.
 
 #### `engine.onMessage(message, session)`
@@ -301,8 +308,8 @@ Input:
 Boundary:
 - no options preserves the historical local default model wiring;
 - explicit API key, base URL, or default model opts into OpenAI-compatible model construction;
-- construction options are validated before model wiring, including non-empty credentials/model ids, absolute base URLs, logger functions, and OpenAI-compatible model shape;
-- `text`, `streamText`, and `structured` validate request shape before provider calls, including instruction text, optional model overrides, pi-ai message structure, structured result names, and JSON-schema-compatible Zod schemas;
+- construction options are validated by boundary schemas before model wiring, including non-empty credentials/model ids, absolute base URLs, logger functions, and OpenAI-compatible model shape;
+- `text`, `streamText`, and `structured` validate request shape through boundary schemas before provider calls, including instruction text, optional model overrides, pi-ai message structure, structured result names, and JSON-schema-compatible Zod schemas;
 - local unit tests should use fake `LlmClient` implementations instead of calling real providers.
 
 ### Types
@@ -331,7 +338,7 @@ The package root intentionally does not export internal runtime implementation t
 The repository includes development and scenario files that are not stable public APIs:
 - `scenarios/**`
 - `pac-dynamic-workflow/**`
-- `packages/*/src/*.unit.test.ts`
+- `packages/*/src/**/*.unit.test.ts`
 - `packages/engine/src/typebox-tool.manual.ts`
 
 Do not depend on those paths from published packages.

@@ -1,10 +1,4 @@
 import { z } from "zod";
-import {
-  AckRequestSchema,
-  resolveAckSelection,
-  type AckRequest,
-  type AckSelection,
-} from "./ack.js";
 import type {
   JsonRecord,
   MaybePromise,
@@ -15,90 +9,23 @@ import type {
 import type { PatchPolicy } from "./builders.js";
 import type {
   ConnectorCatalog,
-  ConnectorId,
-  ConnectorInput,
-  ConnectorOutput,
   ConnectorRegistry,
 } from "./connectors.js";
-import { sameRuntimeValue } from "./equality.js";
-import { PrefetchStore } from "./prefetch.js";
+import type { WorkflowContext } from "./runtime/context.js";
+import { PrefetchStore } from "./runtime/prefetch.js";
+import type { WorkflowMessage, WorkflowToolMessage } from "./runtime/messages.js";
+import { assertWorkflowDefinitionInvariants } from "./definition/workflow-guards.js";
 
-const RESERVED_STATE_FIELDS = new Set(["messages"]);
-const ROUTING_THRESHOLD_FIELDS = ["localAccept", "localUncertain", "globalAccept"] as const;
-
-export interface WorkflowUserMessage {
-  role: "user";
-  content: string;
-}
-
-export interface WorkflowAssistantMessage {
-  role: "assistant";
-  content: string;
-}
-
-export interface WorkflowToolMessage {
-  role: "tool";
-  id?: string;
-  name: string;
-  call?: unknown;
-  result: unknown;
-  isError?: boolean;
-}
-
-export type WorkflowMessage = WorkflowUserMessage | WorkflowAssistantMessage | WorkflowToolMessage;
-
-export interface ToolMessageInput {
-  id?: string;
-  name: string;
-  call?: unknown;
-  result: unknown;
-  isError?: boolean;
-}
-
-/**
- * Creates a workflow tool-result history entry for connector or derived data.
- * Input: a stable tool name, optional call arguments, result payload, and optional explicit id.
- * Output: a JSON-shaped `WorkflowToolMessage` that the engine appends to runtime messages.
- * Boundary: this class does not know provider-specific LLM formats; engine adapters convert it later.
- */
-export class ToolMessage implements WorkflowToolMessage {
-  readonly role = "tool";
-  readonly id?: string;
-  readonly name: string;
-  readonly call?: unknown;
-  readonly result: unknown;
-  readonly isError?: boolean;
-
-  constructor(input: ToolMessageInput) {
-    validateToolMessageInput(input);
-
-    this.name = input.name;
-    this.result = input.result;
-    if (input.id !== undefined) this.id = input.id;
-    if ("call" in input) this.call = input.call;
-    if (input.isError !== undefined) this.isError = input.isError;
-  }
-
-  /**
-   * Returns the plain runtime message shape for persistence and structured cloning.
-   * Input: this tool message instance.
-   * Output: a JSON-shaped workflow tool message with only explicitly supplied optional fields.
-   * Boundary: values are not deep-cloned; the runtime owns cloning at state/session boundaries.
-   */
-  toJSON(): WorkflowToolMessage {
-    const message: WorkflowToolMessage = {
-      role: "tool",
-      name: this.name,
-      result: this.result,
-    };
-
-    if (this.id !== undefined) message.id = this.id;
-    if (Object.hasOwn(this, "call")) message.call = this.call;
-    if (this.isError !== undefined) message.isError = this.isError;
-
-    return message;
-  }
-}
+export { WorkflowContextStore } from "./runtime/context.js";
+export type { WorkflowContext } from "./runtime/context.js";
+export { ToolMessage } from "./runtime/messages.js";
+export type {
+  ToolMessageInput,
+  WorkflowAssistantMessage,
+  WorkflowMessage,
+  WorkflowToolMessage,
+  WorkflowUserMessage,
+} from "./runtime/messages.js";
 
 export type WorkflowRuntimeState<TState extends object> = TState & {
   messages: WorkflowMessage[];
@@ -107,138 +34,6 @@ export type WorkflowRuntimeState<TState extends object> = TState & {
 export interface WorkflowDeps<TConnectors extends ConnectorCatalog = ConnectorCatalog> {
   connectors: ConnectorRegistry<TConnectors>;
   now?: () => Date;
-}
-
-export interface WorkflowContext<TConnectors extends ConnectorCatalog = ConnectorCatalog> {
-  readonly revision: number;
-  get<T = unknown>(key: string): T | undefined;
-  set<T = unknown>(key: string, value: T): void;
-  call<TId extends ConnectorId<TConnectors>>(
-    id: TId,
-    input: ConnectorInput<TConnectors[TId]>,
-  ): Promise<ConnectorOutput<TConnectors[TId]>>;
-  ack(request: AckRequest): AckRequest;
-  getAck(): AckRequest | undefined;
-  clearAck(id?: string): boolean;
-  resolveAck(message: string): AckSelection | undefined;
-  has(key: string): boolean;
-  delete(key: string): boolean;
-  clear(): void;
-  keys(): IterableIterator<string>;
-  entries(): IterableIterator<[string, unknown]>;
-  changedKeysSince(revision: number): string[];
-  toJSON(): JsonRecord;
-}
-
-/**
- * Conversation-scoped runtime context.
- * It is intentionally not schema-validated, cloned, or persisted because workflows may store
- * non-serializable runtime objects such as handles, closures, or memoized service clients here.
- */
-export class WorkflowContextStore<TConnectors extends ConnectorCatalog = ConnectorCatalog> implements WorkflowContext<TConnectors> {
-  private readonly values = new Map<string, unknown>();
-  private readonly keyRevisions = new Map<string, number>();
-  private currentRevision = 0;
-  private currentAck: AckRequest | undefined;
-
-  constructor(private readonly connectors: ConnectorRegistry<TConnectors>) {}
-
-  get revision(): number {
-    return this.currentRevision;
-  }
-
-  get<T = unknown>(key: string): T | undefined {
-    return this.values.get(key) as T | undefined;
-  }
-
-  set<T = unknown>(key: string, value: T): void {
-    if (sameRuntimeValue(this.values.get(key), value)) return;
-    this.values.set(key, value);
-    this.markChanged(key);
-  }
-
-  call<TId extends ConnectorId<TConnectors>>(
-    id: TId,
-    input: ConnectorInput<TConnectors[TId]>,
-  ): Promise<ConnectorOutput<TConnectors[TId]>> {
-    return this.connectors.call(id, input);
-  }
-
-  /**
-   * Stores the current confirmation request for this workflow turn.
-   * Input: prompt plus selectable options.
-   * Output: parsed AckRequest.
-   * Boundary: ack does not mutate business state; workflows map selected options to state.
-   */
-  ack(request: AckRequest): AckRequest {
-    const parsed = AckRequestSchema.parse(request);
-    if (!sameRuntimeValue(this.currentAck, parsed)) {
-      this.currentAck = parsed;
-      this.markChanged("__ack");
-    }
-    return parsed;
-  }
-
-  getAck(): AckRequest | undefined {
-    return this.currentAck;
-  }
-
-  clearAck(id?: string): boolean {
-    if (!this.currentAck || (id && this.currentAck.id !== id)) return false;
-    this.currentAck = undefined;
-    this.markChanged("__ack");
-    return true;
-  }
-
-  resolveAck(message: string): AckSelection | undefined {
-    return this.currentAck ? resolveAckSelection(this.currentAck, message) : undefined;
-  }
-
-  has(key: string): boolean {
-    return this.values.has(key);
-  }
-
-  delete(key: string): boolean {
-    const deleted = this.values.delete(key);
-    if (deleted) {
-      this.markChanged(key);
-    }
-    return deleted;
-  }
-
-  clear(): void {
-    for (const key of this.values.keys()) {
-      this.values.delete(key);
-      this.markChanged(key);
-    }
-  }
-
-  keys(): IterableIterator<string> {
-    return this.values.keys();
-  }
-
-  entries(): IterableIterator<[string, unknown]> {
-    return this.values.entries();
-  }
-
-  changedKeysSince(revision: number): string[] {
-    return [...this.keyRevisions.entries()]
-      .filter(([, keyRevision]) => keyRevision > revision)
-      .map(([key]) => key);
-  }
-
-  toJSON(): JsonRecord {
-    const values = Object.fromEntries(this.values.entries());
-    if (this.currentAck) {
-      values.__ack = this.currentAck;
-    }
-    return values;
-  }
-
-  private markChanged(key: string): void {
-    this.currentRevision += 1;
-    this.keyRevisions.set(key, this.currentRevision);
-  }
 }
 
 export interface WorkflowRuntimeInput<
@@ -367,29 +162,11 @@ export interface WorkflowInstance<TState extends object = JsonRecord> {
   prefetch: PrefetchStore;
 }
 
-function validateToolMessageInput(value: unknown): asserts value is ToolMessageInput {
-  if (!isPlainRecord(value)) {
-    throw new Error("ToolMessage input must be an object");
-  }
-  if (!isNonEmptyString(value.name)) {
-    throw new Error("ToolMessage name must be a non-empty string");
-  }
-  if (!Object.hasOwn(value, "result")) {
-    throw new Error("ToolMessage result is required");
-  }
-  if (value.id !== undefined && !isNonEmptyString(value.id)) {
-    throw new Error("ToolMessage id must be a non-empty string");
-  }
-  if (value.isError !== undefined && typeof value.isError !== "boolean") {
-    throw new Error("ToolMessage isError must be a boolean");
-  }
-}
-
 /**
- * Defines a direct workflow artifact with early metadata and shape validation.
+ * Defines a direct workflow artifact with early metadata and invariant checks.
  * Input: complete workflow identity, routing, schemas, nodes, invalidation, and render behavior.
  * Output: the same definition with generic state, patch, and connector types preserved.
- * Boundary: validates definition-time structure only; workflow callbacks run inside the engine.
+ * Boundary: trusts TypeScript shape and rejects runtime-only definition invariants.
  */
 export function defineWorkflowDefinition<
   TStateSchema extends z.ZodType<object>,
@@ -400,227 +177,6 @@ export function defineWorkflowDefinition<
     stateSchema: TStateSchema;
   },
 ): WorkflowDefinition<z.infer<TStateSchema>, TPatch, TConnectors> {
-  validateWorkflowDefinition(definition);
+  assertWorkflowDefinitionInvariants(definition);
   return definition;
-}
-
-/**
- * Validates a direct workflow artifact and preserves its generic type information.
- * Input: complete workflow metadata, schemas, nodes, invalidation, and render behavior.
- * Output: the same workflow definition when the artifact is well-formed.
- * Boundary: this does not run workflow callbacks; the engine still owns scheduling and execution.
- */
-function validateWorkflowDefinition(value: unknown): asserts value is WorkflowDefinition<object> {
-  if (!isPlainRecord(value)) {
-    throw new Error("Workflow definition must be an object");
-  }
-  if (!isNonEmptyString(value.id)) {
-    throw new Error("Workflow definition id must be a non-empty string");
-  }
-
-  const label = `Workflow ${value.id}`;
-  if (!isNonEmptyString(value.version)) {
-    throw new Error(`${label} version must be a non-empty string`);
-  }
-  if (!isNonEmptyString(value.description)) {
-    throw new Error(`${label} description must be a non-empty string`);
-  }
-  validateRoutingProfile(value.routing, `${label} routing`);
-  if (!hasParser(value.stateSchema)) {
-    throw new Error(`${label} stateSchema must provide parse(input)`);
-  }
-  validateDefaultState(value.id, value.stateSchema, value.state);
-  validatePatchPolicy(value.patch, `${label} patch`);
-  validateInvalidation(value.invalidation, `${label} invalidation`);
-  validateWorkflowNodes(value.nodes, `${label} nodes`);
-  validateRender(value.render, `${label} render`);
-}
-
-function validateRoutingProfile(value: unknown, label: string): void {
-  if (!isPlainRecord(value)) {
-    throw new Error(`${label} must be an object`);
-  }
-  validateNonEmptyStringArray(value.examples, `${label}.examples`);
-  validateNonEmptyStringArray(value.entities, `${label}.entities`);
-  validateNonEmptyStringArray(value.neighbors, `${label}.neighbors`);
-  if (!isPlainRecord(value.thresholds)) {
-    throw new Error(`${label}.thresholds must be an object`);
-  }
-
-  const supportedThresholds = new Set<string>(ROUTING_THRESHOLD_FIELDS);
-  for (const key of Object.keys(value.thresholds)) {
-    if (!supportedThresholds.has(key)) {
-      throw new Error(`${label}.thresholds.${key} is not supported`);
-    }
-  }
-
-  for (const field of ROUTING_THRESHOLD_FIELDS) {
-    const threshold = value.thresholds[field];
-    if (!isRoutingThreshold(threshold)) {
-      throw new Error(`${label}.thresholds.${field} must be a finite number between 0 and 1`);
-    }
-  }
-}
-
-function validateDefaultState(
-  workflowId: WorkflowId,
-  stateSchema: { parse: (input: unknown) => unknown },
-  state: unknown,
-): void {
-  if (!isPlainRecord(state)) {
-    throw new Error(`Workflow ${workflowId} default state must be an object`);
-  }
-  for (const field of RESERVED_STATE_FIELDS) {
-    if (Object.hasOwn(state, field)) {
-      throw new Error(`Workflow ${workflowId} default state must not define reserved ${field} field`);
-    }
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = stateSchema.parse(state);
-  } catch (error) {
-    throw new Error(`Workflow ${workflowId} default state does not satisfy stateSchema: ${errorMessage(error)}`);
-  }
-
-  if (!isPlainRecord(parsed)) {
-    throw new Error(`Workflow ${workflowId} default state must parse to an object`);
-  }
-  for (const field of RESERVED_STATE_FIELDS) {
-    if (Object.hasOwn(parsed, field)) {
-      throw new Error(`Workflow ${workflowId} parsed default state must not define reserved ${field} field`);
-    }
-  }
-}
-
-function validatePatchPolicy(value: unknown, label: string): void {
-  if (!isPlainRecord(value)) {
-    throw new Error(`${label} must be an object`);
-  }
-  if (!hasParser(value.schema)) {
-    throw new Error(`${label}.schema must provide parse(input)`);
-  }
-  if (!isNonEmptyString(value.instruction)) {
-    throw new Error(`${label}.instruction must be a non-empty string`);
-  }
-  validateOptionalNonEmptyString(value.model, `${label}.model`);
-  validateOptionalNonEmptyString(value.progress, `${label}.progress`);
-}
-
-function validateInvalidation(value: unknown, label: string): void {
-  if (!isPlainRecord(value)) {
-    throw new Error(`${label} must be an object`);
-  }
-  for (const [field, dependents] of Object.entries(value)) {
-    if (!isNonEmptyString(field)) {
-      throw new Error(`${label} field must be a non-empty string`);
-    }
-    if (!Array.isArray(dependents) || dependents.length === 0 || !dependents.every(isNonEmptyString)) {
-      throw new Error(`${label}.${field} must be an array of non-empty strings`);
-    }
-  }
-}
-
-function validateWorkflowNodes(value: unknown, label: string): void {
-  if (!Array.isArray(value)) {
-    throw new Error(`${label} must be an array`);
-  }
-  if (value.length === 0) {
-    throw new Error(`${label} must contain at least one node`);
-  }
-
-  const names = new Set<string>();
-  value.forEach((node, index) => {
-    validateWorkflowNode(node, `${label}[${index}]`);
-    if (names.has(node.name)) {
-      throw new Error(`${label} contains duplicate node name: ${node.name}`);
-    }
-    names.add(node.name);
-  });
-}
-
-function validateWorkflowNode(value: unknown, label: string): asserts value is WorkflowNode<object> {
-  if (!isPlainRecord(value)) {
-    throw new Error(`${label} must be an object`);
-  }
-  if (value.kind !== "prefetch" && value.kind !== "effect") {
-    throw new Error(`${label}.kind must be prefetch or effect`);
-  }
-  if (!isNonEmptyString(value.name)) {
-    throw new Error(`${label}.name must be a non-empty string`);
-  }
-  if (!isWorkflowNodeStage(value.stage)) {
-    throw new Error(`${label}.${value.name} stage must be beforePatch, withPatch, or afterPatch`);
-  }
-  if (!isNonEmptyString(value.progress)) {
-    throw new Error(`${label}.${value.name} progress must be a non-empty string`);
-  }
-  if (!isNonEmptyString(value.description)) {
-    throw new Error(`${label}.${value.name} description must be a non-empty string`);
-  }
-  if (value.when !== undefined && typeof value.when !== "function") {
-    throw new Error(`${label}.${value.name} when must be a function`);
-  }
-  if (typeof value.run !== "function") {
-    throw new Error(`${label}.${value.name} run must be a function`);
-  }
-}
-
-function validateRender(value: unknown, label: string): void {
-  if (typeof value === "function") return;
-  if (!isPlainRecord(value)) {
-    throw new Error(`${label} must be a function or render policy`);
-  }
-  if (!isNonEmptyString(value.name)) {
-    throw new Error(`${label}.name must be a non-empty string`);
-  }
-  if (!isNonEmptyString(value.instruction)) {
-    throw new Error(`${label}.instruction must be a non-empty string`);
-  }
-  if (!isNonEmptyString(value.progress)) {
-    throw new Error(`${label}.progress must be a non-empty string`);
-  }
-}
-
-function validateNonEmptyStringArray(value: unknown, label: string): void {
-  if (!Array.isArray(value) || !value.every(isNonEmptyString)) {
-    throw new Error(`${label} must be an array of non-empty strings`);
-  }
-}
-
-function validateOptionalNonEmptyString(value: unknown, label: string): void {
-  if (value === undefined) return;
-  if (!isNonEmptyString(value)) {
-    throw new Error(`${label} must be a non-empty string`);
-  }
-}
-
-function hasParser(value: unknown): value is { parse: (input: unknown) => unknown } {
-  return isRecord(value) && typeof value.parse === "function";
-}
-
-function isWorkflowNodeStage(value: unknown): value is WorkflowNodeStage {
-  return value === "beforePatch" || value === "withPatch" || value === "afterPatch";
-}
-
-function isRoutingThreshold(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
-}
-
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object";
-}
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  if (!isRecord(value) || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

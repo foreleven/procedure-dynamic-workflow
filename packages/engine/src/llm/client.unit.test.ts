@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { z } from "zod";
-import { createLlmClient } from "./llm.js";
+import { createLlmClient } from "./client.js";
 
 test("createLlmClient validates public construction options", () => {
   assert.doesNotThrow(() => createLlmClient());

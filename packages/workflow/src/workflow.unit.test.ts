@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { z } from "zod";
 import { definePatch, defineRouting, type PatchPolicy } from "./builders.js";
+import { ToolMessage } from "./runtime/messages.js";
 import {
-  ToolMessage,
   defineWorkflowDefinition,
   type WorkflowDefinition,
 } from "./workflow.js";
@@ -26,7 +26,7 @@ const patch = definePatch({
   },
 }) as PatchPolicy<unknown>;
 
-test("defineWorkflowDefinition validates and returns direct definitions", () => {
+test("defineWorkflowDefinition asserts invariants and returns direct definitions", () => {
   const definition = createDefinition();
   const result = defineWorkflowDefinition(definition);
 
@@ -55,17 +55,13 @@ test("ToolMessage validates input and serializes to workflow message shape", () 
   );
 });
 
-test("defineWorkflowDefinition rejects malformed workflow metadata and routing", () => {
+test("defineWorkflowDefinition rejects invalid workflow metadata and routing invariants", () => {
   assert.throws(
-    () => defineWorkflowDefinition(null as never),
-    /Workflow definition must be an object/,
-  );
-  assert.throws(
-    () => defineWorkflowDefinition({ ...createDefinition(), id: " " } as never),
+    () => defineWorkflowDefinition({ ...createDefinition(), id: " " }),
     /Workflow definition id must be a non-empty string/,
   );
   assert.throws(
-    () => defineWorkflowDefinition({ ...createDefinition(), version: "" } as never),
+    () => defineWorkflowDefinition({ ...createDefinition(), version: "" }),
     /Workflow direct_flow version must be a non-empty string/,
   );
   assert.throws(
@@ -73,8 +69,12 @@ test("defineWorkflowDefinition rejects malformed workflow metadata and routing",
       defineWorkflowDefinition({
         ...createDefinition(),
         routing: { ...routing, entities: [" "] },
-      } as never),
+      }),
     /Workflow direct_flow routing\.entities must be an array of non-empty strings/,
+  );
+  const thresholdsWithUnknownKey: typeof routing.thresholds = Object.assign(
+    { ...routing.thresholds },
+    { localAcept: 0.9 },
   );
   assert.throws(
     () =>
@@ -82,28 +82,33 @@ test("defineWorkflowDefinition rejects malformed workflow metadata and routing",
         ...createDefinition(),
         routing: {
           ...routing,
-          thresholds: { ...routing.thresholds, localAcept: 0.9 },
+          thresholds: thresholdsWithUnknownKey,
         },
-      } as never),
+      }),
     /Workflow direct_flow routing\.thresholds\.localAcept is not supported/,
   );
 });
 
 test("defineWorkflowDefinition rejects invalid default state and patch policy", () => {
-  assert.throws(
-    () => defineWorkflowDefinition({ ...createDefinition(), stateSchema: {} } as never),
-    /Workflow direct_flow stateSchema must provide parse/,
-  );
+  const stateWithReservedField = { status: "idle", messages: [] };
   assert.throws(
     () =>
       defineWorkflowDefinition({
         ...createDefinition(),
-        state: { status: "idle", messages: [] },
-      } as never),
+        state: stateWithReservedField,
+      }),
     /Workflow direct_flow default state must not define reserved messages field/,
   );
+  const strictStateSchema = z.object({
+    status: z.string().min(5),
+  });
   assert.throws(
-    () => defineWorkflowDefinition({ ...createDefinition(), state: { status: 1 } } as never),
+    () =>
+      defineWorkflowDefinition({
+        ...createDefinition(),
+        stateSchema: strictStateSchema,
+        state: { status: "idle" },
+      }),
     /Workflow direct_flow default state does not satisfy stateSchema/,
   );
   assert.throws(
@@ -111,30 +116,22 @@ test("defineWorkflowDefinition rejects invalid default state and patch policy", 
       defineWorkflowDefinition({
         ...createDefinition(),
         patch: { ...patch, instruction: "" },
-      } as never),
+      }),
     /Workflow direct_flow patch\.instruction must be a non-empty string/,
-  );
-  assert.throws(
-    () =>
-      defineWorkflowDefinition({
-        ...createDefinition(),
-        patch: { ...patch, schema: {} },
-      } as never),
-    /Workflow direct_flow patch\.schema must provide parse/,
   );
 });
 
-test("defineWorkflowDefinition rejects malformed invalidation and nodes", () => {
+test("defineWorkflowDefinition rejects invalid invalidation and node invariants", () => {
   assert.throws(
     () =>
       defineWorkflowDefinition({
         ...createDefinition(),
         invalidation: { status: [] },
-      } as never),
+      }),
     /Workflow direct_flow invalidation\.status must be an array of non-empty strings/,
   );
   assert.throws(
-    () => defineWorkflowDefinition({ ...createDefinition(), nodes: [] } as never),
+    () => defineWorkflowDefinition({ ...createDefinition(), nodes: [] }),
     /Workflow direct_flow nodes must contain at least one node/,
   );
   assert.throws(
@@ -143,37 +140,20 @@ test("defineWorkflowDefinition rejects malformed invalidation and nodes", () => 
         ...createDefinition(),
         nodes: [
           createNode("sync_status"),
-          createNode("sync_status"),
-        ],
-      } as never),
+            createNode("sync_status"),
+          ],
+      }),
     /Workflow direct_flow nodes contains duplicate node name: sync_status/,
-  );
-  assert.throws(
-    () =>
-      defineWorkflowDefinition({
-        ...createDefinition(),
-        nodes: [
-          {
-            ...createNode("bad_run"),
-            run: "not-a-function",
-          },
-        ],
-      } as never),
-    /Workflow direct_flow nodes\[0\]\.bad_run run must be a function/,
   );
 });
 
-test("defineWorkflowDefinition rejects malformed render policies", () => {
-  assert.throws(
-    () => defineWorkflowDefinition({ ...createDefinition(), render: null } as never),
-    /Workflow direct_flow render must be a function or render policy/,
-  );
+test("defineWorkflowDefinition rejects invalid render policy invariants", () => {
   assert.throws(
     () =>
       defineWorkflowDefinition({
         ...createDefinition(),
         render: { name: "render", instruction: " ", progress: "Rendering" },
-      } as never),
+      }),
     /Workflow direct_flow render\.instruction must be a non-empty string/,
   );
 });
