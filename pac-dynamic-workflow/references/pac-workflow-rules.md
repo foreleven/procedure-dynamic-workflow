@@ -110,16 +110,16 @@ Use these program methods:
 
 - `patch({ state, invalidates, progress, instruction })`: every user message goes through this structured LLM patch. It writes only directly expressed user facts and invalidates stale downstream state.
 - `prefetch(name, { progress, description, when, cacheKey, run })`: baseline read-only connector calls that must be visible to patch. Use this for profile, account, entitlement, or other data keyed by session rather than by newly patched state.
-- `derive(name, { progress, description, when, run })`: business derivation that returns partial state directly, such as `{ vehicle, status }`. Use this for resolving contextual choices, state-dependent connector reads, preparing offers, selecting defaults, or building pending drafts when the operation is local/idempotent. If scratch runtime data is needed, call `context.set(...)`; do not treat that scratch data as business truth.
+- `derive(name, { progress, description, when, run })`: business derivation that returns partial state directly, such as `{ vehicle, status }`. Use this for resolving contextual choices, state-dependent connector reads, preparing offers, selecting defaults, or building pending drafts when the operation is local/idempotent. If the step produces facts needed by patch/render but not durable business state, return new `messages: ToolMessage[]`; the runtime appends them. If scratch runtime data is needed, call `context.set(...)`; do not treat that scratch data as business truth.
 - `command(name, { progress, description, when, run })`: irreversible or externally mutating action. It must require explicit state evidence such as `state.confirmed` and should write a committed state field like `state.booking` by returning partial state directly.
-- `render({ name, progress, instruction })`: declare the runtime render LLM. The runtime supplies the latest `state.messages` as the message input and appends the returned assistant message.
+- `render({ name, progress, instruction })`: declare the runtime render LLM. The runtime supplies the latest `state.messages` as the message input and appends the returned assistant message. Do not define `messages` in the workflow state schema or initial state.
 
 Every `prefetch`, `derive`, and `command` config must include:
 
 - `progress`: short user-visible status text emitted when `when` matches and the node is selected.
 - `description`: maintainer-facing explanation of what the step does, which facts it depends on, what it may update, and whether it has external side effects.
 - `when(state, context, runtime)`: the complete eligibility check. The first two parameters are always `state` and runtime `context`; use `runtime.session`, `runtime.message`, or `runtime.turn` only when needed.
-- `run(state, context, runtime)`: the implementation. `prefetch` returns a data object that the DSL writes into context and appends as a tool message; `derive` and `command` return partial state directly, not wrapped in a `state` property.
+- `run(state, context, runtime)`: the implementation. `prefetch` returns a data object that the DSL writes into context and appends as a tool message; `derive` and `command` return partial state directly, not wrapped in a `state` property, and may return new `messages: ToolMessage[]` that the runtime appends.
 
 Inline one-off `run` implementations in the node declaration so the procedure reads top-to-bottom. Keep separate helper functions only for reused pure domain rules or complex calculations that have a stable business name.
 
@@ -149,15 +149,12 @@ derive("availableSlots", {
       dateRange: state.preferredDate,
     })
     return {
-      messages: [
-        ...state.messages,
-        {
-          role: "tool",
-          name: "connectors.service.getAvailableSlots",
-          call: { dealerId: state.dealer.id, start: state.preferredDate.start },
-          result: availableSlots,
-        },
-      ],
+      messages: [{
+        role: "tool",
+        name: "connectors.service.getAvailableSlots",
+        call: { dealerId: state.dealer.id, start: state.preferredDate.start },
+        result: availableSlots,
+      }],
     }
   },
 })
@@ -168,7 +165,7 @@ derive("availableSlots", {
 Patch LLM instructions must:
 
 - Extract structured updates from the latest user message.
-- Use `input.now` when resolving relative time.
+- Use the runtime current-time boundary from the patch system instruction when resolving relative time.
 - Avoid chain-of-thought, planning, final responses, connector calls, and invented records.
 - Only update fields the user can express directly.
 
@@ -208,11 +205,11 @@ Procedure text can reference external dependencies with markers such as `{@conne
 Render returns user-visible text only. Runtime does not carry or interpret response type.
 
 - Declare render with exactly string `name`, `progress`, and `instruction`. Do not pass a render function from workflow code.
-- The runtime calls the default LLM for render and passes the latest `state.messages` as messages, not a JSON object assembled from state/context.
+- The runtime calls the default LLM for render and passes the latest `state.messages` as messages, not a JSON object assembled from state/context. `messages` is runtime-added and must not be part of the workflow state schema/default.
 - Do not import or call `llm(...)`, `deps.llm`, or custom LLM clients from workflow code.
 - Do not return `type`, `kind`, `decision`, or runtime response-status labels.
 - Business lifecycle belongs in state, such as `draft`, `booking`, `confirmed`, `cancelled`, or domain-specific fields.
-- Prefer one render instruction that tells the LLM how to answer from the message log. If render needs data, put that data into `state.messages` through prefetch/derive/command tool messages before render.
+- Prefer one render instruction that tells the LLM how to answer from the message log. If render needs data, expose it before render through prefetch tool messages or by returning new `messages` from derive/command.
 - Do not create one render case per phrasing variant. If render needs a small guard, it should protect facts passed to the LLM, not recreate a response-type state machine.
 - For irreversible confirmation flows, the committed business state such as `state.booking` is the source of truth. Do not treat a bare `confirmed` flag as completion unless a command has actually committed the record.
 - Do not add one state intent per possible user question. Pass current booking/order/request facts and relevant history to the render LLM so it can answer naturally.

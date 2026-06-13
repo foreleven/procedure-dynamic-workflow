@@ -7,9 +7,11 @@ import { settlePrefetch } from "./prefetch.js";
 import type {
   WorkflowContext,
   WorkflowDefinition,
+  WorkflowRuntimeState,
   WorkflowNode,
   WorkflowNodeStage,
   WorkflowRuntimeInput,
+  WorkflowToolMessage,
   WorkflowTurn,
 } from "./workflow.js";
 import { defineWorkflowDefinition } from "./workflow.js";
@@ -19,7 +21,7 @@ export interface ProgramRuntime<
   TConnectors extends ConnectorCatalog = ConnectorCatalog,
 > {
   session: SessionContext;
-  preState: TState;
+  preState: WorkflowRuntimeState<TState>;
   turn: WorkflowTurn;
   message?: string;
 }
@@ -28,10 +30,14 @@ export type ProgramWhen<
   TState extends object,
   TConnectors extends ConnectorCatalog = ConnectorCatalog,
 > = (
-  state: TState,
+  state: WorkflowRuntimeState<TState>,
   context: WorkflowContext<TConnectors>,
   runtime: ProgramRuntime<TState, TConnectors>,
 ) => MaybePromise<boolean>;
+
+export type ProgramStatePatch<TState extends object> = Partial<TState> & {
+  messages?: WorkflowToolMessage[];
+};
 
 export interface ProgramNodeMetadata {
   /**
@@ -72,12 +78,12 @@ export interface ProgramPrefetchConfig<
 > extends ProgramNodeMetadata {
   when: ProgramWhen<TState, TConnectors>;
   cacheKey?: (
-    state: TState,
+    state: WorkflowRuntimeState<TState>,
     context: WorkflowContext<TConnectors>,
     runtime: ProgramRuntime<TState, TConnectors>,
   ) => MaybePromise<unknown>;
   run: (
-    state: TState,
+    state: WorkflowRuntimeState<TState>,
     context: WorkflowContext<TConnectors>,
     runtime: ProgramRuntime<TState, TConnectors>,
   ) => MaybePromise<Record<string, MaybePromise<unknown>>>;
@@ -89,10 +95,10 @@ export interface ProgramEffectConfig<
 > extends ProgramNodeMetadata {
   when: ProgramWhen<TState, TConnectors>;
   run: (
-    state: TState,
+    state: WorkflowRuntimeState<TState>,
     context: WorkflowContext<TConnectors>,
     runtime: ProgramRuntime<TState, TConnectors>,
-  ) => MaybePromise<Partial<TState> | void>;
+  ) => MaybePromise<ProgramStatePatch<TState> | void>;
 }
 
 export interface ProgramRenderConfig {
@@ -215,8 +221,14 @@ export function workflow(
         return effectConfig.when(input.state, input.context, toProgramRuntime(input));
       },
       run: async (input) => {
-        const statePatch = await effectConfig.run(input.state, input.context, toProgramRuntime(input));
-        return statePatch ? { state: statePatch } : undefined;
+        const result = await effectConfig.run(input.state, input.context, toProgramRuntime(input));
+        if (!result) return undefined;
+
+        const { messages, ...statePatch } = result;
+        return {
+          state: Object.keys(statePatch).length > 0 ? statePatch : undefined,
+          messages,
+        };
       },
     });
   }
@@ -247,7 +259,7 @@ async function shouldRunPrefetch<
   TState extends object,
   TConnectors extends ConnectorCatalog,
 >(
-  state: TState,
+  state: WorkflowRuntimeState<TState>,
   context: WorkflowContext<TConnectors>,
   runtime: ProgramRuntime<TState, TConnectors>,
   config: ProgramPrefetchConfig<TState, TConnectors>,

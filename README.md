@@ -10,14 +10,14 @@ This project explores a workflow runtime where a procedure is represented as a s
 - `command` performs irreversible or externally mutating actions.
 - `render` produces the next user-facing reply.
 
-The workflow owns business state and instructions. The runtime owns scheduling, LLM execution, connector injection, progress events, and conversation message history.
+The workflow owns business state and instructions. The runtime owns scheduling, connector injection, progress events, conversation message history, and LLM execution. The engine's `llm.ts` uses `@earendil-works/pi-ai` directly for OpenAI-compatible completion, structured tool calls, and streaming text.
 
 ## Repository Layout
 
 ```text
 packages/
-  workflow/      Workflow DSL, connector contracts, schemas, and OpenAI-compatible LLM client types.
-  engine/        Runtime engine, CLI, session handling, patch application, node execution, and rendering.
+  workflow/      Workflow DSL, connector contracts, schemas, and workflow artifact types.
+  engine/        Runtime engine, pi-ai LLM client, CLI, session handling, env wiring, patch application, node execution, and rendering.
 
 scenarios/
   maintenance/  Example vehicle-maintenance booking procedure, workflow artifact, mock connectors, and scenario runner.
@@ -65,6 +65,12 @@ Run the maintenance booking chat demo:
 npm run chat:maintenance
 ```
 
+Run one or more scripted turns for agent-driven testing:
+
+```bash
+npm run chat:maintenance -- --message "我想预约保养" --message "就用默认车辆"
+```
+
 Run the maintenance scenario suite:
 
 ```bash
@@ -80,7 +86,9 @@ npm run chat -- \
   --user-id user_feng
 ```
 
-Add `--debug` to print full engine and LLM logs. Without `--debug`, the CLI only prints workflow progress events and the final assistant reply.
+Add `--debug` to print full engine and LLM logs. Without `--debug`, the CLI only prints workflow progress events, LLM phase durations, and the assistant reply.
+
+Render output streams by default when the configured LLM client supports it. Add `--no-stream` to print only the final reply.
 
 ## Maintenance Example
 
@@ -89,7 +97,7 @@ The maintenance scenario compiles `scenarios/maintenance/procedure.md` into:
 - `workflow.yaml`: metadata and acceptance cases.
 - `maintenance_booking.workflow.ts`: state schema, patch instruction, prefetch/derive/command steps, and render instruction.
 - `connectors.ts`: customer, vehicle, dealer, slot, draft, and booking connector implementations.
-- `run.ts`: scenario runner with state assertions and semantic response checks.
+- `run.ts`: scenario runner with LLM semantic response checks.
 
 The example demonstrates:
 

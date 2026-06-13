@@ -20,11 +20,32 @@ import type {
   ConnectorOutput,
   ConnectorRegistry,
 } from "./connectors.js";
-import type { LlmClient } from "./llm.js";
 import { PrefetchStore } from "./prefetch.js";
 
+export interface WorkflowUserMessage {
+  role: "user";
+  content: string;
+}
+
+export interface WorkflowAssistantMessage {
+  role: "assistant";
+  content: string;
+}
+
+export interface WorkflowToolMessage {
+  role: "tool";
+  name: string;
+  call?: unknown;
+  result: unknown;
+}
+
+export type WorkflowMessage = WorkflowUserMessage | WorkflowAssistantMessage | WorkflowToolMessage;
+
+export type WorkflowRuntimeState<TState extends object> = TState & {
+  messages: WorkflowMessage[];
+};
+
 export interface WorkflowDeps<TConnectors extends ConnectorCatalog = ConnectorCatalog> {
-  llm: LlmClient;
   connectors: ConnectorRegistry<TConnectors>;
   now?: () => Date;
 }
@@ -172,8 +193,8 @@ export interface WorkflowRuntimeInput<
 > {
   session: SessionContext;
   context: WorkflowContext<TConnectors>;
-  state: TState;
-  preState: TState;
+  state: WorkflowRuntimeState<TState>;
+  preState: WorkflowRuntimeState<TState>;
   prefetch: PrefetchStore;
   deps: WorkflowDeps<TConnectors>;
   turn: WorkflowTurn;
@@ -198,6 +219,7 @@ export type PrefetchFunction<
 
 export interface WorkflowPatch<TState extends object> {
   state?: Partial<TState>;
+  messages?: WorkflowToolMessage[];
 }
 
 export type WorkflowFunction<
@@ -285,7 +307,7 @@ export interface WorkflowInstance<TState extends object = JsonRecord> {
   version: string;
   artifact: WorkflowDefinition<TState>;
   context: WorkflowContext;
-  state: TState;
+  state: WorkflowRuntimeState<TState>;
   prefetch: PrefetchStore;
 }
 

@@ -1,16 +1,18 @@
+import { fauxAssistantMessage, type Message } from "@earendil-works/pi-ai";
 import {
   type JsonRecord,
-  type LlmMessage,
   type MessagePatch,
   PrefetchStore,
   type RenderPolicy,
   type RenderResponse,
   type WorkflowDefinition,
+  type WorkflowMessage,
   WorkflowContextStore,
   type WorkflowId,
   type WorkflowInstance,
   type WorkflowNode,
   type WorkflowNodeStage,
+  type WorkflowRuntimeState,
   type WorkflowTurn,
 } from "@pac/workflow";
 import { applyObjectPatch, applySessionPatch, cloneDefault, normalizeMessagePatch } from "./patching.js";
@@ -33,6 +35,7 @@ export class WorkflowEngine {
   private readonly deps: WorkflowEngineOptions["deps"];
   private readonly maxProgramRounds: number;
   private readonly logger?: WorkflowEngineOptions["logger"];
+  private readonly onResponseDelta?: WorkflowEngineOptions["onResponseDelta"];
 
   constructor(options: WorkflowEngineOptions) {
     for (const candidate of options.workflows) {
@@ -43,10 +46,15 @@ export class WorkflowEngine {
     this.deps = options.deps;
     this.maxProgramRounds = options.maxProgramRounds ?? 6;
     this.logger = options.logger;
+    this.onResponseDelta = options.onResponseDelta;
   }
 
   createSession(input: CreateSessionInput): EngineSession {
-    return createEngineSession(input);
+    const session = createEngineSession(input);
+    for (const workflowId of session.activeWorkflowIds) {
+      this.ensureInstance(session, workflowId);
+    }
+    return session;
   }
 
   async onMessage(message: string, session: EngineSession): Promise<EngineTurnResult> {
@@ -55,8 +63,8 @@ export class WorkflowEngine {
     const turnStartedAt = this.logStart("engine", "turn", { message });
 
     const targets = this.selectTargetWorkflows(message, session, traces);
-    const preStates = new Map<WorkflowId, JsonRecord>(
-      targets.instances.map((instance) => [instance.id, cloneDefault(instance.state)]),
+    const preStates = new Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>(
+      targets.instances.map((instance) => [instance.id, withRuntimeMessages(cloneDefault(instance.state))]),
     );
     for (const instance of targets.instances) {
       if (appendWorkflowMessage(instance.state, { role: "user", content: message })) {
@@ -81,7 +89,7 @@ export class WorkflowEngine {
       ),
     );
     const patches = await Promise.all(
-      targets.instances.map((instance) => this.extractPatch(instance, session, message, traces, preStates)),
+      targets.instances.map((instance) => this.extractPatch(instance, traces)),
     );
 
     this.applyPatches(targets.instances, patches, session, traces, turnChanges);
@@ -173,12 +181,8 @@ export class WorkflowEngine {
 
   private async extractPatch(
     instance: RuntimeInstance,
-    session: EngineSession,
-    message: string,
     traces: EngineTraceEvent[],
-    preStates: Map<WorkflowId, JsonRecord>,
   ): Promise<MessagePatch> {
-    const now = (this.deps.now ?? (() => new Date()))().toISOString();
     const name = `${instance.id}_patch`;
     if (instance.artifact.patch.progress) {
       this.emitProgress(traces, instance.id, {
@@ -191,20 +195,13 @@ export class WorkflowEngine {
     const startedAt = this.logStart(instance.id, "llm.patch", { name, model: instance.artifact.patch.model ?? "default" });
 
     try {
+      const now = (this.deps.now ?? (() => new Date()))().toISOString();
       const patch = await this.deps.llm.structured({
         name,
         model: instance.artifact.patch.model,
-        instruction: instance.artifact.patch.instruction,
+        instruction: patchInstructionForRuntime(instance.artifact.patch.instruction, now),
         schema: instance.artifact.patch.schema,
-        input: {
-          message,
-          now,
-          ack: instance.context.getAck(),
-          session: patchSessionForLlm(session),
-          context: instance.context.toJSON(),
-          preState: preStateFor(preStates, instance),
-          state: instance.state,
-        },
+        messages: messagesForPatch(instance.state),
       });
 
       const normalized = normalizeMessagePatch(patch);
@@ -258,7 +255,7 @@ export class WorkflowEngine {
       version: artifact.version,
       artifact,
       context: new WorkflowContextStore(this.deps.connectors),
-      state: artifact.stateSchema.parse(cloneDefault(artifact.state)),
+      state: withRuntimeMessages(artifact.stateSchema.parse(cloneDefault(artifact.state))),
       prefetch: new PrefetchStore(),
     };
 
@@ -272,7 +269,7 @@ export class WorkflowEngine {
     message: string,
     traces: EngineTraceEvent[],
     turnChanges: Map<WorkflowId, MutableTurnChanges>,
-    preStates: Map<WorkflowId, JsonRecord>,
+    preStates: Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>,
     stage: WorkflowNodeStage,
   ): Promise<void> {
     await this.runNodeStageRound(instance, session, message, traces, turnChanges, preStates, stage);
@@ -345,7 +342,7 @@ export class WorkflowEngine {
     message: string,
     traces: EngineTraceEvent[],
     turnChanges: Map<WorkflowId, MutableTurnChanges>,
-    preStates: Map<WorkflowId, JsonRecord>,
+    preStates: Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>,
     stage: WorkflowNodeStage,
   ): Promise<void> {
     for (let round = 0; round < this.maxProgramRounds; round += 1) {
@@ -371,7 +368,7 @@ export class WorkflowEngine {
     message: string,
     traces: EngineTraceEvent[],
     turnChanges: Map<WorkflowId, MutableTurnChanges>,
-    preStates: Map<WorkflowId, JsonRecord>,
+    preStates: Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>,
     stage: WorkflowNodeStage,
   ): Promise<boolean> {
     let changed = false;
@@ -429,7 +426,7 @@ export class WorkflowEngine {
     message: string,
     traces: EngineTraceEvent[],
     turnChanges: Map<WorkflowId, MutableTurnChanges>,
-    preStates: Map<WorkflowId, JsonRecord>,
+    preStates: Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>,
     node: WorkflowNode<JsonRecord>,
   ): Promise<{ changed: boolean; detail: unknown }> {
     const changes = turnChangesFor(turnChanges, instance.id);
@@ -480,11 +477,15 @@ export class WorkflowEngine {
     }
 
     const result = await node.run(input);
+    const appendedMessages = appendWorkflowMessages(instance.state, result?.messages ?? []);
     const contextChangedKeys = instance.context.changedKeysSince(contextRevision);
     if (!result) {
       recordContextChanges(changes, contextChangedKeys);
-      const changed = contextChangedKeys.length > 0;
-      const detail = { changed, contextChangedKeys };
+      if (appendedMessages.length > 0) {
+        recordStateChanges(changes, ["messages"]);
+      }
+      const changed = contextChangedKeys.length > 0 || appendedMessages.length > 0;
+      const detail = { changed, contextChangedKeys, appendedMessages: appendedMessages.length };
       if (changed) {
         traces.push({
           workflowId: instance.id,
@@ -502,12 +503,20 @@ export class WorkflowEngine {
     const invalidated = this.applyInvalidation(instance, stateChanged, traces);
     recordContextChanges(changes, contextChangedKeys);
     recordStateChanges(changes, stateChanged);
+    if (appendedMessages.length > 0) {
+      recordStateChanges(changes, ["messages"]);
+    }
     recordInvalidatedState(changes, invalidated);
-    const changed = contextChangedKeys.length > 0 || stateChanged.length > 0 || invalidated.length > 0;
+    const changed =
+      contextChangedKeys.length > 0 ||
+      stateChanged.length > 0 ||
+      invalidated.length > 0 ||
+      appendedMessages.length > 0;
     const detail = {
       changed,
       contextChangedKeys,
       statePatch: result.state,
+      appendedMessages: appendedMessages.length,
       dirtyFields: stateChanged,
       invalidated,
     };
@@ -545,7 +554,7 @@ export class WorkflowEngine {
     message: string,
     traces: EngineTraceEvent[],
     turnChanges: Map<WorkflowId, MutableTurnChanges>,
-    preStates: Map<WorkflowId, JsonRecord>,
+    preStates: Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>,
   ): Promise<Array<{ workflowId: WorkflowId; response: RenderResponse }>> {
     return Promise.all(
       instances.map(async (instance) => {
@@ -590,7 +599,7 @@ export class WorkflowEngine {
     session: EngineSession,
     message: string,
     turnChanges: Map<WorkflowId, MutableTurnChanges>,
-    preStates: Map<WorkflowId, JsonRecord>,
+    preStates: Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>,
     traces: EngineTraceEvent[],
   ): Promise<RenderResponse> {
     const render = instance.artifact.render;
@@ -614,11 +623,28 @@ export class WorkflowEngine {
       description: "Render the next assistant reply from the workflow message log.",
     });
 
-    const text = await this.deps.llm.text({
+    const request = {
       name: render.name,
       instruction: render.instruction,
       messages: messagesForRender(instance.state),
-    });
+    };
+
+    if (this.deps.llm.streamText) {
+      let text = "";
+      for await (const event of this.deps.llm.streamText(request)) {
+        if (event.type === "text_delta") {
+          text += event.delta;
+          this.onResponseDelta?.({ workflowId: instance.id, delta: event.delta });
+          continue;
+        }
+
+        text = event.text;
+      }
+
+      return { text: text.trim() };
+    }
+
+    const text = await this.deps.llm.text(request);
 
     return { text: text.trim() };
   }
@@ -638,15 +664,33 @@ export class WorkflowEngine {
 
 }
 
-function appendWorkflowMessage(state: JsonRecord, message: JsonRecord): boolean {
-  if (!Array.isArray(state.messages)) return false;
-
+function appendWorkflowMessage(state: WorkflowRuntimeState<JsonRecord>, message: WorkflowMessage): boolean {
   state.messages = [...state.messages, message];
   return true;
 }
 
-function preStateFor(preStates: Map<WorkflowId, JsonRecord>, instance: RuntimeInstance): JsonRecord {
-  return preStates.get(instance.id) ?? cloneDefault(instance.state);
+function appendWorkflowMessages(
+  state: WorkflowRuntimeState<JsonRecord>,
+  messages: readonly WorkflowMessage[],
+): WorkflowMessage[] {
+  if (messages.length === 0) return [];
+  state.messages = [...state.messages, ...messages];
+  return [...messages];
+}
+
+function withRuntimeMessages(state: JsonRecord): WorkflowRuntimeState<JsonRecord> {
+  const messages = Array.isArray(state.messages) ? state.messages : [];
+  return {
+    ...state,
+    messages: messages.filter(isWorkflowMessage),
+  };
+}
+
+function preStateFor(
+  preStates: Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>,
+  instance: RuntimeInstance,
+): WorkflowRuntimeState<JsonRecord> {
+  return preStates.get(instance.id) ?? withRuntimeMessages(cloneDefault(instance.state));
 }
 
 interface MutableTurnChanges {
@@ -766,17 +810,16 @@ function hasParser(value: unknown): value is { parse: (input: unknown) => unknow
   return Boolean(value) && typeof value === "object" && typeof (value as { parse?: unknown }).parse === "function";
 }
 
-function patchSessionForLlm(session: EngineSession) {
-  return {
-    facts: session.facts,
-    preferences: session.preferences,
-    goals: session.goals,
-    constraints: session.constraints,
-  };
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function patchInstructionForRuntime(instruction: string, now: string): string {
+  return `${instruction}
+
+Runtime boundary:
+- Current time is ${now}.
+- Use the current time only to resolve relative dates and times from the message log.`;
 }
 
 function sameValue(left: unknown, right: unknown): boolean {
@@ -801,31 +844,50 @@ function mapForLog(_key: string, value: unknown): unknown {
   return value;
 }
 
-function messagesForRender(state: JsonRecord): LlmMessage[] {
+function messagesForRender(state: JsonRecord): Message[] {
   const messages = Array.isArray(state.messages) ? state.messages : [];
   return messages
-    .map(toLlmMessage)
-    .filter((message): message is LlmMessage => Boolean(message));
+    .map(toPiMessage)
+    .filter((message): message is Message => Boolean(message));
 }
 
-function toLlmMessage(message: unknown): LlmMessage | undefined {
+function messagesForPatch(state: JsonRecord): Message[] {
+  return messagesForRender(state);
+}
+
+function isWorkflowMessage(message: unknown): message is WorkflowMessage {
+  if (!message || typeof message !== "object") return false;
+  const record = message as JsonRecord;
+  if (record.role === "user" || record.role === "assistant") {
+    return typeof record.content === "string";
+  }
+  if (record.role === "tool") {
+    return typeof record.name === "string" && "result" in record;
+  }
+  return false;
+}
+
+function toPiMessage(message: unknown): Message | undefined {
   if (!message || typeof message !== "object") return undefined;
   const record = message as JsonRecord;
   if (record.role === "user" && typeof record.content === "string") {
-    return { role: "user", content: record.content };
+    return userMessage(record.content);
   }
   if (record.role === "assistant" && typeof record.content === "string") {
-    return { role: "assistant", content: record.content };
+    return fauxAssistantMessage(record.content);
   }
   if (record.role === "tool") {
-    return {
-      role: "tool",
-      name: typeof record.name === "string" ? record.name : undefined,
-      content: JSON.stringify({
+    const name = typeof record.name === "string" ? record.name : "tool";
+    return userMessage(
+      `Tool ${name} result:\n${JSON.stringify({
         call: record.call,
         result: record.result,
-      }, mapForLog, 2),
-    };
+      }, mapForLog, 2)}`,
+    );
   }
   return undefined;
+}
+
+function userMessage(content: string): Message {
+  return { role: "user", content, timestamp: Date.now() };
 }

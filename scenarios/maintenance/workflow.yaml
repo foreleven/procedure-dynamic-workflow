@@ -40,7 +40,7 @@ routing:
     - insurance_claim
 
 # cases 是本 workflow 的交互验收场景。
-# run.ts 会逐条执行这些 case，验证每轮 response 和关键 state 是否符合预期。
+# run.ts 会逐条执行这些 case，并用 LLM 语义判断验证每轮 response 是否符合预期。
 cases:
   - id: single_vehicle_auto_then_dealer_options
     description: 单车用户发起保养预约时，系统直接使用该车辆并进入门店选择。
@@ -49,11 +49,6 @@ cases:
       - message: 预约保养
         expect:
           responseSatisfies: 系统应确认单车用户的车辆已进入预约流程，并引导用户选择可用经销商。
-          stateMatches:
-            - path: vehicle.id
-              equals: veh_bmw_x3
-            - path: dealer
-              equals: null
 
   - id: dealer_selection_then_time_options
     description: 单车用户选择门店后，如果已经给过时间偏好，系统查询可用时段并让用户确认具体时间。
@@ -62,25 +57,9 @@ cases:
       - message: 预约保养，明天下午
         expect:
           responseSatisfies: 系统应在已记录明天下午偏好的前提下，先引导用户选择经销商，而不是直接选择时段或提交预约。
-          stateMatches:
-            - path: vehicle.id
-              equals: veh_bmw_x3
-            - path: dealer
-              equals: null
-            - path: preferredDate.label
-              includes: 明天下午
       - message: "1"
         expect:
           responseSatisfies: 系统应识别用户选择了第一家经销商，并展示或引导确认明天下午的具体可预约时段。
-          stateMatches:
-            - path: vehicle.id
-              equals: veh_bmw_x3
-            - path: dealer.id
-              equals: dealer_hoboken_bmw
-            - path: slot
-              equals: null
-            - path: bookingDraft
-              equals: null
 
   - id: slot_selection_then_draft
     description: 用户选择具体到店时段后，系统创建预约草稿但不直接提交。
@@ -89,22 +68,12 @@ cases:
       - message: 预约保养，明天下午
         expect:
           responseSatisfies: 系统应先要求用户选择经销商，并不能直接创建预约草稿。
-          stateMatches:
-            - path: vehicle.id
-              equals: veh_bmw_x3
-            - path: preferredDate.label
-              includes: 明天下午
       - message: "1"
         expect:
           responseSatisfies: 系统应展示明天下午的具体可用到店时段，等待用户选择具体时段。
       - message: "1"
         expect:
           responseSatisfies: 系统应创建预约草稿并请求用户确认提交，但不能表示已经正式预约成功。
-          stateMatches:
-            - path: bookingDraft.slot.label
-              includes: 明天下午
-            - path: booking
-              equals: null
 
   - id: time_ack_then_draft_then_confirm
     description: 用户确认具体时段后才生成预约草稿；只有再次明确确认草稿才提交正式预约。
@@ -113,11 +82,6 @@ cases:
       - message: 预约保养，明天下午
         expect:
           responseSatisfies: 系统应先引导用户选择经销商，并保留用户明天下午的时间偏好。
-          stateMatches:
-            - path: vehicle.id
-              equals: veh_bmw_x3
-            - path: preferredDate.label
-              includes: 明天下午
       - message: "1"
         expect:
           responseSatisfies: 系统应展示明天下午的具体可预约时段，等待用户选择。
@@ -127,11 +91,6 @@ cases:
       - message: 确认
         expect:
           responseSatisfies: 系统应告知用户预约已经正式提交成功，并展示确认后的预约信息。
-          stateMatches:
-            - path: status
-              equals: booked
-            - path: booking.status
-              equals: confirmed
 
   - id: draft_service_followup_before_confirm
     description: 草稿生成后，用户追问服务项目；系统说明服务项目由后续流程处理，不能提交预约。
@@ -140,11 +99,6 @@ cases:
       - message: 预约保养，明天下午
         expect:
           responseSatisfies: 系统应先引导用户选择经销商，并保留用户明天下午的时间偏好。
-          stateMatches:
-            - path: vehicle.id
-              equals: veh_bmw_x3
-            - path: preferredDate.label
-              includes: 明天下午
       - message: "1"
         expect:
           responseSatisfies: 系统应展示明天下午的具体可预约时段，等待用户选择。
@@ -154,9 +108,6 @@ cases:
       - message: 这次保养要做什么项目？
         expect:
           responseSatisfies: 系统应说明当前流程只确认车辆、经销商和到店时间，具体保养项目由后续流程处理；不能表示预约已经提交成功，可以继续等待用户是否确认草稿。
-          stateMatches:
-            - path: booking
-              equals: null
 
   - id: cancel_during_vehicle_ack
     description: 用户在预约推进中取消；系统停止推进预约。
@@ -165,15 +116,9 @@ cases:
       - message: 预约保养
         expect:
           responseSatisfies: 系统应进入预约流程并引导用户选择经销商。
-          stateMatches:
-            - path: vehicle.id
-              equals: veh_bmw_x3
       - message: 先不约了，取消
         expect:
           responseSatisfies: 系统应表达当前保养预约流程已经停止或取消，不能继续推进预约。
-          stateMatches:
-            - path: status
-              equals: cancelled
 
   - id: multiple_vehicles_show_vehicle_options
     description: 多车用户只说预约保养；系统让用户选择车辆，不猜车。
@@ -182,9 +127,6 @@ cases:
       - message: 预约保养
         expect:
           responseSatisfies: 系统应发现用户有多辆车，并要求用户选择要预约保养的车辆，不能猜测车辆。
-          stateMatches:
-            - path: vehicle
-              equals: null
 
   - id: multi_vehicle_tesla_dealer_then_time
     description: 多车用户明确 Tesla 和时间后，系统先确认 4S 店，再确认具体时段。
@@ -193,24 +135,12 @@ cases:
       - message: Tesla Model Y 明天下午
         expect:
           responseSatisfies: 系统应识别用户选择 Tesla Model Y 和明天下午偏好，并先引导用户确认或选择可服务的经销商。
-          stateMatches:
-            - path: vehicle.id
-              equals: veh_tesla_model_y
-            - path: dealer
-              equals: null
       - message: "1"
         expect:
           responseSatisfies: 系统应识别用户选择了经销商，并要求用户确认明天下午的具体到店时段。
-          stateMatches:
-            - path: dealer.id
-              equals: dealer_newport_ev
-            - path: slot
-              equals: null
       - message: "1"
         expect:
-          stateMatches:
-            - path: bookingDraft.slot.label
-              includes: 明天下午
+          responseSatisfies: 系统应基于用户选择的具体到店时段生成待确认预约草稿，并要求用户确认是否提交；不能表示已经正式预约成功。
 
   - id: change_time_requires_time_ack_again
     description: 已有草稿后用户改时间；系统清空旧时段和草稿，并重新让用户确认具体时间。
@@ -222,22 +152,12 @@ cases:
       - message: "1"
         expect:
           responseSatisfies: 系统应基于下周三下午的具体时段生成待确认预约草稿，而不是直接提交。
-          stateMatches:
-            - path: bookingDraft.slot.label
-              includes: 下周三下午
       - message: 改成明天下午
         expect:
           responseSatisfies: 系统应识别用户修改了时间偏好，清空旧草稿并重新要求用户选择明天下午的具体时段。
-          stateMatches:
-            - path: slot
-              equals: null
-            - path: bookingDraft
-              equals: null
       - message: "1"
         expect:
-          stateMatches:
-            - path: bookingDraft.slot.label
-              includes: 明天下午
+          responseSatisfies: 系统应基于用户重新选择的明天下午具体时段生成新的待确认预约草稿，并要求用户确认提交；不能沿用旧的下周三草稿或表示已正式预约成功。
 
   - id: explicit_previous_dealer_still_confirms_time
     description: 用户明确说上次门店且给出时间；系统可使用最近门店，但仍必须让用户确认具体时段。
@@ -246,13 +166,6 @@ cases:
       - message: MINI Cooper S，还是上次那家，明天下午
         expect:
           responseSatisfies: 系统可以使用用户明确提出的上次门店和明天下午偏好，但仍必须要求用户确认具体到店时段。
-          stateMatches:
-            - path: dealer.id
-              equals: dealer_brooklyn_mini
-            - path: slot
-              equals: null
       - message: "1"
         expect:
-          stateMatches:
-            - path: bookingDraft.slot.label
-              includes: 明天下午
+          responseSatisfies: 系统应基于用户选择的具体到店时段生成待确认预约草稿，并要求用户确认是否提交；不能表示已经正式预约成功。

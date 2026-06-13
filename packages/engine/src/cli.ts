@@ -1,3 +1,5 @@
+import "dotenv/config";
+
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -5,8 +7,8 @@ import readline from "node:readline";
 import process from "node:process";
 import { createConnectorRegistry, ConnectorRegistry, type AnyConnectorTool } from "@pac/workflow";
 import {
+  createLlmClient,
   WorkflowEngine,
-  createOpenAiLlmFromEnv,
   type EngineSession,
   type EngineTraceEvent,
   type WorkflowDefinitionInput,
@@ -19,6 +21,8 @@ interface CliOptions {
   baseURL?: string;
   userId: string;
   sessionId: string;
+  messages: string[];
+  stream: boolean;
   showTraces: boolean;
   debug: boolean;
 }
@@ -27,6 +31,8 @@ function parseArgs(argv: string[]): CliOptions {
   const options: CliOptions = {
     userId: "demo_user",
     sessionId: `session_${Date.now()}`,
+    messages: [],
+    stream: true,
     showTraces: false,
     debug: false,
   };
@@ -78,6 +84,17 @@ function parseArgs(argv: string[]): CliOptions {
       continue;
     }
 
+    if ((arg === "--message" || arg === "-m" || arg === "--once") && next) {
+      options.messages.push(next);
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--no-stream") {
+      options.stream = false;
+      continue;
+    }
+
     if (arg === "--traces") {
       options.showTraces = true;
       continue;
@@ -105,11 +122,12 @@ function parseArgs(argv: string[]): CliOptions {
 
 function printUsage(): void {
   console.log(`Usage:
-  npm run chat -- --workflow <workflow-file> [--connectors <connectors-file>] [--model <model>] [--base-url <url>] [--user-id <id>] [--session-id <id>] [--traces] [--debug]
+  npm run chat -- --workflow <workflow-file> [--connectors <connectors-file>] [--model <model>] [--base-url <url>] [--user-id <id>] [--session-id <id>] [--message <text>] [--no-stream] [--traces] [--debug]
 
 Examples:
   npm run chat:maintenance
   npm run chat -- --workflow scenarios/maintenance/maintenance_booking.workflow.ts --connectors scenarios/maintenance/connectors.ts
+  npm run chat:maintenance -- --message "我想预约保养"
 
 Environment:
   OPENAI_MODEL      Default model used by patch extraction and render
@@ -119,6 +137,7 @@ Environment:
 Commands inside chat:
   /help      Show commands
   /state     Print current workflow state
+  /messages  Print runtime message log
   /context   Print current workflow context
   /session   Print session facts/preferences/goals
   /traces    Print last turn traces
@@ -215,6 +234,12 @@ function createLogger(debug: boolean): (line: string) => void {
     const progress = progressFromLogLine(line);
     if (progress) {
       console.log(progress);
+      return;
+    }
+
+    const llmDuration = llmDurationFromLogLine(line);
+    if (llmDuration) {
+      console.log(llmDuration);
     }
   };
 }
@@ -231,6 +256,16 @@ function progressFromLogLine(line: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function llmDurationFromLogLine(line: string): string | undefined {
+  const match = /^\[llm\] ([^ ]+) done (\d+)ms/.exec(line);
+  if (!match) return undefined;
+
+  const [, phase, durationMs] = match;
+  if (phase === "text.stream") return undefined;
+
+  return `- LLM ${phase} 耗时: ${durationMs}ms`;
 }
 
 function mapToJson(_key: string, value: unknown): unknown {
@@ -264,11 +299,8 @@ async function main(): Promise<void> {
   const workflow = await loadWorkflow(workflowPath);
   const connectors = await loadConnectors(options.connectorsPath);
   const logger = createLogger(options.debug);
-  const llm = createOpenAiLlmFromEnv({
-    model: options.model,
-    baseURL: options.baseURL,
-    logger: options.debug ? logger : undefined,
-  });
+  const llm = createLlmClient();
+  let streamedChars = 0;
 
   const engine = new WorkflowEngine({
     workflows: [workflow],
@@ -278,6 +310,12 @@ async function main(): Promise<void> {
       now: () => new Date(),
     },
     logger,
+    onResponseDelta: options.stream
+      ? ({ delta }) => {
+          streamedChars += delta.length;
+          process.stdout.write(delta);
+        }
+      : undefined,
   });
 
   const session = engine.createSession({
@@ -289,6 +327,83 @@ async function main(): Promise<void> {
   let lastTraces: EngineTraceEvent[] = [];
 
   console.log(`Loaded workflow: ${workflow.id}@${workflow.version}`);
+
+  const handleLine = async (rawLine: string): Promise<boolean> => {
+    const line = rawLine.trim();
+
+    if (!line) return true;
+
+    if (line === "/exit" || line === "/quit") {
+      return false;
+    }
+
+    if (line === "/help") {
+      console.log("Commands: /state, /messages, /context, /session, /traces, /exit");
+      return true;
+    }
+
+    const instance = engine.getInstance(session, workflow.id);
+
+    if (line === "/state") {
+      printJson(instance?.state ?? null);
+      return true;
+    }
+
+    if (line === "/messages") {
+      printJson(instance?.state.messages ?? []);
+      return true;
+    }
+
+    if (line === "/context") {
+      printJson(instance?.context.toJSON() ?? null);
+      return true;
+    }
+
+    if (line === "/session") {
+      printJson(sessionSnapshot(session));
+      return true;
+    }
+
+    if (line === "/traces") {
+      printJson(lastTraces);
+      return true;
+    }
+
+    try {
+      streamedChars = 0;
+      const time = performance.now();
+      const result = await engine.onMessage(line, session);
+      lastTraces = result.traces;
+      const endTime = performance.now();
+
+      if (streamedChars > 0) {
+        process.stdout.write(`\n[耗时: ${(endTime - time).toFixed(2)}ms]\n`);
+      } else {
+        printResponse(`${result.response.text}\n[耗时: ${(endTime - time).toFixed(2)}ms]`);
+      }
+
+      if (options.showTraces) {
+        printJson(result.traces);
+      }
+    } catch (error) {
+      if (streamedChars > 0) {
+        process.stdout.write("\n");
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      printResponse(`[error] ${message}`);
+    }
+
+    return true;
+  };
+
+  if (options.messages.length > 0) {
+    for (const message of options.messages) {
+      const shouldContinue = await handleLine(message);
+      if (!shouldContinue) break;
+    }
+    return;
+  }
+
   console.log("Type a message. Use /help for commands.");
 
   const rl = readline.createInterface({
@@ -306,63 +421,8 @@ async function main(): Promise<void> {
   writePrompt();
 
   for await (const rawLine of rl) {
-    const line = rawLine.trim();
-
-    if (!line) {
-      writePrompt();
-      continue;
-    }
-
-    if (line === "/exit" || line === "/quit") {
-      break;
-    }
-
-    if (line === "/help") {
-      console.log("Commands: /state, /context, /session, /traces, /exit");
-      writePrompt();
-      continue;
-    }
-
-    const instance = engine.getInstance(session, workflow.id);
-
-    if (line === "/state") {
-      printJson(instance?.state ?? null);
-      writePrompt();
-      continue;
-    }
-
-    if (line === "/context") {
-      printJson(instance?.context.toJSON() ?? null);
-      writePrompt();
-      continue;
-    }
-
-    if (line === "/session") {
-      printJson(sessionSnapshot(session));
-      writePrompt();
-      continue;
-    }
-
-    if (line === "/traces") {
-      printJson(lastTraces);
-      writePrompt();
-      continue;
-    }
-
-    try {
-      const time = performance.now();
-      const result = await engine.onMessage(line, session);
-      lastTraces = result.traces;
-      const endTime = performance.now();
-      printResponse(`${result.response.text}\n[耗时: ${(endTime - time).toFixed(2)}ms]`);
-
-      if (options.showTraces) {
-        printJson(result.traces);
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      printResponse(`[error] ${message}`);
-    }
+    const shouldContinue = await handleLine(rawLine);
+    if (!shouldContinue) break;
 
     writePrompt();
   }

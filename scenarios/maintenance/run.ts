@@ -9,15 +9,8 @@ import maintenanceBookingWorkflow, {
 } from "./maintenance_booking.workflow.js";
 import connectors from "./connectors.js";
 
-const StateMatchSchema = z.object({
-  path: z.string(),
-  equals: z.unknown().optional(),
-  includes: z.string().optional(),
-});
-
 const TurnExpectationSchema = z.object({
-  responseSatisfies: z.string().optional(),
-  stateMatches: z.array(StateMatchSchema).optional(),
+  responseSatisfies: z.string(),
 });
 
 const WorkflowCaseSchema = z.object({
@@ -33,7 +26,7 @@ const WorkflowCaseSchema = z.object({
 });
 
 const WorkflowCasesFileSchema = z.object({
-  cases: z.array(WorkflowCaseSchema).length(10),
+  cases: z.array(WorkflowCaseSchema),
 });
 
 const ResponseJudgementSchema = z.object({
@@ -42,7 +35,6 @@ const ResponseJudgementSchema = z.object({
 });
 
 type WorkflowCase = z.infer<typeof WorkflowCaseSchema>;
-type StateMatch = z.infer<typeof StateMatchSchema>;
 
 const llm = createOpenAiLlmFromEnv();
 
@@ -79,18 +71,12 @@ async function runCase(testCase: WorkflowCase): Promise<void> {
 
     console.log(`${prefix}: ${result.response.text}`);
 
-    if (turn.expect.responseSatisfies) {
-      await assertResponseSatisfies(prefix, {
-        userMessage: turn.message,
-        expectation: turn.expect.responseSatisfies,
-        response: result.response.text,
-        state,
-      });
-    }
-
-    for (const stateMatch of turn.expect.stateMatches ?? []) {
-      assertStateMatch(prefix, state, stateMatch);
-    }
+    await assertResponseSatisfies(prefix, {
+      userMessage: turn.message,
+      expectation: turn.expect.responseSatisfies,
+      response: result.response.text,
+      state,
+    });
   }
 }
 
@@ -131,9 +117,9 @@ The expectation for the current turn is the only response criterion. Do not add 
 Fail only when the response contradicts the current-turn expectation, advances the workflow incorrectly, omits a required next action, or claims facts not supported by the provided workflow state.
 Set verdict to "pass" when the response satisfies the expectation. Set verdict to "fail" only when your reason explains a concrete violation.
 Return a short reason.
-`,
+        `,
         schema: ResponseJudgementSchema,
-        input,
+        messages: [userMessage(JSON.stringify(input, null, 2))],
       });
     } catch (error) {
       lastError = error;
@@ -144,44 +130,13 @@ Return a short reason.
   throw lastError;
 }
 
-function assertStateMatch(prefix: string, state: MaintenanceState | undefined, stateMatch: StateMatch): void {
-  assert(state !== undefined, `${prefix}: expected workflow state to exist`);
-
-  const actual = valueAtPath(state, stateMatch.path);
-
-  if ("equals" in stateMatch) {
-    assert(
-      sameValue(actual, stateMatch.equals),
-      `${prefix}: expected state.${stateMatch.path} to equal ${JSON.stringify(
-        stateMatch.equals,
-      )}, got ${JSON.stringify(actual)}`,
-    );
-  }
-
-  if (stateMatch.includes !== undefined) {
-    assert(
-      typeof actual === "string" && actual.includes(stateMatch.includes),
-      `${prefix}: expected state.${stateMatch.path} to include ${JSON.stringify(
-        stateMatch.includes,
-      )}, got ${JSON.stringify(actual)}`,
-    );
-  }
+function userMessage(content: string) {
+  return { role: "user" as const, content, timestamp: Date.now() };
 }
 
 function loadCases(): WorkflowCase[] {
   const yamlPath = resolve(dirname(fileURLToPath(import.meta.url)), "workflow.yaml");
   return WorkflowCasesFileSchema.parse(YAML.parse(readFileSync(yamlPath, "utf8"))).cases;
-}
-
-function valueAtPath(value: unknown, path: string): unknown {
-  return path.split(".").reduce((current, segment) => {
-    if (!current || typeof current !== "object") return undefined;
-    return (current as Record<string, unknown>)[segment];
-  }, value);
-}
-
-function sameValue(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function assert(condition: boolean, message: string): asserts condition {

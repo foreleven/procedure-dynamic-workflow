@@ -7,6 +7,7 @@ import type {
   WorkflowId,
   WorkflowInstance,
 } from "@pac/workflow";
+import type { LlmClient } from "./llm.js";
 
 export type RuntimeWorkflow = WorkflowDefinition<JsonRecord, unknown>;
 export type RuntimeInstance = WorkflowInstance<JsonRecord>;
@@ -38,11 +39,16 @@ export interface CreateSessionInput {
   constraints?: string[];
 }
 
+export interface EngineDeps extends WorkflowDeps {
+  llm: LlmClient;
+}
+
 export interface WorkflowEngineOptions {
   workflows: readonly WorkflowDefinitionInput[];
-  deps: WorkflowDeps;
+  deps: EngineDeps;
   maxProgramRounds?: number;
   logger?: (line: string) => void;
+  onResponseDelta?: (event: { workflowId: WorkflowId; delta: string }) => void;
 }
 
 export interface EngineTraceEvent {

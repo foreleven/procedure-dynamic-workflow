@@ -1,6 +1,7 @@
 import {
   loadWorkflowMetadata,
   type WorkflowContext,
+  type WorkflowToolMessage,
   workflow,
   z,
 } from "@pac/workflow";
@@ -43,12 +44,6 @@ const BookingSchema = z.object({
   notes: z.array(z.string()),
 });
 
-const WorkflowMessageSchema = z.discriminatedUnion("role", [
-  z.object({ role: z.literal("user"), content: z.string() }),
-  z.object({ role: z.literal("assistant"), content: z.string() }),
-  z.object({ role: z.literal("tool"), name: z.string(), call: z.unknown(), result: z.unknown() }),
-]);
-
 const MaintenanceStatusSchema = z.enum([
   "collecting",
   "draft_ready",
@@ -58,7 +53,6 @@ const MaintenanceStatusSchema = z.enum([
 ]);
 
 const MaintenanceStateSchema = z.object({
-  messages: z.array(WorkflowMessageSchema),
   status: MaintenanceStatusSchema,
   vehicle: VehicleSchema.nullable(),
   dealer: DealerSchema.nullable(),
@@ -71,9 +65,9 @@ const MaintenanceStateSchema = z.object({
 export type MaintenanceState = z.infer<typeof MaintenanceStateSchema>;
 
 type Customer = z.infer<typeof CustomerSchema>;
+type DateRange = z.infer<typeof DateRangeSchema>;
 type Dealer = z.infer<typeof DealerSchema>;
 type Vehicle = z.infer<typeof VehicleSchema>;
-type WorkflowMessage = z.infer<typeof WorkflowMessageSchema>;
 type MaintenanceContext = WorkflowContext<MaintenanceConnectorCatalog>;
 
 interface MaintenanceFacts {
@@ -83,7 +77,6 @@ interface MaintenanceFacts {
 }
 
 const maintenanceInitialState = MaintenanceStateSchema.parse({
-  messages: [],
   status: "collecting",
   vehicle: null,
   dealer: null,
@@ -102,6 +95,10 @@ const maintenanceInvalidation = {
 
 const metadata = loadWorkflowMetadata(import.meta.url);
 
+
+/**
+ * Input Message -> Patch + prefetch -> effects -> state changed -> Render: llm output
+ */
 
 // Create a workflow with state management.
 const { patch, prefetch, derive, command, render } = workflow<
@@ -154,7 +151,7 @@ Never invent vehicles, dealers, slots, drafts, bookings, ids, prices, or availab
 // Prefetch steps call connectors and write results to context. They will be executed in parallel with `patch` steps on each turn.
 prefetch("customerProfile", {
   progress: "正在读取您的车辆和常用门店信息",
-  description: "读取当前客户、名下车辆和最近服务门店；结果写入 context，随后作为 tool message 进入 state.messages。",
+  description: "读取当前客户、名下车辆和最近服务门店；结果写入 context，运行时会把 prefetch 结果追加为 tool message。",
   when: () => true,
   cacheKey: (_state, _context, { session }) => session.userId,
   run: (_state, context, { session }) => ({
@@ -164,7 +161,7 @@ prefetch("customerProfile", {
   }),
 });
 
-// The derive and command steps can call connectors and update state. They will put the results as Tool messages in state.messages.
+// The derive and command steps can call connectors and update state. Returned messages are appended to the runtime message log.
 // All derive and command steps are executed in parallel, so they should not have dependencies or conflicts with each other.
 derive("selectOnlyVehicle", {
   progress: "正在确认默认车辆",
@@ -176,6 +173,12 @@ derive("selectOnlyVehicle", {
     return {
       status: state.status === "cancelled" ? state.status : "collecting",
       vehicle,
+      messages: [{
+        role: "tool",
+        name: "selectOnlyVehicle",
+        call: { reason: "single_vehicle" },
+        result: { vehicle },
+      } satisfies WorkflowToolMessage],
     };
   },
 });
@@ -186,21 +189,23 @@ derive("dealerCandidates", {
   when: (state, _context, { preState }) =>
     Boolean(
       state.vehicle &&
-      (state.vehicle.id !== preState.vehicle?.id || !preState.vehicle)
+      (state.vehicle.id !== preState.vehicle?.id || !preState.vehicle) &&
+      _context.get("dealerCandidates:vehicleId") !== state.vehicle.id
     ),
   run: async (state, context) => {
     if (!state.vehicle) return {};
     const dealerCandidates = await context.call("connectors.maintenance.getDealerCandidates", {
       vehicle: state.vehicle,
     });
+    context.set("dealerCandidates:vehicleId", state.vehicle.id);
 
     return {
-      messages: appendMessages(state, {
+      messages: [{
         role: "tool",
         name: "connectors.maintenance.getDealerCandidates",
         call: { vehicleId: state.vehicle.id },
         result: dealerCandidates,
-      }),
+      } satisfies WorkflowToolMessage],
     };
   },
 });
@@ -218,17 +223,20 @@ derive("appointmentAvailability", {
         state.preferredDate.end !== preState.preferredDate?.end ||
         !preState.dealer ||
         !preState.preferredDate
-      )
+      ) &&
+      _context.get("appointmentAvailability:cacheKey") !== availabilityCacheKey(state.dealer, state.preferredDate)
     ),
   run: async (state, context) => {
     if (!state.dealer || !state.preferredDate) return {};
+    const cacheKey = availabilityCacheKey(state.dealer, state.preferredDate);
     const availableSlots = await context.call("connectors.maintenance.getAvailableSlots", {
       dealer: state.dealer,
       dateRange: state.preferredDate,
     });
+    context.set("appointmentAvailability:cacheKey", cacheKey);
 
     return {
-      messages: appendMessages(state, {
+      messages: [{
         role: "tool",
         name: "connectors.maintenance.getAvailableSlots",
         call: {
@@ -237,7 +245,7 @@ derive("appointmentAvailability", {
           end: state.preferredDate.end,
         },
         result: availableSlots,
-      }),
+      } satisfies WorkflowToolMessage],
     };
   },
 });
@@ -261,7 +269,7 @@ derive("prepareBookingDraft", {
     return {
       bookingDraft,
       status: "draft_ready",
-      messages: appendMessages(state, {
+      messages: [{
         role: "tool",
         name: "connectors.maintenance.createBookingDraft",
         call: {
@@ -270,7 +278,7 @@ derive("prepareBookingDraft", {
           slotId: state.slot.id,
         },
         result: bookingDraft,
-      }),
+      } satisfies WorkflowToolMessage],
     };
   },
 });
@@ -290,12 +298,12 @@ command("commitBooking", {
       booking,
       bookingDraft: null,
       status: "booked",
-      messages: appendMessages(state, {
+      messages: [{
         role: "tool",
         name: "connectors.maintenance.confirmBooking",
         call: { draftId: state.bookingDraft.id },
         result: booking,
-      }),
+      } satisfies WorkflowToolMessage],
     };
   },
 });
@@ -319,12 +327,12 @@ Write the next concise Chinese reply for a car maintenance booking assistant.
 
 Reply rules:
 1. If the user cancelled, briefly say the current maintenance booking flow has stopped or been cancelled.
-2. If the booking is confirmed, report the confirmed booking and include "预约成功".
-3. If the next step is dealer choice, ask the user to choose or confirm a dealer and list the dealer options.
-4. If the next step is vehicle choice, list the vehicles and ask which vehicle to book.
-5. If the next step is date/time collection, ask only for the desired appointment time.
-6. If the next step is slot choice, list the available arrival slots and ask the user to choose one.
-7. If a booking draft is ready, show vehicle, dealer, and arrival time, then ask whether to confirm submission.
+2. If the latest tool result is connectors.maintenance.confirmBooking, report the confirmed booking and include "预约成功".
+3. If the latest tool result is connectors.maintenance.createBookingDraft, show vehicle, dealer, and arrival time, then ask whether to confirm submission.
+4. If the latest tool result is connectors.maintenance.getAvailableSlots, list the available arrival slots and ask the user to choose one.
+5. If the latest tool result is connectors.maintenance.getDealerCandidates, the vehicle is already resolved; ask the user to choose or confirm a dealer and list the dealer options. Do not ask the user to choose a vehicle.
+6. If no vehicle has been resolved and no dealer candidates are available, list the vehicles and ask which vehicle to book.
+7. If vehicle and dealer are resolved but no appointment date/time is available, ask only for the desired appointment time.
 8. If the user asks a follow-up about the dealer, slot, vehicle, or draft, answer it before asking for the next action.
 9. If the user asks about service items, maintenance contents, or price, explain that this booking workflow only confirms vehicle, dealer, and arrival time; service details are handled by a later procedure.
 
@@ -342,8 +350,8 @@ function maintenanceFacts(context: MaintenanceContext): Partial<MaintenanceFacts
   };
 }
 
-function appendMessages(state: MaintenanceState, ...messages: WorkflowMessage[]): WorkflowMessage[] {
-  return [...state.messages, ...messages];
+function availabilityCacheKey(dealer: Dealer, preferredDate: DateRange): string {
+  return `${dealer.id}:${preferredDate.start}:${preferredDate.end}`;
 }
 
 function selectionMatchesBooking(state: MaintenanceState): boolean {
