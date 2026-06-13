@@ -381,20 +381,20 @@ async function main(): Promise<void> {
       return true;
     }
 
-    const instance = engine.getInstance(session, workflow.id);
+    const workflowSnapshot = engine.getWorkflowSnapshot(session, workflow.id);
 
     if (line === "/state") {
-      printJson(instance?.state ?? null);
+      printJson(workflowSnapshot?.state ?? null);
       return true;
     }
 
     if (line === "/messages") {
-      printJson(instance?.state.messages ?? []);
+      printJson(workflowSnapshot?.state.messages ?? []);
       return true;
     }
 
     if (line === "/context") {
-      printJson(instance?.context.toJSON() ?? null);
+      printJson(workflowSnapshot?.context ?? null);
       return true;
     }
 

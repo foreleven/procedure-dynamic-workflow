@@ -14,7 +14,6 @@ export function createEngineSession(input: CreateSessionInput): EngineSession {
     routingMemory: {
       lastMatchedWorkflowIds: [],
     },
-    workflowInstances: new Map(),
   };
 }
 

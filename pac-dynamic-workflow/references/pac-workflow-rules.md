@@ -23,7 +23,7 @@ routing:
     - vehicle_diagnosis
 ```
 
-Generate the TypeScript workflow with the `workflow()` program DSL:
+Generate the TypeScript workflow with the `workflow()` program DSL. Import `ToolMessage` from `@pac/workflow` when a `derive` or `command` step returns connector results through `messages`.
 
 ```ts
 const metadata = loadWorkflowMetadata(import.meta.url)
@@ -149,12 +149,13 @@ derive("availableSlots", {
       dateRange: state.preferredDate,
     })
     return {
-      messages: [{
-        role: "tool",
-        name: "connectors.service.getAvailableSlots",
-        call: { dealerId: state.dealer.id, start: state.preferredDate.start },
-        result: availableSlots,
-      }],
+      messages: [
+        new ToolMessage({
+          name: "connectors.service.getAvailableSlots",
+          call: { dealerId: state.dealer.id, start: state.preferredDate.start },
+          result: availableSlots,
+        }),
+      ],
     }
   },
 })

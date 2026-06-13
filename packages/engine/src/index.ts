@@ -14,6 +14,7 @@ export type {
   EngineSession,
   EngineTraceEvent,
   EngineTurnResult,
+  WorkflowSnapshot,
   WorkflowDefinitionInput,
   WorkflowEngineOptions,
 } from "./types.js";

@@ -13,6 +13,7 @@ export const packageContracts = [
       "JsonRecordSchema",
       "PrefetchStore",
       "SessionPatchSchema",
+      "ToolMessage",
       "WorkflowContextStore",
       "createConnectorRegistry",
       "defineConnectorCatalog",
@@ -82,6 +83,8 @@ export const packageContracts = [
         "WorkflowProgram",
         "WorkflowRuntimeInput",
         "WorkflowStatePatch",
+        "WorkflowToolMessage",
+        "ToolMessageInput",
       ],
       forbiddenNames: [
         "sameRuntimeValue",
@@ -109,6 +112,7 @@ export const packageContracts = [
         "EngineTurnResult",
         "WorkflowDefinitionInput",
         "WorkflowEngineOptions",
+        "WorkflowSnapshot",
       ],
       forbiddenNames: [
         "RuntimeWorkflow",

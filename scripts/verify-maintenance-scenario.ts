@@ -431,10 +431,10 @@ async function verifyRuntimePrefetchConnectorFailureIsolation(): Promise<void> {
 
   await engine.onMessage("预约保养，明天下午", session);
   let state = requireInstanceState(engine, session);
-  const instance = requireInstance(engine, session);
+  const snapshot = requireWorkflowSnapshot(engine, session);
   assertEqual(state.vehicle?.id, "veh_bmw_x3", "runtime prefetch failure selected vehicle");
-  assertEqual(instance.context.get("recentDealer"), undefined, "runtime prefetch failure recent dealer context");
-  assertEqual(Array.isArray(instance.context.get("vehicles")), true, "runtime prefetch failure vehicles context");
+  assertEqual(snapshot.context.recentDealer, undefined, "runtime prefetch failure recent dealer context");
+  assertEqual(Array.isArray(snapshot.context.vehicles), true, "runtime prefetch failure vehicles context");
 
   await engine.onMessage("选 Hoboken BMW Service", session);
   await engine.onMessage("选第一个时段", session);
@@ -497,8 +497,8 @@ async function verifyRuntimeNoVehicleFallback(): Promise<void> {
 
   await engine.onMessage("预约保养", session);
   const state = requireInstanceState(engine, session);
-  const instance = requireInstance(engine, session);
-  const vehicles = instance.context.get("vehicles");
+  const snapshot = requireWorkflowSnapshot(engine, session);
+  const vehicles = snapshot.context.vehicles;
 
   assertEqual(Array.isArray(vehicles), true, "runtime no-vehicle context vehicles array");
   assertEqual((vehicles as unknown[]).length, 0, "runtime no-vehicle context vehicles length");
@@ -602,22 +602,22 @@ function scriptedMaintenanceLlm(patches: Array<Record<string, unknown>>): LlmCli
  * Boundary: this helper is for verification only and does not mutate runtime state.
  */
 function requireInstanceState(engine: WorkflowEngine, session: ReturnType<WorkflowEngine["createSession"]>): MaintenanceState {
-  return requireInstance(engine, session).state;
+  return requireWorkflowSnapshot(engine, session).state;
 }
 
 /**
- * Returns the maintenance runtime instance after a deterministic verification turn.
+ * Returns the maintenance workflow snapshot after a deterministic verification turn.
  * Input: engine and session from the deterministic runtime check.
- * Output: workflow instance for state/context assertions.
+ * Output: workflow snapshot for state/context assertions.
  * Boundary: this helper is for verification only and does not mutate runtime state.
  */
-function requireInstance(engine: WorkflowEngine, session: ReturnType<WorkflowEngine["createSession"]>) {
-  const instance = engine.getInstance<MaintenanceState>(session, maintenanceBookingWorkflow.id);
-  if (!instance) {
-    throw new Error("Missing maintenance runtime instance");
+function requireWorkflowSnapshot(engine: WorkflowEngine, session: ReturnType<WorkflowEngine["createSession"]>) {
+  const snapshot = engine.getWorkflowSnapshot<MaintenanceState>(session, maintenanceBookingWorkflow.id);
+  if (!snapshot) {
+    throw new Error("Missing maintenance workflow snapshot");
   }
 
-  return instance;
+  return snapshot;
 }
 
 /**

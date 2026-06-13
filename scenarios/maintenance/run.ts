@@ -65,8 +65,8 @@ async function runCase(testCase: WorkflowCase): Promise<void> {
 
   for (const [index, turn] of testCase.turns.entries()) {
     const result = await engine.onMessage(turn.message, session);
-    const instance = engine.getInstance<MaintenanceState>(session, "maintenance_booking");
-    const state = instance?.state;
+    const snapshot = engine.getWorkflowSnapshot<MaintenanceState>(session, "maintenance_booking");
+    const state = snapshot?.state;
     const prefix = `${testCase.id} turn ${index + 1}`;
 
     console.log(`${prefix}: ${result.response.text}`);

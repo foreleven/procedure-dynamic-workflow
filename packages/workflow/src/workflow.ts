@@ -38,12 +38,67 @@ export interface WorkflowAssistantMessage {
 
 export interface WorkflowToolMessage {
   role: "tool";
+  id?: string;
   name: string;
   call?: unknown;
   result: unknown;
+  isError?: boolean;
 }
 
 export type WorkflowMessage = WorkflowUserMessage | WorkflowAssistantMessage | WorkflowToolMessage;
+
+export interface ToolMessageInput {
+  id?: string;
+  name: string;
+  call?: unknown;
+  result: unknown;
+  isError?: boolean;
+}
+
+/**
+ * Creates a workflow tool-result history entry for connector or derived data.
+ * Input: a stable tool name, optional call arguments, result payload, and optional explicit id.
+ * Output: a JSON-shaped `WorkflowToolMessage` that the engine appends to runtime messages.
+ * Boundary: this class does not know provider-specific LLM formats; engine adapters convert it later.
+ */
+export class ToolMessage implements WorkflowToolMessage {
+  readonly role = "tool";
+  readonly id?: string;
+  readonly name: string;
+  readonly call?: unknown;
+  readonly result: unknown;
+  readonly isError?: boolean;
+
+  constructor(input: ToolMessageInput) {
+    validateToolMessageInput(input);
+
+    this.name = input.name;
+    this.result = input.result;
+    if (input.id !== undefined) this.id = input.id;
+    if ("call" in input) this.call = input.call;
+    if (input.isError !== undefined) this.isError = input.isError;
+  }
+
+  /**
+   * Returns the plain runtime message shape for persistence and structured cloning.
+   * Input: this tool message instance.
+   * Output: a JSON-shaped workflow tool message with only explicitly supplied optional fields.
+   * Boundary: values are not deep-cloned; the runtime owns cloning at state/session boundaries.
+   */
+  toJSON(): WorkflowToolMessage {
+    const message: WorkflowToolMessage = {
+      role: "tool",
+      name: this.name,
+      result: this.result,
+    };
+
+    if (this.id !== undefined) message.id = this.id;
+    if (Object.hasOwn(this, "call")) message.call = this.call;
+    if (this.isError !== undefined) message.isError = this.isError;
+
+    return message;
+  }
+}
 
 export type WorkflowRuntimeState<TState extends object> = TState & {
   messages: WorkflowMessage[];
@@ -310,6 +365,24 @@ export interface WorkflowInstance<TState extends object = JsonRecord> {
   context: WorkflowContext;
   state: WorkflowRuntimeState<TState>;
   prefetch: PrefetchStore;
+}
+
+function validateToolMessageInput(value: unknown): asserts value is ToolMessageInput {
+  if (!isPlainRecord(value)) {
+    throw new Error("ToolMessage input must be an object");
+  }
+  if (!isNonEmptyString(value.name)) {
+    throw new Error("ToolMessage name must be a non-empty string");
+  }
+  if (!Object.hasOwn(value, "result")) {
+    throw new Error("ToolMessage result is required");
+  }
+  if (value.id !== undefined && !isNonEmptyString(value.id)) {
+    throw new Error("ToolMessage id must be a non-empty string");
+  }
+  if (value.isError !== undefined && typeof value.isError !== "boolean") {
+    throw new Error("ToolMessage isError must be a boolean");
+  }
 }
 
 /**

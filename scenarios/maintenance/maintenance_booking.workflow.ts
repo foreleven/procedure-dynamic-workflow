@@ -1,7 +1,7 @@
 import {
+  ToolMessage,
   loadWorkflowMetadata,
   type WorkflowContext,
-  type WorkflowToolMessage,
   workflow,
   z,
 } from "@pac/workflow";
@@ -173,12 +173,13 @@ derive("selectOnlyVehicle", {
     return {
       status: state.status === "cancelled" ? state.status : "collecting",
       vehicle,
-      messages: [{
-        role: "tool",
-        name: "selectOnlyVehicle",
-        call: { reason: "single_vehicle" },
-        result: { vehicle },
-      } satisfies WorkflowToolMessage],
+      messages: [
+        new ToolMessage({
+          name: "selectOnlyVehicle",
+          call: { reason: "single_vehicle" },
+          result: { vehicle },
+        }),
+      ],
     };
   },
 });
@@ -200,12 +201,13 @@ derive("dealerCandidates", {
     context.set("dealerCandidates:vehicleId", state.vehicle.id);
 
     return {
-      messages: [{
-        role: "tool",
-        name: "connectors.maintenance.getDealerCandidates",
-        call: { vehicleId: state.vehicle.id },
-        result: dealerCandidates,
-      } satisfies WorkflowToolMessage],
+      messages: [
+        new ToolMessage({
+          name: "connectors.maintenance.getDealerCandidates",
+          call: { vehicleId: state.vehicle.id },
+          result: dealerCandidates,
+        }),
+      ],
     };
   },
 });
@@ -236,16 +238,17 @@ derive("appointmentAvailability", {
     context.set("appointmentAvailability:cacheKey", cacheKey);
 
     return {
-      messages: [{
-        role: "tool",
-        name: "connectors.maintenance.getAvailableSlots",
-        call: {
-          dealerId: state.dealer.id,
-          start: state.preferredDate.start,
-          end: state.preferredDate.end,
-        },
-        result: availableSlots,
-      } satisfies WorkflowToolMessage],
+      messages: [
+        new ToolMessage({
+          name: "connectors.maintenance.getAvailableSlots",
+          call: {
+            dealerId: state.dealer.id,
+            start: state.preferredDate.start,
+            end: state.preferredDate.end,
+          },
+          result: availableSlots,
+        }),
+      ],
     };
   },
 });
@@ -269,16 +272,17 @@ derive("prepareBookingDraft", {
     return {
       bookingDraft,
       status: "draft_ready",
-      messages: [{
-        role: "tool",
-        name: "connectors.maintenance.createBookingDraft",
-        call: {
-          vehicleId: state.vehicle.id,
-          dealerId: state.dealer.id,
-          slotId: state.slot.id,
-        },
-        result: bookingDraft,
-      } satisfies WorkflowToolMessage],
+      messages: [
+        new ToolMessage({
+          name: "connectors.maintenance.createBookingDraft",
+          call: {
+            vehicleId: state.vehicle.id,
+            dealerId: state.dealer.id,
+            slotId: state.slot.id,
+          },
+          result: bookingDraft,
+        }),
+      ],
     };
   },
 });
@@ -298,12 +302,13 @@ command("commitBooking", {
       booking,
       bookingDraft: null,
       status: "booked",
-      messages: [{
-        role: "tool",
-        name: "connectors.maintenance.confirmBooking",
-        call: { draftId: state.bookingDraft.id },
-        result: booking,
-      } satisfies WorkflowToolMessage],
+      messages: [
+        new ToolMessage({
+          name: "connectors.maintenance.confirmBooking",
+          call: { draftId: state.bookingDraft.id },
+          result: booking,
+        }),
+      ],
     };
   },
 });

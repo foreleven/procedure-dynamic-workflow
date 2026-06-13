@@ -6,6 +6,7 @@ import type {
   WorkflowDeps,
   WorkflowId,
   WorkflowInstance,
+  WorkflowRuntimeState,
 } from "@pac/workflow";
 import type { LlmClient } from "./llm.js";
 
@@ -25,8 +26,14 @@ export interface WorkflowDefinitionInput {
   render: unknown;
 }
 
-export interface EngineSession extends SessionContext {
-  workflowInstances: Map<WorkflowId, RuntimeInstance>;
+export type EngineSession = SessionContext;
+
+export interface WorkflowSnapshot<TState extends object = JsonRecord> {
+  id: WorkflowId;
+  version: string;
+  state: WorkflowRuntimeState<TState>;
+  context: JsonRecord;
+  prefetch: JsonRecord;
 }
 
 export interface CreateSessionInput {

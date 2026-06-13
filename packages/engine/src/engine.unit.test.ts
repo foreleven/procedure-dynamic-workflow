@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  ToolMessage,
   createConnectorRegistry,
   definePatch,
   defineRouting,
   type WorkflowDefinition,
+  workflow,
   z,
 } from "@pac/workflow";
 import { WorkflowEngine } from "./engine.js";
-import type { LlmClient } from "./llm.js";
+import type { LlmClient, LlmTextRequest } from "./llm.js";
 import type { WorkflowDefinitionInput } from "./types.js";
 
 interface TestState {
@@ -73,7 +75,7 @@ test("WorkflowEngine routes, patches, invalidates, runs nodes, and renders funct
   const session = engine.createSession({ sessionId: "session_2", userId: "user_2" });
 
   const result = await engine.onMessage("please route me", session);
-  const instance = engine.getInstance<TestState>(session, "test_flow");
+  const instance = engine.getWorkflowSnapshot<TestState>(session, "test_flow");
 
   assert.equal(result.response.text, "selected=picked; dependent=default-dependent; derived=picked:loaded:true");
   assert.deepEqual(session.activeWorkflowIds, ["test_flow"]);
@@ -82,7 +84,7 @@ test("WorkflowEngine routes, patches, invalidates, runs nodes, and renders funct
   assert.equal(instance?.state.selected, "picked");
   assert.equal(instance?.state.dependent, "default-dependent");
   assert.equal(instance?.state.derived, "picked:loaded:true");
-  assert.deepEqual(instance?.prefetch.toJSON(), { baseline: "loaded" });
+  assert.deepEqual(instance?.prefetch, { baseline: "loaded" });
   assert.equal(instance?.state.messages.at(0)?.role, "user");
   assert.deepEqual(instance?.state.messages.at(-1), {
     role: "assistant",
@@ -91,6 +93,29 @@ test("WorkflowEngine routes, patches, invalidates, runs nodes, and renders funct
   assert.equal(llm.structuredCalls.length, 1);
   assert.ok(result.traces.some((trace) => trace.phase === "routing.local" && trace.workflowId === "test_flow"));
   assert.ok(result.traces.some((trace) => trace.phase === "invalidate"));
+});
+
+test("WorkflowEngine exposes workflow snapshots without leaking mutable runtime instances", async () => {
+  const engine = new WorkflowEngine({
+    workflows: [createTestWorkflow()],
+    deps: {
+      llm: createPatchLlm({ statePatch: { selected: "picked" } }),
+      connectors: createConnectorRegistry(),
+    },
+  });
+  const session = engine.createSession({ sessionId: "session_snapshot", userId: "user_snapshot" });
+
+  await engine.onMessage("please route me", session);
+  const snapshot = engine.getWorkflowSnapshot<TestState>(session, "test_flow");
+  assert.ok(snapshot);
+  assert.equal("workflowInstances" in session, false);
+
+  snapshot.state.selected = "mutated";
+  snapshot.prefetch.baseline = "mutated";
+
+  const nextSnapshot = engine.getWorkflowSnapshot<TestState>(session, "test_flow");
+  assert.equal(nextSnapshot?.state.selected, "picked");
+  assert.deepEqual(nextSnapshot?.prefetch, { baseline: "loaded" });
 });
 
 test("WorkflowEngine invalidation deletes fields that are absent from the default state", async () => {
@@ -108,7 +133,7 @@ test("WorkflowEngine invalidation deletes fields that are absent from the defaul
   });
 
   const result = await engine.onMessage("run optional invalidation", session);
-  const instance = engine.getInstance<OptionalInvalidationState>(session, "optional_invalidation_flow");
+  const instance = engine.getWorkflowSnapshot<OptionalInvalidationState>(session, "optional_invalidation_flow");
 
   assert.equal(result.response.text, "hasOptional=false; value=missing");
   assert.equal("optionalDerived" in (instance?.state ?? {}), false);
@@ -130,7 +155,7 @@ test("WorkflowEngine preserves message-patched dependents from later same-turn d
   });
 
   const result = await engine.onMessage("set dependent and derive source", session);
-  const instance = engine.getInstance<SameTurnInvalidationState>(session, "same_turn_invalidation_flow");
+  const instance = engine.getWorkflowSnapshot<SameTurnInvalidationState>(session, "same_turn_invalidation_flow");
 
   assert.equal(result.response.text, "source=derived-source; dependent=explicit-dependent");
   assert.equal(instance?.state.source, "derived-source");
@@ -154,7 +179,7 @@ test("WorkflowEngine ignores state patch writes to reserved runtime messages", a
   const session = engine.createSession({ sessionId: "session_reserved_messages", userId: "user_reserved_messages" });
 
   const result = await engine.onMessage("please route me", session);
-  const instance = engine.getInstance<TestState>(session, "reserved_messages_patch_flow");
+  const instance = engine.getWorkflowSnapshot<TestState>(session, "reserved_messages_patch_flow");
 
   assert.equal(result.response.text, "selected=picked; messages=2");
   assert.deepEqual(instance?.state.messages, [
@@ -277,7 +302,7 @@ test("WorkflowEngine streams render policy deltas and stores final assistant res
   const session = engine.createSession({ sessionId: "session_3", userId: "user_3" });
 
   const result = await engine.onMessage("please stream", session);
-  const instance = engine.getInstance<TestState>(session, "stream_flow");
+  const instance = engine.getWorkflowSnapshot<TestState>(session, "stream_flow");
 
   assert.equal(result.response.text, "hello world");
   assert.deepEqual(deltas, ["stream_flow:hello", "stream_flow: ", "stream_flow:world"]);
@@ -287,6 +312,59 @@ test("WorkflowEngine streams render policy deltas and stores final assistant res
   });
   assert.equal(llm.streamCalls.length, 1);
   assert.equal(llm.textCalls.length, 0);
+});
+
+test("WorkflowEngine passes derived ToolMessage history to render as pi tool messages", async () => {
+  const llm = createStreamingLlm({
+    patch: { statePatch: {} },
+    deltas: [],
+    finalText: "rendered from tool history",
+  });
+  const engine = new WorkflowEngine({
+    workflows: [createToolRenderWorkflow()],
+    deps: {
+      llm,
+      connectors: createConnectorRegistry(),
+    },
+  });
+  const session = engine.createSession({
+    sessionId: "session_tool_render",
+    userId: "user_tool_render",
+    activeWorkflowIds: ["tool_render_flow"],
+  });
+
+  const result = await engine.onMessage("show available slot", session);
+
+  assert.equal(result.response.text, "rendered from tool history");
+  assert.equal(llm.streamCalls.length, 1);
+  const renderRequest = llm.streamCalls[0] as LlmTextRequest | undefined;
+  assert.ok(renderRequest);
+  assert.deepEqual(renderRequest.messages.map((message) => message.role), ["user", "assistant", "toolResult"]);
+
+  const toolCallMessage = renderRequest.messages[1];
+  if (toolCallMessage?.role !== "assistant") {
+    throw new Error("Expected assistant tool-call message before render");
+  }
+  const toolCall = toolCallMessage.content.find((block) => block.type === "toolCall");
+  assert.deepEqual(toolCall, {
+    type: "toolCall",
+    id: "workflow-tool-1-connectors_lookup",
+    name: "connectors.lookup",
+    arguments: { query: "slot" },
+  });
+
+  const toolResultMessage = renderRequest.messages[2];
+  if (toolResultMessage?.role !== "toolResult") {
+    throw new Error("Expected tool result message before render");
+  }
+  assert.equal(toolResultMessage.toolCallId, "workflow-tool-1-connectors_lookup");
+  assert.equal(toolResultMessage.toolName, "connectors.lookup");
+  const [content] = toolResultMessage.content;
+  assert.equal(content?.type, "text");
+  if (content?.type !== "text") {
+    throw new Error("Expected text tool result content before render");
+  }
+  assert.deepEqual(JSON.parse(content.text), { slot: "09:00" });
 });
 
 test("WorkflowEngine validates LLM render text output", async () => {
@@ -408,7 +486,7 @@ test("WorkflowEngine stops unstable afterPatch nodes at maxProgramRounds", async
   });
 
   const result = await engine.onMessage("any active message", session);
-  const instance = engine.getInstance<{ count: number }>(session, "round_flow");
+  const instance = engine.getWorkflowSnapshot<{ count: number }>(session, "round_flow");
 
   assert.equal(result.response.text, "count=2");
   assert.equal(instance?.state.count, 2);
@@ -431,8 +509,8 @@ test("WorkflowEngine keeps routing to active workflows instead of rematching loc
   });
 
   const result = await engine.onMessage("please competitor", session);
-  const activeInstance = engine.getInstance<TestState>(session, "test_flow");
-  const competingInstance = engine.getInstance<TestState>(session, "competing_flow");
+  const activeInstance = engine.getWorkflowSnapshot<TestState>(session, "test_flow");
+  const competingInstance = engine.getWorkflowSnapshot<TestState>(session, "competing_flow");
 
   assert.deepEqual(result.responses.map((response) => response.workflowId), ["test_flow"]);
   assert.deepEqual(session.activeWorkflowIds, ["test_flow"]);
@@ -488,7 +566,7 @@ test("WorkflowEngine validates createSession input and active workflow ids", () 
   );
 });
 
-test("WorkflowEngine validates onMessage input and mutable session state", async () => {
+test("WorkflowEngine validates onMessage input and active workflow ids", async () => {
   const engine = new WorkflowEngine({
     workflows: [createTestWorkflow()],
     deps: {
@@ -506,11 +584,6 @@ test("WorkflowEngine validates onMessage input and mutable session state", async
     engine.onMessage("", session),
     /Invalid message: message must be a non-empty string/,
   );
-  await assert.rejects(
-    engine.onMessage("route me", null as never),
-    /Invalid engine session: session must be an object/,
-  );
-
   session.activeWorkflowIds.push("missing_flow");
   await assert.rejects(
     engine.onMessage("route me", session),
@@ -522,38 +595,6 @@ test("WorkflowEngine validates onMessage input and mutable session state", async
   await assert.rejects(
     engine.onMessage("route me", session),
     /duplicate active workflow id: test_flow/,
-  );
-
-  const instanceSession = engine.createSession({
-    sessionId: "session_bad_instance",
-    userId: "user_1",
-    activeWorkflowIds: ["test_flow"],
-  });
-  const instance = engine.getInstance<TestState>(instanceSession, "test_flow");
-  assert.ok(instance);
-  const runtimeInstance = instanceSession.workflowInstances.get("test_flow");
-  assert.ok(runtimeInstance);
-
-  instanceSession.workflowInstances.set("missing_flow", runtimeInstance);
-  await assert.rejects(
-    engine.onMessage("route me", instanceSession),
-    /workflowInstances contains unknown workflow id: missing_flow/,
-  );
-
-  instanceSession.workflowInstances.delete("missing_flow");
-  instanceSession.workflowInstances.set("test_flow", { ...runtimeInstance, id: "wrong_flow" });
-  await assert.rejects(
-    engine.onMessage("route me", instanceSession),
-    /workflowInstances\[test_flow\] id mismatch: wrong_flow/,
-  );
-
-  instanceSession.workflowInstances.set("test_flow", {
-    ...runtimeInstance,
-    artifact: { ...runtimeInstance.artifact },
-  });
-  await assert.rejects(
-    engine.onMessage("route me", instanceSession),
-    /workflowInstances\[test_flow\] artifact must match the registered workflow/,
   );
 });
 
@@ -1039,6 +1080,48 @@ function createStreamingWorkflow(config: {
       progress: "Streaming response",
     },
   };
+}
+
+function createToolRenderWorkflow(): WorkflowDefinition<{ done: boolean }> {
+  const program = workflow({
+    id: "tool_render_flow",
+    version: "0.1.0",
+    description: "Tool render workflow test fixture.",
+    routing: defineRouting({
+      examples: ["tool render"],
+      entities: ["tool"],
+      neighbors: [],
+    }),
+    stateSchema: z.object({
+      done: z.boolean(),
+    }),
+    state: {
+      done: false,
+    },
+  });
+
+  program.patch({ state: {} });
+  program.derive("lookup_tool", {
+    progress: "Looking up tool data",
+    description: "Appends connector-like facts as a ToolMessage so render sees provider-native tool history.",
+    when: (state) => !state.done,
+    run: () => ({
+      done: true,
+      messages: [
+        new ToolMessage({
+          name: "connectors.lookup",
+          call: { query: "slot" },
+          result: { slot: "09:00" },
+        }),
+      ],
+    }),
+  });
+
+  return program.render({
+    name: "tool_render",
+    instruction: "Reply from tool history.",
+    progress: "Rendering from tools",
+  });
 }
 
 function createMaxRoundsWorkflow(): WorkflowDefinition<{ count: number }> {

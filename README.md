@@ -228,6 +228,7 @@ Keep workflow instructions focused:
 - patch instruction only describes how to extract state;
 - render instruction only describes how to reply;
 - derive and command callbacks return partial state directly, for example `{ bookingDraft, status }`;
+- derive and command callbacks return connector facts for render as `messages: [new ToolMessage({ name, call, result })]`;
 - irreversible external actions belong in `command`;
 - read-only or idempotent state-dependent work belongs in `derive`;
 - baseline reads belong in `prefetch`.

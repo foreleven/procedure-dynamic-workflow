@@ -3,6 +3,7 @@ import test from "node:test";
 import { z } from "zod";
 import { definePatch, defineRouting, type PatchPolicy } from "./builders.js";
 import {
+  ToolMessage,
   defineWorkflowDefinition,
   type WorkflowDefinition,
 } from "./workflow.js";
@@ -31,6 +32,27 @@ test("defineWorkflowDefinition validates and returns direct definitions", () => 
 
   assert.equal(result, definition);
   assert.equal(result.id, "direct_flow");
+});
+
+test("ToolMessage validates input and serializes to workflow message shape", () => {
+  const message = new ToolMessage({
+    id: "lookup-1",
+    name: "connectors.lookup",
+    call: { vehicleId: "vehicle_1" },
+    result: { slots: ["09:00"] },
+  });
+
+  assert.deepEqual(message.toJSON(), {
+    role: "tool",
+    id: "lookup-1",
+    name: "connectors.lookup",
+    call: { vehicleId: "vehicle_1" },
+    result: { slots: ["09:00"] },
+  });
+  assert.throws(
+    () => new ToolMessage({ name: " ", result: {} }),
+    /ToolMessage name must be a non-empty string/,
+  );
 });
 
 test("defineWorkflowDefinition rejects malformed workflow metadata and routing", () => {

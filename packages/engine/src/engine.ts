@@ -8,7 +8,6 @@ import {
   type WorkflowEffectNode,
   WorkflowContextStore,
   type WorkflowId,
-  type WorkflowInstance,
   type WorkflowNode,
   type WorkflowNodeStage,
   type WorkflowPrefetchNode,
@@ -16,7 +15,7 @@ import {
   type WorkflowRuntimeState,
 } from "@pac/workflow";
 import { applyObjectPatch, applySessionPatch, cloneDefault, normalizeMessagePatch } from "./patching.js";
-import { sameRuntimeValue } from "./utils/json.js";
+import { safeJsonStringify, sameRuntimeValue } from "./utils/json.js";
 import { scoreWorkflow } from "./routing.js";
 import { createEngineSession } from "./session.js";
 import { formatLogLine } from "./utils/logging.js";
@@ -40,6 +39,7 @@ import type {
   TargetSelection,
   WorkflowDefinitionInput,
   WorkflowEngineOptions,
+  WorkflowSnapshot,
 } from "./types.js";
 
 const RESERVED_STATE_FIELDS = new Set(["messages"]);
@@ -47,6 +47,7 @@ const ROUTING_THRESHOLD_FIELDS = ["localAccept", "localUncertain", "globalAccept
 
 export class WorkflowEngine {
   private readonly registry = new Map<WorkflowId, RuntimeWorkflow>();
+  private readonly sessionInstances = new WeakMap<EngineSession, Map<WorkflowId, RuntimeInstance>>();
   private readonly deps: WorkflowEngineOptions["deps"];
   private readonly maxProgramRounds: number;
   private readonly logger?: WorkflowEngineOptions["logger"];
@@ -90,6 +91,7 @@ export class WorkflowEngine {
     }
 
     const session = createEngineSession(input);
+    this.sessionInstances.set(session, new Map());
     for (const workflowId of session.activeWorkflowIds) {
       this.ensureInstance(session, workflowId);
     }
@@ -100,9 +102,9 @@ export class WorkflowEngine {
     if (!isNonEmptyString(message)) {
       throw new Error("Invalid message: message must be a non-empty string");
     }
-    const sessionError = this.validateEngineSessionShape(session);
-    if (sessionError) {
-      throw new Error(`Invalid engine session: ${sessionError}`);
+    const activeWorkflowError = this.validateActiveWorkflowIds(session.activeWorkflowIds);
+    if (activeWorkflowError) {
+      throw new Error(`Invalid engine session: ${activeWorkflowError}`);
     }
 
     const traces: EngineTraceEvent[] = [];
@@ -161,22 +163,20 @@ export class WorkflowEngine {
     };
   }
 
-  getInstance<TState extends object>(
+  getWorkflowSnapshot<TState extends object>(
     session: EngineSession,
     workflowId: WorkflowId,
-  ): WorkflowInstance<TState> | undefined {
-    return session.workflowInstances.get(workflowId) as WorkflowInstance<TState> | undefined;
-  }
+  ): WorkflowSnapshot<TState> | undefined {
+    const instance = this.sessionInstances.get(session)?.get(workflowId);
+    if (!instance) return undefined;
 
-  private validateEngineSessionShape(candidate: unknown): string | undefined {
-    const shapeError = validateEngineSessionShape(candidate);
-    if (shapeError) return shapeError;
-
-    const session = candidate as EngineSession;
-    const activeWorkflowError = this.validateActiveWorkflowIds(session.activeWorkflowIds);
-    if (activeWorkflowError) return activeWorkflowError;
-
-    return this.validateWorkflowInstances(session.workflowInstances);
+    return {
+      id: instance.id,
+      version: instance.version,
+      state: cloneSnapshotValue(instance.state) as WorkflowSnapshot<TState>["state"],
+      context: cloneSnapshotValue(instance.context.toJSON()),
+      prefetch: cloneSnapshotValue(instance.prefetch.toJSON()),
+    };
   }
 
   private validateActiveWorkflowIds(activeWorkflowIds: readonly string[]): string | undefined {
@@ -188,36 +188,6 @@ export class WorkflowEngine {
     const unknownWorkflowIds = activeWorkflowIds.filter((workflowId) => !this.registry.has(workflowId));
     if (unknownWorkflowIds.length > 0) {
       return `unknown active workflow id(s): ${unknownWorkflowIds.join(", ")}`;
-    }
-
-    return undefined;
-  }
-
-  private validateWorkflowInstances(instances: Map<WorkflowId, RuntimeInstance>): string | undefined {
-    for (const [workflowId, instance] of instances) {
-      if (!isNonEmptyString(workflowId)) return "workflowInstances keys must be non-empty strings";
-
-      const workflow = this.registry.get(workflowId);
-      if (!workflow) {
-        return `workflowInstances contains unknown workflow id: ${workflowId}`;
-      }
-
-      const instanceError = validateRuntimeInstanceShape(instance);
-      if (instanceError) {
-        return `workflowInstances[${workflowId}] ${instanceError}`;
-      }
-
-      if (instance.id !== workflowId) {
-        return `workflowInstances[${workflowId}] id mismatch: ${instance.id}`;
-      }
-
-      if (instance.version !== workflow.version) {
-        return `workflowInstances[${workflowId}] version mismatch: ${instance.version} !== ${workflow.version}`;
-      }
-
-      if (instance.artifact !== workflow) {
-        return `workflowInstances[${workflowId}] artifact must match the registered workflow`;
-      }
     }
 
     return undefined;
@@ -347,7 +317,8 @@ export class WorkflowEngine {
   }
 
   private ensureInstance(session: EngineSession, workflowId: WorkflowId): RuntimeInstance | undefined {
-    const existing = session.workflowInstances.get(workflowId);
+    const instances = this.instancesForSession(session);
+    const existing = instances.get(workflowId);
     if (existing) return existing;
 
     const artifact = this.registry.get(workflowId);
@@ -362,8 +333,17 @@ export class WorkflowEngine {
       prefetch: new PrefetchStore(),
     };
 
-    session.workflowInstances.set(workflowId, instance);
+    instances.set(workflowId, instance);
     return instance;
+  }
+
+  private instancesForSession(session: EngineSession): Map<WorkflowId, RuntimeInstance> {
+    let instances = this.sessionInstances.get(session);
+    if (!instances) {
+      instances = new Map();
+      this.sessionInstances.set(session, instances);
+    }
+    return instances;
   }
 
   private async runNodeStageOnce(
@@ -905,59 +885,6 @@ function validateCreateSessionInputShape(candidate: unknown): string | undefined
   return undefined;
 }
 
-function validateEngineSessionShape(candidate: unknown): string | undefined {
-  if (!isRecord(candidate)) return "session must be an object";
-  if (!isNonEmptyString(candidate.sessionId)) return "sessionId must be a non-empty string";
-  if (!isNonEmptyString(candidate.userId)) return "userId must be a non-empty string";
-  if (!isNonEmptyStringArray(candidate.activeWorkflowIds)) return "activeWorkflowIds must be an array of non-empty strings";
-  if (!isPlainObject(candidate.facts)) return "facts must be an object";
-  if (!isPlainObject(candidate.preferences)) return "preferences must be an object";
-  if (!isStringArray(candidate.goals)) return "goals must be an array of strings";
-  if (!isStringArray(candidate.constraints)) return "constraints must be an array of strings";
-  if (!(candidate.sharedCache instanceof Map)) return "sharedCache must be a Map";
-  if (!hasRoutingMemoryShape(candidate.routingMemory)) {
-    return "routingMemory.lastMatchedWorkflowIds must be an array of strings";
-  }
-  if (!(candidate.workflowInstances instanceof Map)) return "workflowInstances must be a Map";
-  if (candidate.conversationSummary !== undefined && typeof candidate.conversationSummary !== "string") {
-    return "conversationSummary must be a string";
-  }
-
-  return undefined;
-}
-
-function validateRuntimeInstanceShape(candidate: unknown): string | undefined {
-  if (!isRecord(candidate)) return "must be an object";
-  if (!isNonEmptyString(candidate.id)) return "id must be a non-empty string";
-  if (!isNonEmptyString(candidate.version)) return "version must be a non-empty string";
-  if (!isRecord(candidate.artifact)) return "artifact must be an object";
-  if (!hasWorkflowContextShape(candidate.context)) return "context must provide workflow context methods";
-  if (!isRecord(candidate.state)) return "state must be an object";
-  if (!hasPrefetchStoreShape(candidate.prefetch)) return "prefetch must provide get, set, and toJSON methods";
-
-  return undefined;
-}
-
-function hasWorkflowContextShape(value: unknown): boolean {
-  return (
-    isRecord(value) &&
-    typeof value.revision === "number" &&
-    typeof value.get === "function" &&
-    typeof value.set === "function" &&
-    typeof value.call === "function" &&
-    typeof value.changedKeysSince === "function" &&
-    typeof value.toJSON === "function"
-  );
-}
-
-function hasPrefetchStoreShape(value: unknown): boolean {
-  return isRecord(value) && typeof value.get === "function" && typeof value.set === "function" && typeof value.toJSON === "function";
-}
-
-function hasRoutingMemoryShape(value: unknown): value is EngineSession["routingMemory"] {
-  return isRecord(value) && isStringArray(value.lastMatchedWorkflowIds);
-}
-
 function firstDuplicate(values: readonly string[]): string | undefined {
   const seen = new Set<string>();
   for (const value of values) {
@@ -966,6 +893,14 @@ function firstDuplicate(values: readonly string[]): string | undefined {
   }
 
   return undefined;
+}
+
+function cloneSnapshotValue<T>(value: T): T {
+  try {
+    return cloneDefault(value);
+  } catch {
+    return JSON.parse(safeJsonStringify(value)) as T;
+  }
 }
 
 function toRuntimeWorkflow(candidate: WorkflowDefinitionInput): RuntimeWorkflow {

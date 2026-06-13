@@ -114,6 +114,5 @@ function createSession(): EngineSession {
     constraints: [],
     sharedCache: new Map<string, unknown>(),
     routingMemory: { lastMatchedWorkflowIds: [] },
-    workflowInstances: new Map(),
   };
 }

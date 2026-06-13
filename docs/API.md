@@ -11,10 +11,10 @@ Use this package to define workflow artifacts and connector contracts.
 ### Public Surface Index
 
 Runtime exports:
-- `AckOptionSchema`, `AckRequestSchema`, `ConnectorRegistry`, `DEFAULT_ROUTING_THRESHOLDS`, `JsonRecordSchema`, `PrefetchStore`, `SessionPatchSchema`, `WorkflowContextStore`, `createConnectorRegistry`, `defineConnectorCatalog`, `defineConnectorRef`, `defineConnectorTool`, `definePatch`, `defineRouting`, `defineWorkflowDefinition`, `defineWorkflowHooks`, `effectAction`, `hydrateContextAction`, `loadWorkflowMetadata`, `prefetchAction`, `renderAction`, `resolveAckSelection`, `setContextAction`, `setStateAction`, `settlePrefetch`, `workflow`, `workflowActions`, and `z`.
+- `AckOptionSchema`, `AckRequestSchema`, `ConnectorRegistry`, `DEFAULT_ROUTING_THRESHOLDS`, `JsonRecordSchema`, `PrefetchStore`, `SessionPatchSchema`, `ToolMessage`, `WorkflowContextStore`, `createConnectorRegistry`, `defineConnectorCatalog`, `defineConnectorRef`, `defineConnectorTool`, `definePatch`, `defineRouting`, `defineWorkflowDefinition`, `defineWorkflowHooks`, `effectAction`, `hydrateContextAction`, `loadWorkflowMetadata`, `prefetchAction`, `renderAction`, `resolveAckSelection`, `setContextAction`, `setStateAction`, `settlePrefetch`, `workflow`, `workflowActions`, and `z`.
 
 Public types:
-- `AckRequest`, `AckSelection`, `ConnectorCatalog`, `ConnectorInput`, `ConnectorOutput`, `PatchPolicy`, `RenderPolicy`, `RenderResponse`, `RoutingProfile`, `SessionContext`, `WorkflowContext`, `WorkflowDefinition`, `WorkflowMetadata`, `WorkflowNode`, `WorkflowPatch`, `WorkflowProgram`, `WorkflowRuntimeInput`, and `WorkflowStatePatch`.
+- `AckRequest`, `AckSelection`, `ConnectorCatalog`, `ConnectorInput`, `ConnectorOutput`, `PatchPolicy`, `RenderPolicy`, `RenderResponse`, `RoutingProfile`, `SessionContext`, `ToolMessageInput`, `WorkflowContext`, `WorkflowDefinition`, `WorkflowMetadata`, `WorkflowNode`, `WorkflowPatch`, `WorkflowProgram`, `WorkflowRuntimeInput`, `WorkflowStatePatch`, and `WorkflowToolMessage`.
 
 ### Workflow Definition
 
@@ -41,6 +41,25 @@ Behavior:
 
 Boundary:
 - this helper only declares the artifact; `@pac/engine` owns scheduling and execution.
+
+#### `new ToolMessage(input)`
+
+Creates a runtime tool-message entry for connector results or derived facts that should be visible to patch/render LLM calls.
+
+Input:
+- `name`: stable tool or connector name.
+- `call`: optional tool-call arguments.
+- `result`: required tool result payload.
+- `id`: optional stable tool-call id.
+- `isError`: optional error flag.
+
+Behavior:
+- validates the message name, optional id, required result field, and optional error flag;
+- serializes to the workflow `role: "tool"` message shape.
+
+Boundary:
+- workflow code returns `ToolMessage` instances through `messages` from `derive(...)` or `command(...)`;
+- `@pac/engine` converts each workflow tool message into paired PI assistant tool-call and tool-result messages.
 
 #### `defineWorkflowDefinition(definition)`
 
@@ -195,7 +214,7 @@ Runtime exports:
 - `WorkflowEngine` and `createLlmClient`.
 
 Public types:
-- `CreateSessionInput`, `EngineDeps`, `EngineSession`, `EngineTraceEvent`, `EngineTurnResult`, `LlmClient`, `LlmClientOptions`, `LlmStructuredRequest`, `LlmTextRequest`, `LlmTextStreamEvent`, `LlmUsage`, `WorkflowDefinitionInput`, and `WorkflowEngineOptions`.
+- `CreateSessionInput`, `EngineDeps`, `EngineSession`, `EngineTraceEvent`, `EngineTurnResult`, `LlmClient`, `LlmClientOptions`, `LlmStructuredRequest`, `LlmTextRequest`, `LlmTextStreamEvent`, `LlmUsage`, `WorkflowDefinitionInput`, `WorkflowEngineOptions`, and `WorkflowSnapshot`.
 
 ### Engine
 
@@ -222,7 +241,7 @@ Behavior:
 - serializes logger diagnostics defensively so non-serializable runtime values do not crash execution;
 - routes new sessions by local routing metadata;
 - keeps active sessions on active workflows;
-- appends runtime message history;
+- appends runtime message history and converts workflow tool messages into paired PI assistant tool-call and tool-result messages;
 - extracts structured patches through `deps.llm.structured(...)`;
 - reserves the workflow state field `messages` for runtime history and ignores attempts to write it through state patches;
 - compares JSON-native state and prefetch values structurally so object key ordering alone does not create dirty fields;
@@ -253,9 +272,8 @@ Behavior:
 Runs one user turn.
 
 Behavior:
-- validates the message and engine session shape before mutating runtime state;
+- validates the message before mutating runtime state;
 - rejects duplicate or unknown active workflow ids on the mutable session.
-- rejects cached workflow instances that do not belong to the current engine registry.
 
 Output:
 - `response`: primary render response;
@@ -263,9 +281,9 @@ Output:
 - `session`: mutated session reference;
 - `traces`: runtime trace events for routing, patching, nodes, invalidation, messages, and rendering.
 
-#### `engine.getInstance(session, workflowId)`
+#### `engine.getWorkflowSnapshot(session, workflowId)`
 
-Returns a workflow instance for inspection or tests.
+Returns a read-only workflow snapshot for inspection.
 
 ### LLM Client
 
@@ -303,6 +321,7 @@ Important public types include:
 - `EngineDeps`
 - `WorkflowEngineOptions`
 - `WorkflowDefinitionInput`
+- `WorkflowSnapshot`
 
 The package root intentionally does not export internal runtime implementation types such as
 `RuntimeWorkflow`, `RuntimeInstance`, or `TargetSelection`.
