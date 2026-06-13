@@ -21,5 +21,5 @@
 ## Notes
 
 - Public API changes are reflected in `../docs/API.md`.
-- Package export or tarball changes are covered by the smoke scripts.
+- Package tarball changes are inspected with `npm run pack:check`.
 - LLM-dependent behavior changes explain whether real-provider smoke testing was run.

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Workflow Testing"
+  short_description: "Verify PAC workflow business coverage"
+  default_prompt: "Use $pac-workflow-testing to verify this PAC workflow with deterministic business scenario coverage."

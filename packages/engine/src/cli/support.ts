@@ -177,7 +177,17 @@ function readRequiredOptionValue(
 }
 
 function printUsage(): void {
-  console.log(`Usage:
+  console.log(usageText());
+}
+
+/**
+ * Returns the public CLI usage text shown by `--help`.
+ * Input: none.
+ * Output: a stable help string for terminal display and tests.
+ * Boundary: this text documents argument shape only; runtime workflow behavior belongs to the engine.
+ */
+export function usageText(): string {
+  return `Usage:
   npm run chat -- --workflow <workflow-file> [--connectors <connectors-file>] [--model <model>] [--base-url <url>] [--user-id <id>] [--session-id <id>] [--message <text>] [--no-stream] [--traces] [--debug]
 
 Examples:
@@ -198,7 +208,7 @@ Commands inside chat:
   /session   Print session facts/preferences/goals
   /traces    Print last turn traces
   /exit      Quit
-`);
+`;
 }
 
 function firstConfigured(...values: Array<string | undefined>): string | undefined {

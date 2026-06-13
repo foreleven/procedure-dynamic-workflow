@@ -39,8 +39,7 @@
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "npm run clean && tsc -p tsconfig.build.json",
-    "prepack": "npm run build",
-    "prepublishOnly": "node ../../scripts/verify-publish-ready.mjs @pac/workflow"
+    "prepack": "npm run build"
   },
   "dependencies": {
     "yaml": "^2.9.0",

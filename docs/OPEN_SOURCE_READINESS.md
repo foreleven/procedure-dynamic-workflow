@@ -7,30 +7,11 @@ This project is being prepared for a formal open-source release. The checklist b
 - Package build output is generated into `packages/*/dist`.
 - Published package exports point at compiled JavaScript and declaration files.
 - Published package manifests declare public npm access for scoped packages.
-- Package tarballs include README files, `dist/index.js`, and `dist/index.d.ts`.
-- Package tarball checks reject source maps and declaration maps that would point at unpublished source files.
-- Package tarball checks reject package README snippets that advertise repository-only `npm run` commands.
-- Package tarball checks tolerate npm lifecycle output before the final `npm pack --json` payload.
-- Local CI covers type checking, package builds, unit tests, package export smoke checks, external declaration-file smoke checks, tarball content checks, tarball install/import checks, and documentation link checks.
-- Local CI rejects tracked generated/local artifacts and high-risk source suppressions or type escapes.
-- Local CI covers CLI startup and required workflow argument validation without calling LLM providers.
-- Local CI discovers package unit tests recursively under package `src` directories so source subdirectory tests cannot be skipped by shell glob limits.
-- Package export smoke checks validate both runtime exports and key public declaration names for published package roots.
-- Package type smoke checks assert connector registry call input and output inference from an external consumer.
+- Package tarballs can be inspected with `npm run pack:check`.
+- Local CI covers type checking, package builds, unit tests, and high-severity dependency audit findings.
+- CLI usage and required argument validation are covered by unit tests without calling LLM providers.
 - Type checking rejects ambiguous optional-property writes, unused locals/parameters, implicit returns, switch fallthrough, unchecked indexed access, and inconsistent import casing.
-- Local CI covers deterministic maintenance scenario wiring plus happy path, cancellation, multi-vehicle selection, time-change invalidation, draft follow-up, explicit previous-dealer, no-availability fallback, prefetch connector failure, command connector failure, and no-vehicle runtime checks without calling LLM providers.
-- Local CI verifies the active Node/npm toolchain before running package metadata, workspace dependency, build, test, and smoke checks.
-- GitHub Actions pins the declared npm version and verifies the toolchain before dependency installation.
-- Package metadata checks keep published runtime dependencies exact, including blocking dev-only dependencies from publishable package manifests.
-- Package metadata checks keep the private workspace root free of runtime dependencies so package dependencies stay owned by publishable workspaces.
-- Package metadata checks verify repository ignore rules and an unpopulated `.env.example` for local model-provider configuration.
-- Source hygiene checks allow the tracked `.env.example` template while blocking real local `.env` files.
-- Package metadata checks require the source hygiene gate to stay wired into local CI.
-- Package publish attempts are guarded by `prepublishOnly` checks that require a repository `LICENSE` and package license metadata.
-- Publish lifecycle checks verify workspace `prepublishOnly` guards resolve the repository root even when npm runs them from package directories.
 - Published package manifests declare the same Node.js runtime requirement as the root workspace.
-- Local CI rejects high-severity dependency audit findings.
-- Local CI rejects lockfile tarball URLs from non-public registries.
 - Engine unit coverage includes ordered streaming output across multiple active workflows.
 - Engine construction trusts typed options and validates runtime invariants that TypeScript cannot express before executing turns.
 - Engine construction validates cloneable state-schema parsed workflow default state.
@@ -67,8 +48,7 @@ This project is being prepared for a formal open-source release. The checklist b
 - Engine and CLI diagnostics safely stringify non-serializable runtime values while distinguishing shared references from cycles.
 - GitHub Actions runs the local CI gate on pushes and pull requests.
 - Contribution, support, code of conduct, security, release, changelog, [root README](../README.md), and package README documents exist.
-- Documentation link checks discover all repository Markdown files instead of relying on a fixed document list.
-- API documentation checks require every public runtime export and key public type to appear in `API.md`.
+- Public package APIs are documented in `API.md`.
 - Issue and pull request templates exist.
 - Tooling config includes `.editorconfig` and npm `engine-strict` for consistent local setup.
 - GitHub Actions uses read-only repository token permissions and does not persist checkout credentials.

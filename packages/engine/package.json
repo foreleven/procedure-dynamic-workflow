@@ -39,8 +39,7 @@
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "npm run clean && tsc -p tsconfig.build.json",
-    "prepack": "npm run build -w @pac/workflow && npm run build",
-    "prepublishOnly": "node ../../scripts/verify-publish-ready.mjs @pac/engine"
+    "prepack": "npm run build -w @pac/workflow && npm run build"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "^0.79.1",

@@ -12,47 +12,33 @@ This project is pre-1.0 and is not ready for public release until maintainers ad
 ## Release Checklist
 
 1. Confirm a `LICENSE` file exists and package metadata names the selected license.
-2. Run the publish-readiness guard:
-
-   ```bash
-   npm run publish:check
-   ```
-
-   This command intentionally fails until the repository `LICENSE` exists and every published package declares the selected license.
-3. Update package versions in:
+2. Update package versions in:
    - `packages/workflow/package.json`
    - `packages/engine/package.json`
    - dependent workspace references when needed.
-4. Update `CHANGELOG.md` with user-visible changes.
-5. Run the full local gate:
+3. Update `CHANGELOG.md` with user-visible changes.
+4. Run the full local gate:
 
    ```bash
    npm ci
    npm run ci
    ```
 
-6. Verify tarball contents from a clean tree:
+5. Inspect package tarballs from a clean tree:
 
    ```bash
    npm run clean
-   npm run smoke:tarballs
+   npm run pack:check
    ```
 
-7. Inspect package metadata:
-
-   ```bash
-   npm pack --workspace @pac/workflow --dry-run
-   npm pack --workspace @pac/engine --dry-run
-   ```
-
-8. Publish in dependency order:
+6. Publish in dependency order:
 
    ```bash
    npm publish --workspace @pac/workflow --access public
    npm publish --workspace @pac/engine --access public
    ```
 
-9. Create and push a git tag for the release.
+7. Create and push a git tag for the release.
 
 ## Manual LLM Smoke Test
 

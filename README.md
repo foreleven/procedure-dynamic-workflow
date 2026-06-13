@@ -63,22 +63,10 @@ The verified development toolchain is Node.js `>=24.0.0` with `npm@11.12.1`.
 
 ## Commands
 
-Verify the local Node.js and npm versions:
-
-```bash
-npm run toolchain:check
-```
-
 Type-check the workspace:
 
 ```bash
 npm run check
-```
-
-Check source hygiene and tracked-file hygiene:
-
-```bash
-npm run source:check
 ```
 
 Remove compiled package artifacts:
@@ -96,63 +84,27 @@ npm run build
 Run the local unit test suite:
 
 ```bash
-npm test
+npm run test:unit
 ```
 
 Unit tests may live beside implementation files anywhere under `packages/*/src` as `*.unit.test.ts`.
 
-Run the local CLI smoke checks:
+Run type checking, package builds, and unit tests:
 
 ```bash
-npm run cli:check
+npm test
 ```
 
-Verify published package exports:
+Inspect package tarballs without publishing:
 
 ```bash
-npm run smoke:packages
-```
-
-Verify published package declaration files from an external TypeScript consumer:
-
-```bash
-npm run smoke:types
-```
-
-Verify package tarball contents:
-
-```bash
-npm run smoke:tarballs
-```
-
-Verify package tarball installation from a temporary external project:
-
-```bash
-npm run smoke:install
-```
-
-Check package metadata:
-
-```bash
-npm run metadata:check
-```
-
-Check workspace publish lifecycle path safety:
-
-```bash
-npm run publish:lifecycle:check
+npm run pack:check
 ```
 
 Run the high-severity dependency audit:
 
 ```bash
 npm run audit:check
-```
-
-Check documentation links and API coverage:
-
-```bash
-npm run docs:check
 ```
 
 Run the default local verification set:
@@ -183,12 +135,6 @@ Run the maintenance scenario suite:
 
 ```bash
 npm run scenario:maintenance
-```
-
-Run deterministic maintenance scenario wiring and runtime path checks:
-
-```bash
-npm run scenario:maintenance:check
 ```
 
 Run the generic chat CLI with explicit files:

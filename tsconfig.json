@@ -13,8 +13,7 @@
   },
   "include": [
     "packages/**/*.ts",
-    "scenarios/**/*.ts",
-    "scripts/**/*.ts"
+    "scenarios/**/*.ts"
   ],
   "exclude": [
     "packages/*/dist"
