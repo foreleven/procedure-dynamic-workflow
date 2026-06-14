@@ -1,4 +1,0 @@
-interface:
-  display_name: "Workflow Creator"
-  short_description: "Compile Procedures into PAC workflows"
-  default_prompt: "Use $pac-workflow-creator to compile this business procedure into a PAC workflow artifact."

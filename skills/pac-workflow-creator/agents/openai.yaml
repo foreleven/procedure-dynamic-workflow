@@ -1,0 +1,4 @@
+interface:
+  display_name: "Workflow Creator"
+  short_description: "Design state-first PAC workflows"
+  default_prompt: "Use $pac-workflow-creator to design state first, then compile this business procedure into a PAC workflow artifact."

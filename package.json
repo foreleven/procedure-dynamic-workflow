@@ -29,6 +29,7 @@
     "chat": "tsx packages/engine/src/cli.ts",
     "chat:maintenance": "tsx packages/engine/src/cli.ts --workflow scenarios/maintenance/maintenance_booking.workflow.ts --connectors scenarios/maintenance/connectors.ts --user-id user_feng",
     "scenario:maintenance": "tsx scenarios/maintenance/run.ts",
+    "scenario:investment-advisor": "tsx scenarios/investment-advisor/run.ts",
     "test:llm": "tsx packages/engine/src/typebox-tool.manual.ts"
   },
   "devDependencies": {

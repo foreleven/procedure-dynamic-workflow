@@ -1,4 +1,0 @@
-interface:
-  display_name: "PAC Dynamic Workflow"
-  short_description: "Compile procedures into program workflows"
-  default_prompt: "Use $pac-dynamic-workflow to compile this business procedure into a PAC dynamic workflow definition."

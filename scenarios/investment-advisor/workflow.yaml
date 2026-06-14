@@ -1,0 +1,159 @@
+# workflow 的稳定唯一标识。
+id: advisor_investment_research
+
+# workflow artifact 版本。
+version: 1.0.0
+
+# workflow 的业务范围。
+description: 投资顾问股票、市场、行业、政策、产业链和方法论研究问答
+
+routing:
+  examples:
+    - 分析下比亚迪
+    - 圣邦股份股票现在可以进吗
+    - 紫金矿业明日预测
+    - 300322涨停原因
+    - 贵州茅台2025Q1业绩
+    - 对比一下海联金汇和中国移动两只股票的财务状况
+    - 今日大盘
+    - 今天有哪些热点概念
+    - 国内光刻机行业的发展前景如何
+    - 人形机器人产业链上下游企业有哪些
+  entities:
+    - 股票
+    - 大盘
+    - 行业
+    - 板块
+    - 研报
+    - 财务
+    - 估值
+    - 资金流
+    - 热点概念
+    - 产业链
+    - 政策
+    - 方法论
+  neighbors:
+    - trade_order
+    - portfolio_account
+    - risk_assessment
+
+cases:
+  - id: advisor_stock_brief_procedure
+    description: 裸股票名、代码、简单“分析一下/怎么样”。
+    userId: user_feng
+    turns:
+      - message: 分析下比亚迪
+        expect:
+          responseSatisfies: 系统应围绕比亚迪给出投资研究摘要，说明依据来自可用行情、新闻或研报数据，并提示不是确定买卖建议。
+
+  - id: advisor_stock_position_procedure
+    description: 买入、卖出、建仓、加仓、离场、持有、止盈止损、买卖策略。
+    userId: user_feng
+    turns:
+      - message: 圣邦股份股票现在可以进吗
+        expect:
+          responseSatisfies: 系统应提供条件化买入或观望策略、风险控制和需要确认的信号，不能直接给无条件买入指令。
+
+  - id: advisor_stock_trend_procedure
+    description: 后市、未来走势、短期/长期、明天/明日涨跌、趋势预测。
+    userId: user_feng
+    turns:
+      - message: 紫金矿业明日预测
+        expect:
+          responseSatisfies: 系统应给出短期情景分析和风险提示，不能保证明日涨跌。
+
+  - id: advisor_stock_reason_procedure
+    description: 涨跌原因、涨停原因、异动、啥情况、怎么了。
+    userId: user_feng
+    turns:
+      - message: 300322涨停原因
+        expect:
+          responseSatisfies: 系统应结合行情、资金、新闻或热点信息解释可能原因，并区分已证实信息和待核验因素。
+
+  - id: advisor_stock_financial_procedure
+    description: 财务状况、财报、业绩、现金流、盈利能力、营收增长。
+    userId: user_feng
+    turns:
+      - message: 贵州茅台2025Q1业绩
+        expect:
+          responseSatisfies: 系统应围绕贵州茅台 2025Q1 业绩或财务信息分析，并说明数据边界和风险。
+
+  - id: advisor_stock_compare_procedure
+    description: 多股票、同行业或跨行业对比。
+    userId: user_feng
+    turns:
+      - message: 对比一下海联金汇和中国移动两只股票的财务状况
+        expect:
+          responseSatisfies: 系统应分别比较两家公司财务或业务情况，说明可比维度和不可比之处。
+
+  - id: advisor_stock_valuation_procedure
+    description: 投资价值、估值、股价合理性、内在价值。
+    userId: user_feng
+    turns:
+      - message: 分析一下隆基绿能这支股票的投资价值
+        expect:
+          responseSatisfies: 系统应从业务质量、行业位置、景气度、市场表现和估值风险讨论投资价值，不能编造精确内在价值。
+
+  - id: advisor_stock_event_research_procedure
+    description: 处罚、复产、公告、新闻、研报、机构观点。
+    userId: user_feng
+    turns:
+      - message: ST未名的子公司复产需要满足哪些条件
+        expect:
+          responseSatisfies: 系统应优先围绕公告、新闻或研报事实说明复产条件，缺少原文时提示需要进一步核验。
+
+  - id: advisor_market_index_procedure
+    description: A股/港股/美股大盘，今日/昨日指数行情。
+    userId: user_feng
+    turns:
+      - message: 今日大盘
+        expect:
+          responseSatisfies: 系统应概述大盘、资金面、热点方向和风险；没有指数代码时不能编造指数点位。
+
+  - id: advisor_hot_market_procedure
+    description: 热门个股、热点概念、热点板块、值得关注方向。
+    userId: user_feng
+    turns:
+      - message: 今天有哪些热点概念
+        expect:
+          responseSatisfies: 系统应列出热点概念或方向、驱动因素和持续性风险。
+
+  - id: advisor_sector_intraday_procedure
+    description: 某行业/板块今日或近期行情。
+    userId: user_feng
+    turns:
+      - message: 今天的券商板块股票如何
+        expect:
+          responseSatisfies: 系统应说明券商板块当日或近期强弱、可能驱动和短线风险。
+
+  - id: advisor_sector_outlook_procedure
+    description: 行业前景、市场规模、发展趋势、投资逻辑、竞争态势。
+    userId: user_feng
+    turns:
+      - message: 国内光刻机行业的发展前景如何
+        expect:
+          responseSatisfies: 系统应说明光刻机行业前景、驱动、竞争态势、投资逻辑和风险。
+
+  - id: advisor_policy_macro_procedure
+    description: 政策、宏观经济、经济指标、贸易摩擦对行业影响。
+    userId: user_feng
+    turns:
+      - message: 育儿补贴政策对母婴行业的影响
+        expect:
+          responseSatisfies: 系统应说明政策传导路径、受益和承压环节、时滞和不确定性。
+
+  - id: advisor_industry_chain_procedure
+    description: 产业链上下游、相关 A 股公司、代表性公司梳理。
+    userId: user_feng
+    turns:
+      - message: 人形机器人产业链上下游企业有哪些
+        expect:
+          responseSatisfies: 系统应按产业链上下游或关键环节梳理相关公司，并说明信息需进一步核验。
+
+  - id: advisor_methodology_procedure
+    description: 方法论、步骤范本、预测模型、成功案例、政策方案。
+    userId: user_feng
+    turns:
+      - message: 推荐一些解读建材板块资金流向与宏观经济数据的方法范本
+        expect:
+          responseSatisfies: 系统应提供可复用的方法步骤、指标清单、解释方式和验证注意事项。
