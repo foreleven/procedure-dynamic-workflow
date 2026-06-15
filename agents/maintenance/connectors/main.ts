@@ -1,4 +1,9 @@
-import { defineConnectorCatalog, defineConnectorRef, defineConnectorTool, z } from "@pac/workflow";
+import {
+  defineConnectorCatalog,
+  defineConnectorRef,
+  defineConnectorTool,
+  z,
+} from "@pac/workflow";
 import {
   mockCustomers,
   mockDealers,
@@ -6,7 +11,7 @@ import {
   mockRecentDealerByUser,
   mockSlotTemplatesByDealer,
   mockVehiclesByUser,
-} from "../mockData.js";
+} from "./mockData.js";
 
 export const CustomerSchema = z.object({
   id: z.string(),
@@ -45,7 +50,11 @@ export const DealerRefSchema = z.object({
   phone: z.string(),
   brands: z.array(z.string()),
   distanceKm: z.number(),
-  serviceLevel: z.enum(["brand_certified", "independent_specialist", "ev_specialist"]),
+  serviceLevel: z.enum([
+    "brand_certified",
+    "independent_specialist",
+    "ev_specialist",
+  ]),
   openingHours: z.string(),
 });
 
@@ -62,7 +71,9 @@ export const MaintenanceHistoryItemSchema = z.object({
   invoiceAmountCents: z.number(),
 });
 
-export type MaintenanceHistoryItem = z.infer<typeof MaintenanceHistoryItemSchema>;
+export type MaintenanceHistoryItem = z.infer<
+  typeof MaintenanceHistoryItemSchema
+>;
 
 export const DateRangeSchema = z.object({
   label: z.string(),
@@ -176,14 +187,16 @@ export const getAvailableSlotsConnector = defineConnectorRef({
 
 export const createMaintenanceBookingDraftConnector = defineConnectorRef({
   id: "connectors.maintenance.createBookingDraft",
-  description: "Create a booking draft from resolved maintenance appointment details.",
+  description:
+    "Create a booking draft from resolved maintenance appointment details.",
   inputSchema: CreateBookingDraftInputSchema,
   outputSchema: BookingDraftSchema,
 });
 
 export const confirmMaintenanceBookingConnector = defineConnectorRef({
   id: "connectors.maintenance.confirmBooking",
-  description: "Confirm a maintenance booking draft and return the committed booking.",
+  description:
+    "Confirm a maintenance booking draft and return the committed booking.",
   inputSchema: ConfirmBookingInputSchema,
   outputSchema: BookingSchema,
 });
@@ -191,11 +204,13 @@ export const confirmMaintenanceBookingConnector = defineConnectorRef({
 export const maintenanceConnectorCatalog = defineConnectorCatalog({
   "connectors.maintenance.getCustomer": getCustomerConnector,
   "connectors.maintenance.getUserVehicles": getUserVehiclesConnector,
-  "connectors.maintenance.getMaintenanceHistory": getMaintenanceHistoryConnector,
+  "connectors.maintenance.getMaintenanceHistory":
+    getMaintenanceHistoryConnector,
   "connectors.maintenance.getRecentDealer": getRecentDealerConnector,
   "connectors.maintenance.getDealerCandidates": getDealerCandidatesConnector,
   "connectors.maintenance.getAvailableSlots": getAvailableSlotsConnector,
-  "connectors.maintenance.createBookingDraft": createMaintenanceBookingDraftConnector,
+  "connectors.maintenance.createBookingDraft":
+    createMaintenanceBookingDraftConnector,
   "connectors.maintenance.confirmBooking": confirmMaintenanceBookingConnector,
 });
 
@@ -220,16 +235,24 @@ export async function getUserVehicles(userId: string): Promise<VehicleRef[]> {
   return z.array(VehicleRefSchema).parse(mockVehiclesByUser[userId] ?? []);
 }
 
-export async function getMaintenanceHistory(userId: string): Promise<MaintenanceHistoryItem[]> {
-  return z.array(MaintenanceHistoryItemSchema).parse(mockMaintenanceHistoryByUser[userId] ?? []);
+export async function getMaintenanceHistory(
+  userId: string,
+): Promise<MaintenanceHistoryItem[]> {
+  return z
+    .array(MaintenanceHistoryItemSchema)
+    .parse(mockMaintenanceHistoryByUser[userId] ?? []);
 }
 
-export async function getRecentDealer(userId: string): Promise<DealerRef | null> {
+export async function getRecentDealer(
+  userId: string,
+): Promise<DealerRef | null> {
   const dealerId = mockRecentDealerByUser[userId];
   return dealerId ? DealerRefSchema.parse(mockDealers[dealerId]) : null;
 }
 
-export async function getDealerCandidates(vehicle: VehicleRef): Promise<DealerRef[]> {
+export async function getDealerCandidates(
+  vehicle: VehicleRef,
+): Promise<DealerRef[]> {
   const candidates = Object.values(mockDealers)
     .filter((dealer) => dealer.brands.includes(vehicle.make))
     .sort((left, right) => dealerScore(left) - dealerScore(right));
@@ -264,7 +287,10 @@ export async function getAvailableSlots(input: {
 
   return z.array(SlotSchema).parse(
     selectedTemplates.map((template) => {
-      const endsAtTime = addMinutes(template.startsAtTime, template.estimatedMinutes);
+      const endsAtTime = addMinutes(
+        template.startsAtTime,
+        template.estimatedMinutes,
+      );
       return {
         id: `${template.id}_${dateKey(input.dateRange.start)}`,
         label: `${input.dateRange.label} ${template.startsAtTime}`,
@@ -293,7 +319,9 @@ export async function createMaintenanceBookingDraft(input: {
   });
 }
 
-export async function confirmMaintenanceBooking(draft: BookingDraft): Promise<Booking> {
+export async function confirmMaintenanceBooking(
+  draft: BookingDraft,
+): Promise<Booking> {
   return BookingSchema.parse({
     id: `booking_${draft.id.replace(/^draft_/, "")}`,
     confirmationCode: confirmationCode(draft),
@@ -309,14 +337,29 @@ export async function confirmMaintenanceBooking(draft: BookingDraft): Promise<Bo
 }
 
 export const maintenanceConnectorTools = [
-  defineConnectorTool(getCustomerConnector, ({ userId }) => getCustomer(userId)),
-  defineConnectorTool(getUserVehiclesConnector, ({ userId }) => getUserVehicles(userId)),
-  defineConnectorTool(getMaintenanceHistoryConnector, ({ userId }) => getMaintenanceHistory(userId)),
-  defineConnectorTool(getRecentDealerConnector, ({ userId }) => getRecentDealer(userId)),
-  defineConnectorTool(getDealerCandidatesConnector, ({ vehicle }) => getDealerCandidates(vehicle)),
+  defineConnectorTool(getCustomerConnector, ({ userId }) =>
+    getCustomer(userId),
+  ),
+  defineConnectorTool(getUserVehiclesConnector, ({ userId }) =>
+    getUserVehicles(userId),
+  ),
+  defineConnectorTool(getMaintenanceHistoryConnector, ({ userId }) =>
+    getMaintenanceHistory(userId),
+  ),
+  defineConnectorTool(getRecentDealerConnector, ({ userId }) =>
+    getRecentDealer(userId),
+  ),
+  defineConnectorTool(getDealerCandidatesConnector, ({ vehicle }) =>
+    getDealerCandidates(vehicle),
+  ),
   defineConnectorTool(getAvailableSlotsConnector, getAvailableSlots),
-  defineConnectorTool(createMaintenanceBookingDraftConnector, createMaintenanceBookingDraft),
-  defineConnectorTool(confirmMaintenanceBookingConnector, ({ draft }) => confirmMaintenanceBooking(draft)),
+  defineConnectorTool(
+    createMaintenanceBookingDraftConnector,
+    createMaintenanceBookingDraft,
+  ),
+  defineConnectorTool(confirmMaintenanceBookingConnector, ({ draft }) =>
+    confirmMaintenanceBooking(draft),
+  ),
 ];
 
 /**
@@ -354,7 +397,9 @@ function timeToMinutes(time: string): number {
 
 function addMinutes(time: string, minutesToAdd: number): string {
   const total = timeToMinutes(time) + minutesToAdd;
-  const hours = Math.floor(total / 60).toString().padStart(2, "0");
+  const hours = Math.floor(total / 60)
+    .toString()
+    .padStart(2, "0");
   const minutes = (total % 60).toString().padStart(2, "0");
   return `${hours}:${minutes}`;
 }

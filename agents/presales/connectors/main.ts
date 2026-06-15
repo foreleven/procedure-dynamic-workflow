@@ -1,9 +1,14 @@
-import { defineConnectorCatalog, defineConnectorRef, defineConnectorTool, z } from "@pac/workflow";
+import {
+  defineConnectorCatalog,
+  defineConnectorRef,
+  defineConnectorTool,
+  z,
+} from "@pac/workflow";
 import {
   mockExistingRelationships,
   mockPresalesCustomers,
   mockPresalesProducts,
-} from "../mockData.js";
+} from "./mockData.js";
 
 export const RiskTierSchema = z.enum(["low", "medium", "high"]);
 export const UseCaseSchema = z.enum([
@@ -42,7 +47,11 @@ export const ExistingRelationshipsSchema = z.object({
 
 export type ExistingRelationships = z.infer<typeof ExistingRelationshipsSchema>;
 
-export const ProductCategorySchema = z.enum(["credit_line", "term_loan", "equipment_finance"]);
+export const ProductCategorySchema = z.enum([
+  "credit_line",
+  "term_loan",
+  "equipment_finance",
+]);
 
 export const AprRangeSchema = z.object({
   min: z.number().int().positive(),
@@ -150,7 +159,8 @@ export const CreateConsultationLeadInputSchema = z.object({
 
 export const getCustomerProfileConnector = defineConnectorRef({
   id: "connectors.presales.getCustomerProfile",
-  description: "Read the customer profile used as presales consultation context.",
+  description:
+    "Read the customer profile used as presales consultation context.",
   inputSchema: UserIdInputSchema,
   outputSchema: CustomerProfileSchema,
 });
@@ -171,7 +181,8 @@ export const getProductCatalogConnector = defineConnectorRef({
 
 export const matchProductsConnector = defineConnectorRef({
   id: "connectors.presales.matchProducts",
-  description: "Match available products to the customer's stated financing need.",
+  description:
+    "Match available products to the customer's stated financing need.",
   inputSchema: MatchProductsInputSchema,
   outputSchema: z.array(ProductMatchSchema),
 });
@@ -185,7 +196,8 @@ export const getProductDetailsConnector = defineConnectorRef({
 
 export const calculateIndicativeRepaymentConnector = defineConnectorRef({
   id: "connectors.presales.calculateIndicativeRepayment",
-  description: "Calculate a non-binding repayment estimate for presales consultation.",
+  description:
+    "Calculate a non-binding repayment estimate for presales consultation.",
   inputSchema: CalculateRepaymentInputSchema,
   outputSchema: RepaymentEstimateSchema,
 });
@@ -199,11 +211,13 @@ export const createConsultationLeadConnector = defineConnectorRef({
 
 export const presalesConnectorCatalog = defineConnectorCatalog({
   "connectors.presales.getCustomerProfile": getCustomerProfileConnector,
-  "connectors.presales.getExistingRelationships": getExistingRelationshipsConnector,
+  "connectors.presales.getExistingRelationships":
+    getExistingRelationshipsConnector,
   "connectors.presales.getProductCatalog": getProductCatalogConnector,
   "connectors.presales.matchProducts": matchProductsConnector,
   "connectors.presales.getProductDetails": getProductDetailsConnector,
-  "connectors.presales.calculateIndicativeRepayment": calculateIndicativeRepaymentConnector,
+  "connectors.presales.calculateIndicativeRepayment":
+    calculateIndicativeRepaymentConnector,
   "connectors.presales.createConsultationLead": createConsultationLeadConnector,
 });
 
@@ -215,22 +229,27 @@ export type PresalesConnectorCatalog = typeof presalesConnectorCatalog;
  * Output: schema-valid customer profile.
  * Boundary: this is read-only fixture data for presales context, not credit approval.
  */
-export async function getCustomerProfile(userId: string): Promise<CustomerProfile> {
-  const profile = mockPresalesCustomers[userId as keyof typeof mockPresalesCustomers];
-  return CustomerProfileSchema.parse(profile ?? {
-    id: userId,
-    name: "Guest User",
-    businessName: "Guest Business",
-    customerType: "sme",
-    city: "Jersey City",
-    industry: "unknown",
-    businessAgeMonths: 0,
-    annualRevenueCents: 0,
-    riskTier: "medium",
-    phone: "+1-201-555-0100",
-    email: `${safeEmailLocalPart(userId)}@example.com`,
-    contactPermission: false,
-  });
+export async function getCustomerProfile(
+  userId: string,
+): Promise<CustomerProfile> {
+  const profile =
+    mockPresalesCustomers[userId as keyof typeof mockPresalesCustomers];
+  return CustomerProfileSchema.parse(
+    profile ?? {
+      id: userId,
+      name: "Guest User",
+      businessName: "Guest Business",
+      customerType: "sme",
+      city: "Jersey City",
+      industry: "unknown",
+      businessAgeMonths: 0,
+      annualRevenueCents: 0,
+      riskTier: "medium",
+      phone: "+1-201-555-0100",
+      email: `${safeEmailLocalPart(userId)}@example.com`,
+      contactPermission: false,
+    },
+  );
 }
 
 /**
@@ -239,8 +258,11 @@ export async function getCustomerProfile(userId: string): Promise<CustomerProfil
  * Output: relationship facts or null when there is no prior relationship.
  * Boundary: failures are handled by prefetch isolation in the runtime.
  */
-export async function getExistingRelationships(userId: string): Promise<ExistingRelationships | null> {
-  const relationship = mockExistingRelationships[userId as keyof typeof mockExistingRelationships];
+export async function getExistingRelationships(
+  userId: string,
+): Promise<ExistingRelationships | null> {
+  const relationship =
+    mockExistingRelationships[userId as keyof typeof mockExistingRelationships];
   return relationship ? ExistingRelationshipsSchema.parse(relationship) : null;
 }
 
@@ -260,12 +282,27 @@ export async function getProductCatalog(): Promise<PresalesProduct[]> {
  * Output: relevant products with recommendation fit, reasons, and gaps.
  * Boundary: this is presales eligibility guidance only and never represents approval.
  */
-export async function matchProducts(input: z.infer<typeof MatchProductsInputSchema>): Promise<ProductMatch[]> {
+export async function matchProducts(
+  input: z.infer<typeof MatchProductsInputSchema>,
+): Promise<ProductMatch[]> {
   const parsed = MatchProductsInputSchema.parse(input);
-  const relevantProducts = parsed.products.filter((product) => product.useCases.includes(parsed.need.useCase));
+  const relevantProducts = parsed.products.filter((product) =>
+    product.useCases.includes(parsed.need.useCase),
+  );
   const matches = relevantProducts
-    .map((product) => matchOneProduct(parsed.customer, parsed.relationships, parsed.need, product))
-    .sort((left, right) => fitRank(left.fit) - fitRank(right.fit) || left.product.minAmountCents - right.product.minAmountCents);
+    .map((product) =>
+      matchOneProduct(
+        parsed.customer,
+        parsed.relationships,
+        parsed.need,
+        product,
+      ),
+    )
+    .sort(
+      (left, right) =>
+        fitRank(left.fit) - fitRank(right.fit) ||
+        left.product.minAmountCents - right.product.minAmountCents,
+    );
 
   return z.array(ProductMatchSchema).parse(matches);
 }
@@ -276,13 +313,16 @@ export async function matchProducts(input: z.infer<typeof MatchProductsInputSche
  * Output: product details, required documents, fees, and compliance note.
  * Boundary: throws when product id is unknown because workflow state should only contain visible choices.
  */
-export async function getProductDetails(input: { productId: string }): Promise<ProductDetails> {
+export async function getProductDetails(input: {
+  productId: string;
+}): Promise<ProductDetails> {
   const product = await requireProduct(input.productId);
   return ProductDetailsSchema.parse({
     product,
     documents: product.requiredDocuments,
     fees: product.fees,
-    complianceNote: "售前信息仅供初步了解，最终额度、利率、费用和审批结果以正式审核及合同为准。",
+    complianceNote:
+      "售前信息仅供初步了解，最终额度、利率、费用和审批结果以正式审核及合同为准。",
   });
 }
 
@@ -302,7 +342,8 @@ export async function calculateIndicativeRepayment(
   const payment =
     monthlyRate === 0
       ? principal / parsed.termMonths
-      : principal * (monthlyRate / (1 - (1 + monthlyRate) ** -parsed.termMonths));
+      : principal *
+        (monthlyRate / (1 - (1 + monthlyRate) ** -parsed.termMonths));
 
   return RepaymentEstimateSchema.parse({
     productId: parsed.product.id,
@@ -311,7 +352,8 @@ export async function calculateIndicativeRepayment(
     aprBps,
     estimatedMonthlyPaymentCents: Math.round(payment),
     estimatedTotalRepaymentCents: Math.round(payment * parsed.termMonths),
-    caveat: "这是售前估算，不构成授信承诺；实际利率、费用和还款计划以正式审批和合同为准。",
+    caveat:
+      "这是售前估算，不构成授信承诺；实际利率、费用和还款计划以正式审批和合同为准。",
   });
 }
 
@@ -325,7 +367,8 @@ export async function createConsultationLead(
   input: z.infer<typeof CreateConsultationLeadInputSchema>,
 ): Promise<ConsultationLead> {
   const parsed = CreateConsultationLeadInputSchema.parse(input);
-  const advisor = parsed.customer.city === "Newark" ? "Maya Patel" : "Alex Rivera";
+  const advisor =
+    parsed.customer.city === "Newark" ? "Maya Patel" : "Alex Rivera";
   return ConsultationLeadSchema.parse({
     id: `lead_${parsed.customer.id}_${parsed.product.id}_${parsed.need.requestedAmountCents}`,
     status: "created",
@@ -339,12 +382,19 @@ export async function createConsultationLead(
 }
 
 export const presalesConnectorTools = [
-  defineConnectorTool(getCustomerProfileConnector, ({ userId }) => getCustomerProfile(userId)),
-  defineConnectorTool(getExistingRelationshipsConnector, ({ userId }) => getExistingRelationships(userId)),
+  defineConnectorTool(getCustomerProfileConnector, ({ userId }) =>
+    getCustomerProfile(userId),
+  ),
+  defineConnectorTool(getExistingRelationshipsConnector, ({ userId }) =>
+    getExistingRelationships(userId),
+  ),
   defineConnectorTool(getProductCatalogConnector, () => getProductCatalog()),
   defineConnectorTool(matchProductsConnector, matchProducts),
   defineConnectorTool(getProductDetailsConnector, getProductDetails),
-  defineConnectorTool(calculateIndicativeRepaymentConnector, calculateIndicativeRepayment),
+  defineConnectorTool(
+    calculateIndicativeRepaymentConnector,
+    calculateIndicativeRepayment,
+  ),
   defineConnectorTool(createConsultationLeadConnector, createConsultationLead),
 ];
 
@@ -377,21 +427,36 @@ function matchOneProduct(
   ];
 
   if (need.requestedAmountCents < product.minAmountCents) {
-    gaps.push(`申请金额低于 ${product.name} 最低金额 ${money(product.minAmountCents)}。`);
+    gaps.push(
+      `申请金额低于 ${product.name} 最低金额 ${money(product.minAmountCents)}。`,
+    );
   }
   if (need.requestedAmountCents > product.maxAmountCents) {
-    gaps.push(`申请金额高于 ${product.name} 最高金额 ${money(product.maxAmountCents)}。`);
+    gaps.push(
+      `申请金额高于 ${product.name} 最高金额 ${money(product.maxAmountCents)}。`,
+    );
   }
-  if (need.termMonths !== null && (need.termMonths < product.minTermMonths || need.termMonths > product.maxTermMonths)) {
-    gaps.push(`期望期限不在 ${product.minTermMonths}-${product.maxTermMonths} 个月范围内。`);
+  if (
+    need.termMonths !== null &&
+    (need.termMonths < product.minTermMonths ||
+      need.termMonths > product.maxTermMonths)
+  ) {
+    gaps.push(
+      `期望期限不在 ${product.minTermMonths}-${product.maxTermMonths} 个月范围内。`,
+    );
   }
   if (customer.businessAgeMonths < product.minBusinessAgeMonths) {
     gaps.push(`企业经营时间少于 ${product.minBusinessAgeMonths} 个月。`);
   }
   if (customer.annualRevenueCents < product.minAnnualRevenueCents) {
-    gaps.push(`年流水低于 ${money(product.minAnnualRevenueCents)} 的参考门槛。`);
+    gaps.push(
+      `年流水低于 ${money(product.minAnnualRevenueCents)} 的参考门槛。`,
+    );
   }
-  if (customer.riskTier === "high" || (relationships?.priorDelinquencies ?? 0) > 1) {
+  if (
+    customer.riskTier === "high" ||
+    (relationships?.priorDelinquencies ?? 0) > 1
+  ) {
     gaps.push("当前风险或逾期记录需要人工复核。");
   }
 
@@ -426,7 +491,9 @@ function fitRank(fit: ProductMatch["fit"]): number {
  * Boundary: throws on missing ids to expose invalid workflow state or test data.
  */
 async function requireProduct(productId: string): Promise<PresalesProduct> {
-  const product = (await getProductCatalog()).find((item) => item.id === productId);
+  const product = (await getProductCatalog()).find(
+    (item) => item.id === productId,
+  );
   if (!product) {
     throw new Error(`Unknown presales product: ${productId}`);
   }
@@ -440,9 +507,15 @@ async function requireProduct(productId: string): Promise<PresalesProduct> {
  * Output: APR in basis points.
  * Boundary: fixture-only estimate, not pricing approval.
  */
-function indicativeAprBps(product: PresalesProduct, relationships: ExistingRelationships | null): number {
+function indicativeAprBps(
+  product: PresalesProduct,
+  relationships: ExistingRelationships | null,
+): number {
   const relationshipDiscount = relationships?.businessChecking ? 75 : 0;
-  return Math.max(product.aprRangeBps.min, product.aprRangeBps.min + 125 - relationshipDiscount);
+  return Math.max(
+    product.aprRangeBps.min,
+    product.aprRangeBps.min + 125 - relationshipDiscount,
+  );
 }
 
 /**
