@@ -14,8 +14,8 @@ Do not design workflow state in `procedure.md`. State-first design belongs in th
 Before writing or editing a procedure:
 
 - Read the repository `AGENTS.md`.
-- Read nearby `procedure.md` examples, especially `scenarios/maintenance/procedure.md`.
-- Read available `connectors.ts` only to learn connector names, capabilities, inputs, outputs, and side-effect boundaries.
+- Read nearby `procedure.md` examples, especially `agents/maintenance/procedure.md`.
+- Read available `connectors/*.ts` only to learn connector names, capabilities, inputs, outputs, and side-effect boundaries.
 - Read the user's business scenario or source procedure.
 
 Use existing workflow files only to understand local naming conventions. Do not copy implementation language into procedure text.
@@ -46,7 +46,7 @@ Use existing workflow files only to understand local naming conventions. Do not 
 
 ## Style
 
-Match the concise prose style of `scenarios/maintenance/procedure.md`:
+Match the concise prose style of `agents/maintenance/procedure.md`:
 
 - Write in Chinese when the scenario is Chinese.
 - Use short paragraphs.

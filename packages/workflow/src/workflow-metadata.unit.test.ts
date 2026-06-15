@@ -9,24 +9,26 @@ test("loadWorkflowMetadata rejects invalid routing thresholds", () => {
   const tempDir = mkdtempSync(resolve(tmpdir(), "pac-workflow-metadata-"));
   try {
     writeFileSync(
-      resolve(tempDir, "workflow.yaml"),
+      resolve(tempDir, "agent.yaml"),
       `
-id: invalid_thresholds
-version: 0.1.0
-description: Invalid routing thresholds fixture.
-routing:
-  examples:
-    - book maintenance
-  entities:
-    - vehicle
-  neighbors: []
-  thresholds:
-    localAccept: -0.1
+workflows:
+  invalid_thresholds:
+    id: invalid_thresholds
+    version: 0.1.0
+    description: Invalid routing thresholds fixture.
+    routing:
+      examples:
+        - book maintenance
+      entities:
+        - vehicle
+      neighbors: []
+      thresholds:
+        localAccept: -0.1
 `,
     );
 
     assert.throws(
-      () => loadWorkflowMetadata(resolve(tempDir, "fixture.ts")),
+      () => loadWorkflowMetadata(resolve(tempDir, "workflows", "invalid_thresholds.workflow.ts"), "../agent.yaml"),
       /Too small|greater than or equal to 0/,
     );
   } finally {

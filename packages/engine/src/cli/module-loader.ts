@@ -26,6 +26,16 @@ export async function loadWorkflow(path: string): Promise<WorkflowDefinitionInpu
 }
 
 /**
+ * Loads workflow definitions from explicit per-workflow artifact paths.
+ * Input: paths derived from an agent manifest's `workflows.<name>` entries.
+ * Output: one validated workflow definition per file, preserving manifest order.
+ * Boundary: each file must export exactly one workflow so agent manifests cannot hide extra workflows behind an aggregate module.
+ */
+export async function loadWorkflowFiles(paths: readonly string[]): Promise<WorkflowDefinitionInput[]> {
+  return Promise.all(paths.map((path) => loadWorkflow(path)));
+}
+
+/**
  * Loads one or more workflow definitions from a local ESM module.
  * Input: path to a module exporting `default`, `workflow`, or `workflows`.
  * Output: workflow definitions accepted by WorkflowEngine.
@@ -50,6 +60,19 @@ export async function loadWorkflows(path: string): Promise<WorkflowDefinitionInp
 }
 
 /**
+ * Loads connector tools from explicit per-connector config files and creates one registry.
+ * Input: paths derived from an agent manifest's `connectors` file-name entries.
+ * Output: a connector registry containing all loaded tools.
+ * Boundary: connector files export loader functions; registry construction and duplicate-id validation stay in the engine.
+ */
+export async function loadConnectorFiles(paths: readonly string[]): Promise<ConnectorRegistry> {
+  if (paths.length === 0) return createConnectorRegistry();
+
+  const toolGroups = await Promise.all(paths.map((path) => loadConnectorTools(path)));
+  return createConnectorRegistry(toolGroups.flat());
+}
+
+/**
  * Loads optional connector tooling from a local ESM module.
  * Input: optional path to a connector registry or connector tool array module.
  * Output: connector registry used by workflow runtime dependencies.
@@ -65,12 +88,27 @@ export async function loadConnectors(path: string | undefined): Promise<Connecto
     return exported;
   }
 
+  if (typeof exported === "function") {
+    const tools = connectorToolsExportSchema().parse(await exported());
+    return createConnectorRegistry(tools);
+  }
+
   const tools = connectorToolsExportSchema().safeParse(exported);
   if (tools.success) {
     return createConnectorRegistry(tools.data);
   }
 
-  throw new Error(`Module does not export a connector registry or connector tool array: ${path}`);
+  throw new Error(`Module does not export a connector registry, connector tool array, or connector loader function: ${path}`);
+}
+
+async function loadConnectorTools(path: string): Promise<AnyConnectorTool[]> {
+  const mod = await importModule(path);
+  const exported = mod.default;
+  if (typeof exported !== "function") {
+    throw new Error(`Connector file must default export a connector loader function: ${path}`);
+  }
+
+  return connectorToolsExportSchema().parse(await exported());
 }
 
 async function importModule(path: string): Promise<Record<string, unknown>> {

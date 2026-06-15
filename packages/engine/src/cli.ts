@@ -14,9 +14,16 @@ import {
   parseArgs,
 } from "./cli/support.js";
 import {
+  loadConnectorFiles,
   loadConnectors,
+  loadWorkflowFiles,
   loadWorkflows,
 } from "./cli/module-loader.js";
+import {
+  resolveCliWorkflowSource,
+  type AgentCase,
+  type AgentTurn,
+} from "./cli/agent-manifest.js";
 import type { WorkflowSnapshot } from "./types.js";
 import { errorMessage } from "./utils/errors.js";
 import { safeJsonStringify } from "./utils/json.js";
@@ -62,13 +69,18 @@ function mapSnapshotMessages(snapshots: Record<string, WorkflowSnapshot<object> 
 
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
-  const workflowPath = options.workflowPath;
-  if (!workflowPath) {
-    throw new Error("Missing required --workflow <path>");
+  const workflowSource = resolveCliWorkflowSource(options.workflowPath);
+  const workflows = workflowSource.kind === "agent"
+    ? await loadWorkflowFiles(workflowSource.workflowFiles.map((file) => file.path))
+    : await loadWorkflows(workflowSource.workflowPath);
+  if (workflowSource.kind === "agent") {
+    assertAgentWorkflowIds(workflowSource.workflowFiles, workflows);
   }
-
-  const workflows = await loadWorkflows(workflowPath);
-  const connectors = await loadConnectors(options.connectorsPath);
+  const connectors = options.connectorsPath
+    ? await loadConnectors(options.connectorsPath)
+    : workflowSource.kind === "agent"
+      ? await loadConnectorFiles(workflowSource.connectorFiles.map((file) => file.path))
+      : await loadConnectors(undefined);
   const logger = createLogger(options.debug);
   const llm = createCliLlmClient(options, logger);
   let streamedChars = 0;
@@ -79,7 +91,6 @@ async function main(): Promise<void> {
     deps: {
       llm,
       connectors,
-      now: () => new Date(),
     },
     logger,
     ...(options.stream
@@ -106,9 +117,83 @@ async function main(): Promise<void> {
 
   let lastTraces: EngineTraceEvent[] = [];
 
+  if (workflowSource.kind === "agent") {
+    console.log(
+      `Loaded agent: ${workflowSource.manifest.manifestPath} (${workflowSource.manifest.cases.length} cases)`,
+    );
+  }
+
   console.log(
     `Loaded workflow${workflows.length === 1 ? "" : "s"}: ${workflows.map((workflow) => `${workflow.id}@${workflow.version}`).join(", ")}`,
   );
+
+  const executeMessage = async (
+    line: string,
+    targetSession: EngineSession,
+  ): Promise<EngineTurnResult | undefined> => {
+    try {
+      streamedChars = 0;
+      lastStreamWorkflowId = undefined;
+      const time = performance.now();
+      const result = await engine.onMessage(line, targetSession);
+      lastTraces = result.traces;
+      const endTime = performance.now();
+
+      if (streamedChars > 0) {
+        process.stdout.write(`\n[耗时: ${(endTime - time).toFixed(2)}ms]\n`);
+      } else {
+        printResponse(`${responseTextForCli(result)}\n[耗时: ${(endTime - time).toFixed(2)}ms]`);
+      }
+
+      if (options.showTraces) {
+        printJson(result.traces);
+      }
+
+      return result;
+    } catch (error) {
+      if (streamedChars > 0) {
+        process.stdout.write("\n");
+      }
+      printResponse(`[error] ${errorMessage(error)}`);
+      return undefined;
+    }
+  };
+
+  const runAgentCase = async (testCase: AgentCase): Promise<void> => {
+    const activeWorkflowIds = activeWorkflowIdsForCase(testCase, workflows);
+    const caseSession = engine.createSession({
+      sessionId: `${options.sessionId}_${testCase.id}`,
+      userId: testCase.userId ?? options.userId,
+      ...(activeWorkflowIds.length > 0 ? { activeWorkflowIds } : {}),
+    });
+
+    console.log(`CASE ${testCase.id}: ${testCase.description}`);
+
+    for (const [index, turn] of testCase.turns.entries()) {
+      console.log(`USER ${index + 1}: ${turn.message}`);
+      const expectation = responseSatisfies(turn);
+      if (expectation) {
+        console.log(`EXPECT ${index + 1}: ${expectation}`);
+      }
+      await executeMessage(turn.message, caseSession);
+    }
+  };
+
+  if (options.runAllCases || options.caseIds.length > 0) {
+    if (workflowSource.kind !== "agent") {
+      throw new Error("--case and --all-cases require an agent directory or agent.yaml input");
+    }
+
+    const cases = selectAgentCases(
+      workflowSource.manifest.cases,
+      options.caseIds,
+      options.runAllCases,
+    );
+    for (const testCase of cases) {
+      await runAgentCase(testCase);
+    }
+    return;
+  }
 
   const handleLine = async (rawLine: string): Promise<boolean> => {
     const line = rawLine.trim();
@@ -156,29 +241,7 @@ async function main(): Promise<void> {
       return true;
     }
 
-    try {
-      streamedChars = 0;
-      lastStreamWorkflowId = undefined;
-      const time = performance.now();
-      const result = await engine.onMessage(line, session);
-      lastTraces = result.traces;
-      const endTime = performance.now();
-
-      if (streamedChars > 0) {
-        process.stdout.write(`\n[耗时: ${(endTime - time).toFixed(2)}ms]\n`);
-      } else {
-        printResponse(`${responseTextForCli(result)}\n[耗时: ${(endTime - time).toFixed(2)}ms]`);
-      }
-
-      if (options.showTraces) {
-        printJson(result.traces);
-      }
-    } catch (error) {
-      if (streamedChars > 0) {
-        process.stdout.write("\n");
-      }
-      printResponse(`[error] ${errorMessage(error)}`);
-    }
+    await executeMessage(line, session);
 
     return true;
   };
@@ -221,3 +284,85 @@ main().catch((error: unknown) => {
   console.error(errorMessage(error));
   process.exit(1);
 });
+
+function selectAgentCases(
+  cases: AgentCase[],
+  caseIds: string[],
+  runAllCases: boolean,
+): AgentCase[] {
+  if (cases.length === 0) {
+    throw new Error("Agent manifest does not define any cases");
+  }
+
+  if (runAllCases) return cases;
+
+  const wanted = [...new Set(caseIds)];
+  const byId = new Map(cases.map((item) => [item.id, item]));
+  const selected: AgentCase[] = [];
+  for (const caseId of wanted) {
+    const testCase = byId.get(caseId);
+    if (!testCase) {
+      throw new Error(`Agent manifest does not define case: ${caseId}`);
+    }
+    selected.push(testCase);
+  }
+
+  return selected;
+}
+
+function activeWorkflowIdsForCase(
+  testCase: AgentCase,
+  workflows: Array<{ id: string }>,
+): string[] {
+  if (testCase.route === "local") return [];
+
+  const activeWorkflowIds = testCase.workflowIds
+    ?? caseDefaultActiveWorkflowIds(testCase, workflows);
+  const registeredWorkflowIds = new Set(workflows.map((workflow) => workflow.id));
+  const unknownWorkflowIds = activeWorkflowIds.filter(
+    (workflowId) => !registeredWorkflowIds.has(workflowId),
+  );
+  if (unknownWorkflowIds.length > 0) {
+    throw new Error(
+      `Case ${testCase.id} references unknown workflow ids: ${unknownWorkflowIds.join(", ")}`,
+    );
+  }
+
+  return activeWorkflowIds;
+}
+
+function caseDefaultActiveWorkflowIds(
+  testCase: AgentCase,
+  workflows: Array<{ id: string }>,
+): string[] {
+  if (workflows.length === 1 && workflows[0]) return [workflows[0].id];
+
+  const matchingWorkflow = workflows.find((workflow) => workflow.id === testCase.id);
+  if (matchingWorkflow) return [matchingWorkflow.id];
+
+  throw new Error(
+    `Case ${testCase.id} must declare workflowIds when active routing uses multiple workflows`,
+  );
+}
+
+function responseSatisfies(turn: AgentTurn): string | undefined {
+  const value = turn.expect?.responseSatisfies;
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function assertAgentWorkflowIds(
+  expected: Array<{ name: string; id: string }>,
+  loaded: Array<{ id: string }>,
+): void {
+  for (const [index, expectedWorkflow] of expected.entries()) {
+    const loadedWorkflow = loaded[index];
+    if (!loadedWorkflow) {
+      throw new Error(`Agent workflow ${expectedWorkflow.name} did not load`);
+    }
+    if (loadedWorkflow.id !== expectedWorkflow.id) {
+      throw new Error(
+        `Agent workflow ${expectedWorkflow.name} expected id ${expectedWorkflow.id} but loaded ${loadedWorkflow.id}`,
+      );
+    }
+  }
+}

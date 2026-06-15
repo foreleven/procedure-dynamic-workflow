@@ -1,13 +1,13 @@
 ---
 name: pac-workflow-creator
-description: "Create or update a single-file PAC Dynamic Workflow TypeScript artifact from a specified procedure file. Use only when the user provides a procedure file path or asks to compile a concrete procedure into one workflow file. The skill focuses on translating the procedure's business meaning into state, connector ref schemas, patch instructions, deterministic effects, optional commands, and render instructions without generating scenario folders, workflow.yaml, mock data, tests, or reusable shared modules."
+description: "Create or update a single-file PAC Dynamic Workflow TypeScript artifact from a specified procedure file. Use only when the user provides a procedure file path or asks to compile a concrete procedure into one workflow file. The skill focuses on translating the procedure's business meaning into state, connector ref schemas, patch instructions, deterministic effects, optional commands, and render instructions without generating scenario folders, agent.yaml, mock data, tests, or reusable shared modules."
 ---
 
 # PAC Workflow Creator
 
 Use this skill to compile one business procedure file into one PAC workflow file.
 
-The output must be a single TypeScript ESM workflow artifact. Do not create or require `workflow.yaml`, `connectors.ts`, `mockData.ts`, tests, shared helpers, or reusable modules. Do not design for reuse across procedures. Put all workflow-local schemas, connector refs, metadata, state, invalidation, patch, prefetch, effect, command, render, and small helper functions in the same file.
+The output must be a single TypeScript ESM workflow artifact. Do not create or require `agent.yaml`, `connectors/*.ts`, `mockData.ts`, tests, shared helpers, or reusable modules. Do not design for reuse across procedures. Put all workflow-local schemas, connector refs, metadata, state, invalidation, patch, prefetch, effect, command, render, and small helper functions in the same file.
 
 ## Input Contract
 

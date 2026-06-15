@@ -257,7 +257,7 @@ export class WorkflowEngine {
     });
 
     try {
-      const now = (this.deps.now ?? (() => new Date()))().toISOString();
+      const now = (new Date()).toISOString();
       const patch = await this.deps.llm.structured({
         name,
         ...(instance.artifact.patch.model ? { model: instance.artifact.patch.model } : {}),

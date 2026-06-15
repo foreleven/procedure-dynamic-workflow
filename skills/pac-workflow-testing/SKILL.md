@@ -21,13 +21,13 @@ description: PAC workflow goal-driven scenario testing with formal-user simulati
 
 开始前确认这些信息：
 
-- workflow 文件路径，例如 `scenarios/maintenance/maintenance_booking.workflow.ts`
-- connector 文件路径，例如 `scenarios/maintenance/connectors.ts`
+- workflow 文件路径，例如 `agents/maintenance/workflows/maintenance_booking.workflow.ts`
+- connector 文件路径，例如 `agents/maintenance/connectors/main.ts`
 - user id，例如 `user_feng`、`user_alex`
 - session id；如果没有，先生成一个，例如 `maintenance_test_${Date.now()}`
 - 测试目标 goal，用一句话描述用户最终想达成什么
 - turn budget，例如最多 8 轮
-- review 输出目录；如果用户未指定，默认写到 `scenarios/<scenario-name>/test-reports/`
+- review 输出目录；如果用户未指定，默认写到 `agents/<scenario-name>/test-reports/`
 
 注意：当前 CLI session 是进程内存态。要保留上下文，必须在同一个 CLI/runner 进程里连续发送多轮；重启进程后仅复用 session id 不会恢复历史状态。
 
@@ -194,10 +194,10 @@ Summary 中必须加入耗时分布总计，至少包含：
 每次测试运行必须保存一个 review 文件。用户没有指定目录时，默认写入：
 
 ```text
-scenarios/<scenario-name>/test-reports/<YYYYMMDD-HHmmss>_<session-id>.md
+agents/<scenario-name>/test-reports/<YYYYMMDD-HHmmss>_<session-id>.md
 ```
 
-如果测试不属于某个 `scenarios/<name>` 目录，写入：
+如果测试不属于某个 `agents/<name>` 目录，写入：
 
 ```text
 workflow-test-reports/<workflow-id>/<YYYYMMDD-HHmmss>_<session-id>.md

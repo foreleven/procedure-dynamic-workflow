@@ -4,7 +4,7 @@ This project is pre-1.0 and does not provide private support or service-level gu
 
 ## Questions and Usage Help
 
-Use GitHub issues for reproducible questions about the public packages, workflow DSL, engine runtime, CLI, or included scenarios. Include the package version or commit, your Node.js/npm versions, and the smallest workflow or connector stub that shows the behavior.
+Use GitHub issues for reproducible questions about the public packages, workflow DSL, engine runtime, CLI, or included agents. Include the package version or commit, your Node.js/npm versions, and the smallest workflow or connector stub that shows the behavior.
 
 ## Bugs
 

@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { z } from "zod";
@@ -14,7 +14,7 @@ const RoutingThresholdsSchema = z.object({
   globalAccept: RoutingThresholdSchema.optional(),
 });
 
-const WorkflowMetadataFileSchema = z.object({
+const WorkflowMetadataSchema = z.object({
   id: z.string().min(1),
   version: z.string().min(1),
   description: z.string().min(1),
@@ -26,6 +26,13 @@ const WorkflowMetadataFileSchema = z.object({
   }),
 });
 
+const WorkflowMetadataFileSchema = z.union([
+  WorkflowMetadataSchema,
+  z.object({
+    workflows: z.record(z.string().min(1), WorkflowMetadataSchema),
+  }).passthrough(),
+]);
+
 export interface WorkflowMetadata {
   id: WorkflowId;
   version: string;
@@ -33,9 +40,16 @@ export interface WorkflowMetadata {
   routing: RoutingProfile;
 }
 
-export function loadWorkflowMetadata(relativeTo: string | URL, metadataPath = "./workflow.yaml"): WorkflowMetadata {
+export function loadWorkflowMetadata(
+  relativeTo: string | URL,
+  metadataPath = "./agent.yaml",
+  workflowName = workflowNameFromPath(filePath(relativeTo)),
+): WorkflowMetadata {
   const absolutePath = resolve(dirname(filePath(relativeTo)), metadataPath);
-  const parsed = WorkflowMetadataFileSchema.parse(YAML.parse(readFileSync(absolutePath, "utf8")));
+  const parsed = workflowMetadataFromFile(
+    WorkflowMetadataFileSchema.parse(YAML.parse(readFileSync(absolutePath, "utf8"))),
+    workflowName,
+  );
   const routing: Omit<RoutingProfile, "thresholds"> & {
     thresholds?: Partial<RoutingProfile["thresholds"]>;
   } = {
@@ -66,6 +80,28 @@ export function loadWorkflowMetadata(relativeTo: string | URL, metadataPath = ".
     description: parsed.description,
     routing: defineRouting(routing),
   };
+}
+
+function workflowMetadataFromFile(
+  parsed: z.infer<typeof WorkflowMetadataFileSchema>,
+  workflowName: string,
+): z.infer<typeof WorkflowMetadataSchema> {
+  if ("workflows" in parsed) {
+    const metadata = parsed.workflows[workflowName];
+    if (!metadata) {
+      throw new Error(`No workflow metadata found for ${workflowName}`);
+    }
+    return metadata;
+  }
+
+  return parsed;
+}
+
+function workflowNameFromPath(path: string): string {
+  const name = basename(path);
+  return name
+    .replace(/\.workflow\.[cm]?[jt]s$/, "")
+    .replace(/\.[cm]?[jt]s$/, "");
 }
 
 function filePath(value: string | URL): string {

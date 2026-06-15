@@ -33,7 +33,6 @@ export type WorkflowRuntimeState<TState extends object> = TState & {
 
 export interface WorkflowDeps<TConnectors extends ConnectorCatalog = ConnectorCatalog> {
   connectors: ConnectorRegistry<TConnectors>;
-  now?: () => Date;
 }
 
 export interface WorkflowRuntimeInput<

@@ -74,7 +74,6 @@ test("WorkflowEngine routes, patches, invalidates, runs nodes, and renders funct
     deps: {
       llm,
       connectors: createConnectorRegistry(),
-      now: () => new Date("2026-01-02T03:04:05.000Z"),
     },
   });
   const session = engine.createSession({ sessionId: "session_2", userId: "user_2" });

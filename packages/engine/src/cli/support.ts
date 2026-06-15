@@ -5,13 +5,15 @@ import {
 } from "../index.js";
 
 export interface CliOptions {
-  workflowPath?: string;
+  workflowPath: string;
   connectorsPath?: string;
   model?: string;
   baseURL?: string;
   userId: string;
   sessionId: string;
   messages: string[];
+  caseIds: string[];
+  runAllCases: boolean;
   stream: boolean;
   showTraces: boolean;
   debug: boolean;
@@ -25,13 +27,17 @@ export interface CliOptions {
  */
 export function parseArgs(argv: string[]): CliOptions {
   const options: CliOptions = {
+    workflowPath: ".",
     userId: "demo_user",
     sessionId: `session_${Date.now()}`,
     messages: [],
+    caseIds: [],
+    runAllCases: false,
     stream: true,
     showTraces: false,
     debug: false,
   };
+  let workflowPathProvided = false;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -46,6 +52,7 @@ export function parseArgs(argv: string[]): CliOptions {
 
     if (arg === "--workflow" || arg === "-w") {
       options.workflowPath = readRequiredOptionValue(arg, next);
+      workflowPathProvided = true;
       index += 1;
       continue;
     }
@@ -86,6 +93,17 @@ export function parseArgs(argv: string[]): CliOptions {
       continue;
     }
 
+    if (arg === "--case") {
+      options.caseIds.push(readRequiredOptionValue(arg, next));
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--all-cases" || arg === "--cases") {
+      options.runAllCases = true;
+      continue;
+    }
+
     if (arg === "--no-stream") {
       options.stream = false;
       continue;
@@ -101,14 +119,11 @@ export function parseArgs(argv: string[]): CliOptions {
       continue;
     }
 
-    if (!arg.startsWith("-") && !options.workflowPath) {
+    if (!arg.startsWith("-") && !workflowPathProvided) {
       options.workflowPath = arg;
+      workflowPathProvided = true;
       continue;
     }
-  }
-
-  if (!options.workflowPath) {
-    throw new Error("Missing required --workflow <path>");
   }
 
   return options;
@@ -194,11 +209,18 @@ function printUsage(): void {
  */
 export function usageText(): string {
   return `Usage:
-  npm run chat -- --workflow <workflow-file> [--connectors <connectors-file>] [--model <model>] [--base-url <url>] [--user-id <id>] [--session-id <id>] [--message <text>] [--no-stream] [--traces] [--debug]
+  npm run chat -- [agent-dir-or-agent.yaml-or-workflow-file] [--connectors <connectors-file>] [--model <model>] [--base-url <url>] [--user-id <id>] [--session-id <id>] [--message <text>] [--case <id>] [--all-cases] [--no-stream] [--traces] [--debug]
+  npm run chat -- --workflow <agent-dir-or-agent.yaml-or-workflow-file> [options]
+
+Defaults:
+  With no workflow path, the CLI loads agent.yaml from the current directory.
 
 Examples:
   npm run chat:maintenance
-  npm run chat -- --workflow scenarios/maintenance/maintenance_booking.workflow.ts --connectors scenarios/maintenance/connectors.ts
+  cd agents/maintenance && npx tsx ../../packages/engine/src/cli.ts --message /state --no-stream
+  npm run chat -- agents/maintenance
+  npm run chat -- --workflow agents/maintenance/workflows/maintenance_booking.workflow.ts --connectors agents/maintenance/connectors/main.ts
+  npm run chat -- agents/maintenance --case time_ack_then_draft_then_confirm --no-stream
   npm run chat:maintenance -- --message "我想预约保养"
 
 Environment:

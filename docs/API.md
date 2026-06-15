@@ -368,7 +368,7 @@ The package root intentionally does not export internal runtime implementation t
 ## Non-Default Surfaces
 
 The repository includes development and scenario files that are not stable public APIs:
-- `scenarios/**`
+- `agents/**`
 - `pac-dynamic-workflow/**`
 - `packages/*/src/**/*.unit.test.ts`
 - `packages/engine/src/typebox-tool.manual.ts`

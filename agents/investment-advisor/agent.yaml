@@ -1,0 +1,471 @@
+# CLI 从 agent 目录加载时使用的 connector 文件名。
+connectors:
+  - main
+
+workflows:
+  advisor_stock_brief_procedure:
+    id: advisor_stock_brief_procedure
+    version: 1.0.0
+    description: 投资顾问股票摘要研究，处理裸股票名、代码、简单分析一下或怎么样。
+    routing:
+      examples:
+        - 分析下比亚迪
+        - 漫步者怎么样
+        - 300782 简单分析一下
+      entities:
+        - 分析下
+        - 分析一下
+        - 怎么样
+      neighbors: [trade_order, portfolio_account, risk_assessment]
+      thresholds: { localAccept: 0.78 }
+  advisor_stock_position_procedure:
+    id: advisor_stock_position_procedure
+    version: 1.0.0
+    description: 投资顾问股票仓位策略研究，处理买入卖出建仓加仓离场持有止盈止损。
+    routing:
+      examples:
+        - 圣邦股份股票现在可以进吗
+        - 比亚迪现在能不能买
+        - 比亚迪要不要加仓
+        - 隆基绿能止损还是持有
+      entities:
+        - 买入
+        - 卖出
+        - 建仓
+        - 加仓
+        - 离场
+        - 持有
+        - 止盈
+        - 止损
+        - 可以进
+        - 能不能买
+        - 要不要买
+      neighbors: [trade_order, portfolio_account, risk_assessment]
+      thresholds: { localAccept: 0.7 }
+  advisor_stock_trend_procedure:
+    id: advisor_stock_trend_procedure
+    version: 1.0.0
+    description: 投资顾问股票趋势研究，处理后市未来走势短期长期明天明日预测。
+    routing:
+      examples:
+        - 紫金矿业明日预测
+        - 宁德时代后市怎么看
+        - 贵州茅台未来走势
+      entities:
+        - 明日
+        - 明天
+        - 后市
+        - 后市会怎么走
+        - 走势
+        - 趋势
+        - 预测
+      neighbors: [trade_order, portfolio_account, risk_assessment]
+      thresholds: { localAccept: 0.78 }
+  advisor_stock_reason_procedure:
+    id: advisor_stock_reason_procedure
+    version: 1.0.0
+    description: 投资顾问股票异动原因研究，处理涨跌原因涨停跌停异动啥情况怎么了。
+    routing:
+      examples:
+        - 300322涨停原因
+        - 工业富联今天为什么大涨
+        - 这只股票啥情况
+      entities:
+        - 涨停
+        - 跌停
+        - 涨跌原因
+        - 为什么大涨
+        - 为什么大跌
+        - 异动
+        - 啥情况
+        - 怎么了
+      neighbors: [trade_order, portfolio_account, risk_assessment]
+      thresholds: { localAccept: 0.7 }
+  advisor_stock_financial_procedure:
+    id: advisor_stock_financial_procedure
+    version: 1.0.0
+    description: 投资顾问股票财务研究，处理财务状况财报业绩现金流盈利能力营收增长。
+    routing:
+      examples:
+        - 贵州茅台2025Q1业绩
+        - 比亚迪财务状况怎么样
+        - 宁德时代现金流分析
+      entities:
+        - 财务
+        - 财报
+        - 业绩
+        - 现金流
+        - 盈利能力
+        - 营收
+      neighbors: [trade_order, portfolio_account, risk_assessment]
+      thresholds: { localAccept: 0.7 }
+  advisor_stock_compare_procedure:
+    id: advisor_stock_compare_procedure
+    version: 1.0.0
+    description: 投资顾问股票对比研究，处理多股票同行业跨行业对比。
+    routing:
+      examples:
+        - 对比一下海联金汇和中国移动两只股票的财务状况
+        - 比较宁德时代和比亚迪
+        - 茅台和五粮液哪个基本面更好
+      entities:
+        - 对比
+        - 比较
+        - 哪个更好
+        - 哪只更好
+      neighbors: [trade_order, portfolio_account, risk_assessment]
+      thresholds: { localAccept: 0.7 }
+  advisor_stock_valuation_procedure:
+    id: advisor_stock_valuation_procedure
+    version: 1.0.0
+    description: 投资顾问股票估值研究，处理投资价值估值股价合理性内在价值。
+    routing:
+      examples:
+        - 分析一下隆基绿能这支股票的投资价值
+        - 腾讯现在估值贵不贵
+        - 比亚迪股价合理吗
+      entities:
+        - 投资价值
+        - 估值
+        - 贵不贵
+        - 合理吗
+        - 内在价值
+      neighbors: [trade_order, portfolio_account, risk_assessment]
+      thresholds: { localAccept: 0.7 }
+  advisor_stock_event_research_procedure:
+    id: advisor_stock_event_research_procedure
+    version: 1.0.0
+    description: 投资顾问股票事件研究，处理处罚复产公告新闻研报机构观点。
+    routing:
+      examples:
+        - ST未名的子公司复产需要满足哪些条件
+        - 这家公司被处罚有什么影响
+        - 宁德时代最新公告怎么看
+      entities:
+        - 处罚
+        - 复产
+        - 公告
+        - 新闻
+        - 研报
+        - 机构观点
+        - 事件
+      neighbors: [trade_order, portfolio_account, risk_assessment]
+      thresholds: { localAccept: 0.7 }
+  advisor_market_index_procedure:
+    id: advisor_market_index_procedure
+    version: 1.0.0
+    description: 投资顾问市场指数研究，处理 A 股港股美股大盘今日昨日指数行情。
+    routing:
+      examples:
+        - 今日大盘
+        - A股今天怎么样
+        - 港股指数昨天表现
+      entities:
+        - 大盘
+        - 指数
+        - A股
+        - 港股
+        - 美股
+        - 今日市场
+      neighbors: [trade_order, portfolio_account, risk_assessment]
+      thresholds: { localAccept: 0.78 }
+  advisor_hot_market_procedure:
+    id: advisor_hot_market_procedure
+    version: 1.0.0
+    description: 投资顾问热点市场研究，处理热门个股热点概念热点板块值得关注方向。
+    routing:
+      examples:
+        - 今天有哪些热点概念
+        - 现在市场热点方向是什么
+        - 热门板块有哪些
+      entities:
+        - 热点概念
+        - 热点方向
+        - 热门个股
+        - 热门板块
+        - 值得关注
+      neighbors: [trade_order, portfolio_account, risk_assessment]
+      thresholds: { localAccept: 0.7 }
+  advisor_sector_intraday_procedure:
+    id: advisor_sector_intraday_procedure
+    version: 1.0.0
+    description: 投资顾问板块短线研究，处理某行业或板块今日近期行情。
+    routing:
+      examples:
+        - 今天的券商板块股票如何
+        - 半导体板块近期表现
+        - 医药行业今天行情
+      entities:
+        - 板块
+        - 今日行情
+        - 近期表现
+        - 今天行情
+        - 短线
+      neighbors: [trade_order, portfolio_account, risk_assessment]
+      thresholds: { localAccept: 0.7 }
+  advisor_sector_outlook_procedure:
+    id: advisor_sector_outlook_procedure
+    version: 1.0.0
+    description: 投资顾问行业前景研究，处理行业前景市场规模发展趋势投资逻辑竞争态势。
+    routing:
+      examples:
+        - 国内光刻机行业的发展前景如何
+        - 人工智能行业市场规模
+        - 新能源车行业投资逻辑
+      entities:
+        - 行业前景
+        - 市场规模
+        - 发展前景
+        - 发展趋势
+        - 投资逻辑
+        - 竞争态势
+      neighbors: [trade_order, portfolio_account, risk_assessment]
+      thresholds: { localAccept: 0.7 }
+  advisor_policy_macro_procedure:
+    id: advisor_policy_macro_procedure
+    version: 1.0.0
+    description: 投资顾问政策宏观研究，处理政策宏观经济经济指标贸易摩擦影响。
+    routing:
+      examples:
+        - 育儿补贴政策对母婴行业的影响
+        - 降准对银行股有什么影响
+        - 贸易摩擦影响哪些行业
+      entities:
+        - 政策
+        - 宏观
+        - 经济指标
+        - 贸易摩擦
+        - 降准
+        - 补贴
+      neighbors: [trade_order, portfolio_account, risk_assessment]
+      thresholds: { localAccept: 0.7 }
+  advisor_industry_chain_procedure:
+    id: advisor_industry_chain_procedure
+    version: 1.0.0
+    description: 投资顾问产业链研究，处理产业链上下游相关 A 股公司代表性公司梳理。
+    routing:
+      examples:
+        - 人形机器人产业链上下游企业有哪些
+        - 光伏产业链相关A股公司
+        - 算力产业链代表公司
+      entities:
+        - 产业链
+        - 上下游
+        - 相关A股
+        - 相关 A 股
+        - 代表公司
+      neighbors: [trade_order, portfolio_account, risk_assessment]
+      thresholds: { localAccept: 0.7 }
+  advisor_methodology_procedure:
+    id: advisor_methodology_procedure
+    version: 1.0.0
+    description: 投资顾问研究方法论，处理方法论步骤范本预测模型成功案例政策方案。
+    routing:
+      examples:
+        - 推荐一些解读建材板块资金流向与宏观经济数据的方法范本
+        - 怎么分析行业资金流
+        - 给我一个预测模型范本
+      entities:
+        - 方法论
+        - 方法范本
+        - 步骤
+        - 模型
+        - 范本
+        - 成功案例
+      neighbors: [trade_order, portfolio_account, risk_assessment]
+      thresholds: { localAccept: 0.7 }
+
+cases:
+  - id: advisor_stock_brief_procedure
+    description: 裸股票名、代码、简单“分析一下/怎么样”。
+    userId: user_feng
+    turns:
+      - message: 分析下比亚迪
+        expect:
+          responseSatisfies: 系统应围绕比亚迪给出投资研究摘要，说明依据来自可用行情、新闻或研报数据，并提示不是确定买卖建议。
+
+  - id: advisor_stock_position_procedure
+    description: 买入、卖出、建仓、加仓、离场、持有、止盈止损、买卖策略。
+    userId: user_feng
+    turns:
+      - message: 圣邦股份股票现在可以进吗
+        expect:
+          responseSatisfies: 系统应提供条件化买入或观望策略、风险控制和需要确认的信号，不能直接给无条件买入指令。
+
+  - id: advisor_stock_trend_procedure
+    description: 后市、未来走势、短期/长期、明天/明日涨跌、趋势预测。
+    userId: user_feng
+    turns:
+      - message: 紫金矿业明日预测
+        expect:
+          responseSatisfies: 系统应给出短期情景分析和风险提示，不能保证明日涨跌。
+
+  - id: advisor_stock_reason_procedure
+    description: 涨跌原因、涨停原因、异动、啥情况、怎么了。
+    userId: user_feng
+    turns:
+      - message: 300322涨停原因
+        expect:
+          responseSatisfies: 系统应结合行情、资金、新闻或热点信息解释可能原因，并区分已证实信息和待核验因素。
+
+  - id: advisor_stock_financial_procedure
+    description: 财务状况、财报、业绩、现金流、盈利能力、营收增长。
+    userId: user_feng
+    turns:
+      - message: 贵州茅台2025Q1业绩
+        expect:
+          responseSatisfies: 系统应围绕贵州茅台 2025Q1 业绩或财务信息分析，并说明数据边界和风险。
+
+  - id: advisor_stock_compare_procedure
+    description: 多股票、同行业或跨行业对比。
+    userId: user_feng
+    turns:
+      - message: 对比一下海联金汇和中国移动两只股票的财务状况
+        expect:
+          responseSatisfies: 系统应分别比较两家公司财务或业务情况，说明可比维度和不可比之处。
+
+  - id: advisor_stock_valuation_procedure
+    description: 投资价值、估值、股价合理性、内在价值。
+    userId: user_feng
+    turns:
+      - message: 分析一下隆基绿能这支股票的投资价值
+        expect:
+          responseSatisfies: 系统应从业务质量、行业位置、景气度、市场表现和估值风险讨论投资价值，不能编造精确内在价值。
+
+  - id: advisor_stock_event_research_procedure
+    description: 处罚、复产、公告、新闻、研报、机构观点。
+    userId: user_feng
+    turns:
+      - message: ST未名的子公司复产需要满足哪些条件
+        expect:
+          responseSatisfies: 系统应优先围绕公告、新闻或研报事实说明复产条件，缺少原文时提示需要进一步核验。
+
+  - id: advisor_market_index_procedure
+    description: A股/港股/美股大盘，今日/昨日指数行情。
+    userId: user_feng
+    turns:
+      - message: 今日大盘
+        expect:
+          responseSatisfies: 系统应概述大盘、资金面、热点方向和风险；没有指数代码时不能编造指数点位。
+
+  - id: advisor_hot_market_procedure
+    description: 热门个股、热点概念、热点板块、值得关注方向。
+    userId: user_feng
+    turns:
+      - message: 今天有哪些热点概念
+        expect:
+          responseSatisfies: 系统应列出热点概念或方向、驱动因素和持续性风险。
+
+  - id: advisor_sector_intraday_procedure
+    description: 某行业/板块今日或近期行情。
+    userId: user_feng
+    turns:
+      - message: 今天的券商板块股票如何
+        expect:
+          responseSatisfies: 系统应说明券商板块当日或近期强弱、可能驱动和短线风险。
+
+  - id: advisor_sector_outlook_procedure
+    description: 行业前景、市场规模、发展趋势、投资逻辑、竞争态势。
+    userId: user_feng
+    turns:
+      - message: 国内光刻机行业的发展前景如何
+        expect:
+          responseSatisfies: 系统应说明光刻机行业前景、驱动、竞争态势、投资逻辑和风险。
+
+  - id: advisor_policy_macro_procedure
+    description: 政策、宏观经济、经济指标、贸易摩擦对行业影响。
+    userId: user_feng
+    turns:
+      - message: 育儿补贴政策对母婴行业的影响
+        expect:
+          responseSatisfies: 系统应说明政策传导路径、受益和承压环节、时滞和不确定性。
+
+  - id: advisor_industry_chain_procedure
+    description: 产业链上下游、相关 A 股公司、代表性公司梳理。
+    userId: user_feng
+    turns:
+      - message: 人形机器人产业链上下游企业有哪些
+        expect:
+          responseSatisfies: 系统应按产业链上下游或关键环节梳理相关公司，并说明信息需进一步核验。
+
+  - id: advisor_methodology_procedure
+    description: 方法论、步骤范本、预测模型、成功案例、政策方案。
+    userId: user_feng
+    turns:
+      - message: 推荐一些解读建材板块资金流向与宏观经济数据的方法范本
+        expect:
+          responseSatisfies: 系统应提供可复用的方法步骤、指标清单、解释方式和验证注意事项。
+
+  - id: mixed_position_valuation
+    description: 混合意图：股票仓位策略 + 股票估值研究。
+    workflowIds:
+      - advisor_stock_position_procedure
+      - advisor_stock_valuation_procedure
+    route: local
+    userId: user_feng
+    turns:
+      - message: 比亚迪现在能不能买，估值贵不贵也顺便看一下
+        expect:
+          responseSatisfies: 系统应同时进入仓位策略和估值研究，分别给出条件化买入/观望逻辑和估值风险分析，不能给无条件买入指令或自创精确目标价。
+
+  - id: mixed_compare_financial
+    description: 混合意图：股票对比 + 股票财务研究。
+    workflowIds:
+      - advisor_stock_compare_procedure
+      - advisor_stock_financial_procedure
+    route: local
+    userId: user_feng
+    turns:
+      - message: 对比一下贵州茅台和五粮液的财务状况，重点看盈利能力和现金流
+        expect:
+          responseSatisfies: 系统应同时进入股票对比和财务研究，横向比较两家公司并围绕盈利能力、现金流和数据边界展开，不能强行给出单一投资排序。
+
+  - id: mixed_market_hot_sector
+    description: 混合意图：市场指数 + 热点市场 + 板块短线。
+    workflowIds:
+      - advisor_market_index_procedure
+      - advisor_hot_market_procedure
+      - advisor_sector_intraday_procedure
+    route: local
+    userId: user_feng
+    turns:
+      - message: 今日大盘怎么样，有哪些热点概念，券商板块今天表现也说一下
+        expect:
+          responseSatisfies: 系统应同时进入大盘、热点概念和券商板块短线分析，分别说明市场强弱、热点驱动和板块风险；没有结构化指数或板块行情时不能编造点位、涨跌幅或成交额。
+
+  - id: mixed_policy_industry_chain
+    description: 混合意图：政策宏观 + 产业链梳理。
+    workflowIds:
+      - advisor_policy_macro_procedure
+      - advisor_industry_chain_procedure
+    route: local
+    userId: user_feng
+    turns:
+      - message: 育儿补贴政策对母婴行业有什么影响，相关产业链和A股公司也梳理一下
+        expect:
+          responseSatisfies: 系统应同时进入政策宏观和产业链梳理，说明政策传导路径、受益和承压环节，并按产业链梳理相关公司线索，不能把公司清单当成买入推荐。
+
+  - id: mixed_event_reason_trend
+    description: 混合意图：股票事件研究 + 异动原因 + 股票趋势。
+    workflowIds:
+      - advisor_stock_event_research_procedure
+      - advisor_stock_reason_procedure
+      - advisor_stock_trend_procedure
+    route: local
+    userId: user_feng
+    turns:
+      - message: 宁德时代最新公告怎么看，今天为什么大跌，后市会怎么走
+        expect:
+          responseSatisfies: 系统应同时进入事件研究、异动原因和趋势研判，区分公告事实、行情异动线索和后市情景分析，不能把传闻当事实或保证未来涨跌。
+
+  - id: mixed_methodology_sector_outlook
+    description: 混合意图：研究方法论 + 行业前景。
+    workflowIds:
+      - advisor_methodology_procedure
+      - advisor_sector_outlook_procedure
+    route: local
+    userId: user_feng
+    turns:
+      - message: 给我一个分析人工智能行业前景和资金流的方法范本，顺便说说这个行业发展趋势
+        expect:
+          responseSatisfies: 系统应同时进入方法论和行业前景研究，提供可复用步骤、指标清单、验证方法，并说明人工智能行业趋势、驱动和风险，不能承诺模型或方法带来收益。

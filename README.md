@@ -21,7 +21,7 @@ packages/
   engine/        Runtime engine, pi-ai LLM client, CLI, session handling, env wiring, patch application, node execution, and rendering.
                  Internal code is grouped by CLI loading, LLM provider wiring, runtime execution, and shared utilities.
 
-scenarios/
+agents/
   maintenance/  Example vehicle-maintenance booking procedure, workflow artifact, mock connectors, and scenario runner.
 
 pac-dynamic-workflow/
@@ -31,11 +31,11 @@ pac-dynamic-workflow/
 
 ## Core Concepts
 
-`workflow.yaml` stores stable metadata such as workflow id, version, routing examples, and scenario cases.
+`agent.yaml` stores stable metadata such as workflow id, version, routing examples, connector file names, and scenario cases. For directory-based CLI runs, each `workflows.<name>` entry maps to `workflows/<name>.workflow.ts`, and each `connectors` entry maps to `connectors/<name>.ts`.
 
 `*.workflow.ts` is the distributable workflow artifact. It defines workflow-owned schemas, initial state, patch policy, invalidation rules, business steps, and render instruction.
 
-`connectors.ts` defines external tool contracts and demo implementations. Workflow code calls connectors through `context.call("connectors.xxx", input)`, with optional per-context caching via `context.call("connectors.xxx", input, { cache: true })`.
+`connectors/*.ts` files define external tool contracts and demo implementations. Each connector file default-exports a loader function that returns connector tools; the engine builds the registry after loading all files listed in `agent.yaml`. Workflow code calls connectors through `context.call("connectors.xxx", input)`, with optional per-context caching via `context.call("connectors.xxx", input, { cache: true })`.
 
 `messages` is a runtime-owned conversation log on each workflow instance. User turns, tool messages, and rendered assistant replies are appended by the runtime or explicit workflow message outputs. Workflow schemas, default state, and state patches must not declare or overwrite the reserved `messages` field.
 
@@ -141,9 +141,28 @@ Run the generic chat CLI with explicit files:
 
 ```bash
 npm run chat -- \
-  --workflow scenarios/maintenance/maintenance_booking.workflow.ts \
-  --connectors scenarios/maintenance/connectors.ts \
+  --workflow agents/maintenance/workflows/maintenance_booking.workflow.ts \
+  --connectors agents/maintenance/connectors/main.ts \
   --user-id user_feng
+```
+
+Run the same CLI from an agent directory without passing a workflow path; the CLI reads `./agent.yaml`, imports `workflows/<name>.workflow.ts` for each `workflows.<name>` entry, and loads each `connectors/<name>.ts` file listed under `connectors`:
+
+```bash
+cd agents/maintenance
+npx tsx ../../packages/engine/src/cli.ts --user-id user_feng
+```
+
+You can also pass the agent directory explicitly from the repository root:
+
+```bash
+npm run chat -- agents/maintenance --user-id user_feng
+```
+
+Run scripted turns from a case in `agent.yaml`:
+
+```bash
+npm run chat -- agents/maintenance --case time_ack_then_draft_then_confirm --no-stream
 ```
 
 Add `--debug` to print full engine and LLM logs. Without `--debug`, the CLI only prints workflow progress events, workflow step start/end loading lines, LLM phase durations, and the assistant reply.
@@ -154,11 +173,11 @@ Render output streams by default when the configured LLM client supports it. Add
 
 ## Maintenance Example
 
-The maintenance scenario compiles `scenarios/maintenance/procedure.md` into:
+The maintenance scenario compiles `agents/maintenance/procedure.md` into:
 
-- `workflow.yaml`: metadata and acceptance cases.
-- `maintenance_booking.workflow.ts`: state schema, patch instruction, prefetch/effect/command steps, and render instruction.
-- `connectors.ts`: customer, vehicle, dealer, slot, draft, and booking connector implementations.
+- `agent.yaml`: metadata, connector file names, workflow names, and acceptance cases.
+- `workflows/maintenance_booking.workflow.ts`: state schema, patch instruction, prefetch/effect/command steps, and render instruction.
+- `connectors/main.ts`: customer, vehicle, dealer, slot, draft, and booking connector implementations.
 - `run.ts`: scenario runner with LLM semantic response checks.
 
 The example demonstrates:
