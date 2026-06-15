@@ -69,7 +69,6 @@ const MaintenanceStateSchema = z.object({
 export type MaintenanceState = z.infer<typeof MaintenanceStateSchema>;
 
 type Customer = z.infer<typeof CustomerSchema>;
-type DateRange = z.infer<typeof DateRangeSchema>;
 type Dealer = z.infer<typeof DealerSchema>;
 type Vehicle = z.infer<typeof VehicleSchema>;
 type MaintenanceContext = WorkflowContext<MaintenanceConnectorCatalog>;
@@ -105,7 +104,7 @@ const metadata = loadWorkflowMetadata(import.meta.url);
  */
 
 // Create a workflow with state management.
-const { patch, prefetch, derive, command, render } = workflow<
+const { patch, prefetch, effect, command, render } = workflow<
   MaintenanceState,
   MaintenanceConnectorCatalog
 >({
@@ -116,7 +115,7 @@ const { patch, prefetch, derive, command, render } = workflow<
 
 // Patch steps only update state according to the instruction and user's latest message; they do not call connectors or generate final responses.
 patch({
-  progress: "正在理解您的预约需求",
+  progress: "正在思考",
   state: {
     status: MaintenanceStatusSchema.describe("Set cancelled only for explicit cancellation; set draft_confirmed only for explicit draft confirmation."),
     vehicle: VehicleSchema.describe("Selected full vehicle object, copied exactly from known vehicle facts."),
@@ -170,13 +169,12 @@ prefetch("customerProfile", {
   }),
 });
 
-// The derive and command steps can call connectors and update state. Returned messages are appended to the runtime message log.
-// All derive and command steps are executed in parallel, so they should not have dependencies or conflicts with each other.
-derive("selectOnlyVehicle", {
-  progress: "正在确认默认车辆",
+// Effect and command steps can call connectors and update state. Returned messages are appended to the runtime message log.
+// Connector calls inside one effect can still run in parallel with Promise.all when the business step allows it.
+effect("selectOnlyVehicle", {
   description: "客户名下只有一辆车时直接使用该车辆；多车或只有历史推断时仍由 render 引导用户确认。",
-  when: (state, context) => !state.vehicle && (maintenanceFacts(context).vehicles?.length ?? 0) === 1,
   run: (state, context) => {
+    if (state.vehicle || (maintenanceFacts(context).vehicles?.length ?? 0) !== 1) return {};
     const [vehicle] = maintenanceFacts(context).vehicles ?? [];
     if (!vehicle) return {};
     return {
@@ -193,21 +191,18 @@ derive("selectOnlyVehicle", {
   },
 });
 
-derive("dealerCandidates", {
-  progress: "正在查找可服务该车辆的门店",
+effect("dealerCandidates", ["vehicle"], {
   description: "车辆确定或变化后查询支持该品牌/车型的候选门店，并把结果作为 tool message 写入 messages；候选项不进入长期业务 state。",
-  when: (state, _context, { preState }) =>
-    Boolean(
-      state.vehicle &&
-      (state.vehicle.id !== preState.vehicle?.id || !preState.vehicle) &&
-      _context.get("dealerCandidates:vehicleId") !== state.vehicle.id
-    ),
-  run: async (state, context) => {
+  run: async (state, context, _runtime, step) => {
     if (!state.vehicle) return {};
-    const dealerCandidates = await context.call("connectors.maintenance.getDealerCandidates", {
+    const loading = step.start("查询候选门店");
+    const input = {
       vehicle: state.vehicle,
+    };
+    const dealerCandidates = await context.call("connectors.maintenance.getDealerCandidates", input, {
+      cache: true,
     });
-    context.set("dealerCandidates:vehicleId", state.vehicle.id);
+    loading.end({ count: dealerCandidates.length });
 
     return {
       messages: [
@@ -221,30 +216,19 @@ derive("dealerCandidates", {
   },
 });
 
-derive("appointmentAvailability", {
-  progress: "正在查询可预约时间",
+effect("appointmentAvailability", ["dealer", "preferredDate"], {
   description: "门店或期望时间确定/变化后查询真实可用时段，并把候选时段作为 tool message 写入 messages，等待用户选择具体到店时间。",
-  when: (state, _context, { preState }) =>
-    Boolean(
-      state.dealer &&
-      state.preferredDate &&
-      (
-        state.dealer.id !== preState.dealer?.id ||
-        state.preferredDate.start !== preState.preferredDate?.start ||
-        state.preferredDate.end !== preState.preferredDate?.end ||
-        !preState.dealer ||
-        !preState.preferredDate
-      ) &&
-      _context.get("appointmentAvailability:cacheKey") !== availabilityCacheKey(state.dealer, state.preferredDate)
-    ),
-  run: async (state, context) => {
+  run: async (state, context, _runtime, step) => {
     if (!state.dealer || !state.preferredDate) return {};
-    const cacheKey = availabilityCacheKey(state.dealer, state.preferredDate);
-    const availableSlots = await context.call("connectors.maintenance.getAvailableSlots", {
+    const loading = step.start("查询可预约时段");
+    const input = {
       dealer: state.dealer,
       dateRange: state.preferredDate,
+    };
+    const availableSlots = await context.call("connectors.maintenance.getAvailableSlots", input, {
+      cache: true,
     });
-    context.set("appointmentAvailability:cacheKey", cacheKey);
+    loading.end({ count: availableSlots.length });
 
     return {
       messages: [
@@ -262,21 +246,28 @@ derive("appointmentAvailability", {
   },
 });
 
-derive("prepareBookingDraft", {
-  progress: "正在准备预约草稿",
+effect("prepareBookingDraft", ["status", "vehicle", "dealer", "preferredDate", "slot", "bookingDraft"], {
   description: "车辆、门店、期望时间和用户确认的具体时段齐备后创建待确认草稿；草稿不是正式预约，服务项目由其他 procedure 处理。",
-  when: (state) =>
-    state.status !== "cancelled" &&
-    !selectionMatchesBooking(state) &&
-    Boolean(state.vehicle && state.dealer && state.preferredDate && state.slot && !state.bookingDraft),
-  run: async (state, context) => {
-    if (!state.vehicle || !state.dealer || !state.slot) return {};
+  run: async (state, context, _runtime, step) => {
+    if (
+      state.status === "cancelled" ||
+      selectionMatchesBooking(state) ||
+      !state.vehicle ||
+      !state.dealer ||
+      !state.preferredDate ||
+      !state.slot ||
+      state.bookingDraft
+    ) {
+      return {};
+    }
 
+    const loading = step.start("创建预约草稿");
     const bookingDraft = await context.call("connectors.maintenance.createBookingDraft", {
       vehicle: state.vehicle,
       dealer: state.dealer,
       slot: state.slot,
     });
+    loading.end({ draftId: bookingDraft.id });
 
     return {
       bookingDraft,
@@ -297,16 +288,17 @@ derive("prepareBookingDraft", {
 });
 
 command("commitBooking", {
-  progress: "正在提交预约",
   description: "只有用户明确确认草稿后才调用正式确认接口；这是不可逆的外部提交动作。",
   when: (state) =>
     state.status === "draft_confirmed" &&
     Boolean(state.bookingDraft) &&
     !state.booking,
-  run: async (state, context) => {
+  run: async (state, context, _runtime, step) => {
     if (!state.bookingDraft) return {};
 
+    const loading = step.start("确认正式预约");
     const booking = await context.call("connectors.maintenance.confirmBooking", { draft: state.bookingDraft });
+    loading.end({ bookingId: booking.id });
     return {
       booking,
       bookingDraft: null,
@@ -369,10 +361,6 @@ function maintenanceFacts(context: MaintenanceContext): Partial<MaintenanceFacts
   if (recentDealer !== undefined) facts.recentDealer = recentDealer;
 
   return facts;
-}
-
-function availabilityCacheKey(dealer: Dealer, preferredDate: DateRange): string {
-  return `${dealer.id}:${preferredDate.start}:${preferredDate.end}`;
 }
 
 function selectionMatchesBooking(state: MaintenanceState): boolean {

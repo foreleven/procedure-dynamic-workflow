@@ -132,6 +132,12 @@ export function createLogger(debug: boolean): (line: string) => void {
       return;
     }
 
+    const step = stepFromLogLine(line);
+    if (step) {
+      console.log(step);
+      return;
+    }
+
     const llmDuration = llmDurationFromLogLine(line);
     if (llmDuration) {
       console.log(llmDuration);
@@ -234,6 +240,24 @@ function progressFromLogLine(line: string): string | undefined {
   }
 }
 
+function stepFromLogLine(line: string): string | undefined {
+  if (line.includes(" node.step.start event ")) {
+    const detail = parseLogDetail(line);
+    return typeof detail?.label === "string" ? `  - ${detail.label} ...` : undefined;
+  }
+
+  if (line.includes(" node.step.end event ")) {
+    const detail = parseLogDetail(line);
+    if (typeof detail?.label !== "string") return undefined;
+
+    const duration = typeof detail.durationMs === "number" ? ` (${detail.durationMs}ms)` : "";
+    const suffix = detail.status === "error" ? " failed" : " done";
+    return `  - ${detail.label}${suffix}${duration}`;
+  }
+
+  return undefined;
+}
+
 function llmDurationFromLogLine(line: string): string | undefined {
   const match = /^\[llm\] ([^ ]+) done (\d+)ms/.exec(line);
   if (!match) return undefined;
@@ -242,4 +266,18 @@ function llmDurationFromLogLine(line: string): string | undefined {
   if (phase === "text.stream") return undefined;
 
   return `- LLM ${phase} 耗时: ${durationMs}ms`;
+}
+
+function parseLogDetail(line: string): Record<string, unknown> | undefined {
+  const jsonStart = line.indexOf("{");
+  if (jsonStart < 0) return undefined;
+
+  try {
+    const detail = JSON.parse(line.slice(jsonStart));
+    return detail && typeof detail === "object" && !Array.isArray(detail)
+      ? detail as Record<string, unknown>
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }

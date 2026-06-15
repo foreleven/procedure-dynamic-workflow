@@ -22,8 +22,9 @@ export interface WorkflowDefinitionNodeInput {
   kind: "prefetch" | "effect";
   name: string;
   stage: WorkflowNodeStage;
-  progress: string;
+  progress?: string | undefined;
   description: string;
+  dependsOn?: readonly string[];
   when?: (input: never) => MaybePromise<boolean>;
   run: (input: never) => MaybePromise<unknown>;
 }

@@ -17,7 +17,7 @@ import type { WorkflowMessage, WorkflowToolMessage } from "./runtime/messages.js
 import { assertWorkflowDefinitionInvariants } from "./definition/workflow-guards.js";
 
 export { WorkflowContextStore } from "./runtime/context.js";
-export type { WorkflowContext } from "./runtime/context.js";
+export type { WorkflowContext, WorkflowContextCallOptions } from "./runtime/context.js";
 export { ToolMessage } from "./runtime/messages.js";
 export type {
   ToolMessageInput,
@@ -47,6 +47,7 @@ export interface WorkflowRuntimeInput<
   prefetch: PrefetchStore;
   deps: WorkflowDeps<TConnectors>;
   turn: WorkflowTurn;
+  step: WorkflowStepController;
   message?: string;
 }
 
@@ -73,6 +74,26 @@ export interface WorkflowPatch<TState extends object> {
   messages?: WorkflowToolMessage[];
 }
 
+/**
+ * Represents one workflow-owned loading step inside a running node.
+ * Input: optional completion detail for diagnostics.
+ * Output: a step-end trace event; repeated end calls are ignored by the engine.
+ */
+export interface WorkflowStepHandle {
+  readonly id: string;
+  readonly label: string;
+  end(detail?: unknown): void;
+}
+
+/**
+ * Starts user-visible sub-steps from workflow node code.
+ * Input: short loading label plus optional diagnostic detail.
+ * Output: a handle that should be ended after the async work completes.
+ */
+export interface WorkflowStepController {
+  start(label: string, detail?: unknown): WorkflowStepHandle;
+}
+
 export type WorkflowFunction<
   TState extends object,
   TConnectors extends ConnectorCatalog = ConnectorCatalog,
@@ -88,7 +109,7 @@ export interface WorkflowNodeBase<
 > {
   name: string;
   stage: WorkflowNodeStage;
-  progress: string;
+  progress?: string | undefined;
   description: string;
   when?: (
     input: WorkflowRuntimeInput<TState, TConnectors>,
@@ -108,6 +129,7 @@ export interface WorkflowEffectNode<
   TConnectors extends ConnectorCatalog = ConnectorCatalog,
 > extends WorkflowNodeBase<TState, TConnectors> {
   kind: "effect";
+  dependsOn?: readonly string[];
   run: WorkflowFunction<TState, TConnectors>;
 }
 

@@ -3,6 +3,7 @@ import {
   type RenderResponse,
   type WorkflowId,
   type WorkflowRuntimeState,
+  type WorkflowStepController,
 } from "@pac/workflow";
 import type { EngineSession, EngineTraceEvent, RuntimeInstance, WorkflowEngineOptions } from "../types.js";
 import { RuntimeTracer } from "./tracer.js";
@@ -109,6 +110,7 @@ export class ResponseRenderer {
         prefetch: instance.prefetch,
         deps: this.deps,
         turn: turnChanges.snapshot(instance.id),
+        step: noopStepController,
         message,
       });
       return normalizeRenderResponse(instance.id, response);
@@ -150,6 +152,18 @@ export class ResponseRenderer {
   }
 }
 
+const noopStepController: WorkflowStepController = {
+  start(label) {
+    return {
+      id: "noop",
+      label,
+      end() {
+        return undefined;
+      },
+    };
+  },
+};
+
 /**
  * Adds the authoritative workflow state to LLM render policy prompts.
  * Input: workflow-owned render instruction and runtime state after patch/nodes.
@@ -171,6 +185,9 @@ function renderInstructionForRuntime(instruction: string, state: JsonRecord): st
     "Render prohibitions:",
     "- Do not advance or modify state; Patch and workflow nodes own state progression.",
     "- Do not call connectors, simulate connector calls, invent tool results, or invent unavailable options.",
+    "- Do not invent or over-specify precise facts such as dates, prices, index points, percentages, volume, turnover, valuation, target prices, support/resistance levels, population, market size, rankings, ids, eligibility, or availability.",
+    "- Only present a precise number or dated fact when it is visible in current state, runtime tool facts, or conversation history; otherwise use qualitative wording and state the data boundary.",
+    "- When a precise number comes from a third-party report, news item, or analyst view, label it as a third-party estimate/view instead of presenting it as authoritative fact or advice.",
     "- Do not expose internal state fields, workflow labels, JSON, XML, DSML, or tool-call markup.",
     "",
     "Workflow-authored Render instructions:",

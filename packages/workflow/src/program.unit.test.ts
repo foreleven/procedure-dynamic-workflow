@@ -50,17 +50,20 @@ test("workflow program rejects invalid workflow config invariants", () => {
 test("workflow program rejects duplicate node names", () => {
   const program = createProgram("duplicate_node");
   const effect = {
-    progress: "Deriving state",
     description: "Increment count for test coverage.",
+    run: () => ({ count: 1 }),
+  };
+  const command = {
+    description: "Increment count from command for duplicate coverage.",
     when: () => true,
     run: () => ({ count: 1 }),
   };
 
   program.patch({ state: { count: z.number() } });
-  program.derive("set_count", effect);
+  program.effect("set_count", effect);
 
   assert.throws(
-    () => program.command("set_count", effect),
+    () => program.command("set_count", command),
     /Duplicate workflow node/,
   );
 });
@@ -71,23 +74,19 @@ test("workflow program rejects invalid node config invariants", () => {
 
   assert.throws(
     () =>
-      program.derive(" ", {
-        progress: "Deriving state",
+      program.effect(" ", {
         description: "Invalid name fixture.",
-        when: () => true,
         run: () => ({ count: 1 }),
       }),
     /Workflow bad_node_config node name must be a non-empty string/,
   );
   assert.throws(
     () =>
-      program.derive("bad_progress", {
-        progress: " ",
-        description: "Invalid progress fixture.",
-        when: () => true,
+      program.effect("bad_description", {
+        description: " ",
         run: () => ({ count: 1 }),
       }),
-    /Workflow bad_node_config node bad_progress progress must be a non-empty string/,
+    /Workflow bad_node_config node bad_description description must be a non-empty string/,
   );
 });
 
@@ -122,17 +121,15 @@ test("workflow program rejects invalid patch invalidates and render config", () 
   );
 });
 
-test("workflow program compiles patch invalidation into the definition", () => {
+test("workflow program compiles effect dependencies and patch invalidation into the definition", () => {
   const program = createProgram("compiled_definition");
 
   program.patch({
     state: { count: z.number() },
     invalidates: { count: ["status"] },
   });
-  program.derive("set_count", {
-    progress: "Deriving state",
+  program.effect("set_count", ["count"], {
     description: "Increment count for test coverage.",
-    when: () => true,
     run: (state) => ({ count: state.count + 1 }),
   });
 
@@ -144,7 +141,42 @@ test("workflow program compiles patch invalidation into the definition", () => {
 
   assert.equal(definition.id, "compiled_definition");
   assert.equal(definition.nodes.length, 1);
+  assert.deepEqual(definition.nodes[0]?.kind === "effect" ? definition.nodes[0].dependsOn : undefined, ["count"]);
   assert.deepEqual(definition.invalidation, { count: ["status"] });
+});
+
+test("workflow program keeps derive as an effect alias during migration", () => {
+  const program = createProgram("derive_alias");
+
+  program.patch({ state: { count: z.number() } });
+  program.derive("set_count", {
+    description: "Increment count for alias coverage.",
+    dependsOn: ["count"],
+    run: (state) => ({ count: state.count + 1 }),
+  });
+
+  const definition = program.render({
+    name: "render",
+    instruction: "Reply.",
+    progress: "Rendering",
+  });
+
+  assert.equal(definition.nodes[0]?.kind, "effect");
+  assert.deepEqual(definition.nodes[0]?.kind === "effect" ? definition.nodes[0].dependsOn : undefined, ["count"]);
+});
+
+test("workflow program rejects invalid effect dependencies", () => {
+  const program = createProgram("bad_effect_dependencies");
+  program.patch({ state: { count: z.number() } });
+
+  assert.throws(
+    () =>
+      program.effect("bad_dependency", ["" as never], {
+        description: "Invalid dependency fixture.",
+        run: () => ({ count: 1 }),
+      }),
+    /dependsOn must contain only non-empty strings/,
+  );
 });
 
 function createProgram(id: string) {

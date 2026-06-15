@@ -6,6 +6,7 @@ import {
   WorkflowEngine,
   type EngineSession,
   type EngineTraceEvent,
+  type EngineTurnResult,
 } from "./index.js";
 import {
   createCliLlmClient,
@@ -14,13 +15,21 @@ import {
 } from "./cli/support.js";
 import {
   loadConnectors,
-  loadWorkflow,
+  loadWorkflows,
 } from "./cli/module-loader.js";
+import type { WorkflowSnapshot } from "./types.js";
 import { errorMessage } from "./utils/errors.js";
 import { safeJsonStringify } from "./utils/json.js";
 
 function printResponse(text: string): void {
   console.log(text);
+}
+
+function responseTextForCli(result: EngineTurnResult): string {
+  if (result.responses.length <= 1) return result.response.text;
+  return result.responses
+    .map((item) => `## ${item.workflowId}\n${item.response.text}`)
+    .join("\n\n");
 }
 
 function printJson(value: unknown): void {
@@ -40,6 +49,17 @@ function sessionSnapshot(session: EngineSession): unknown {
   };
 }
 
+function mapSnapshotField(
+  snapshots: Record<string, WorkflowSnapshot<object> | null>,
+  field: "state" | "context",
+): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(snapshots).map(([id, snapshot]) => [id, snapshot?.[field] ?? null]));
+}
+
+function mapSnapshotMessages(snapshots: Record<string, WorkflowSnapshot<object> | null>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(snapshots).map(([id, snapshot]) => [id, snapshot?.state.messages ?? []]));
+}
+
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   const workflowPath = options.workflowPath;
@@ -47,14 +67,15 @@ async function main(): Promise<void> {
     throw new Error("Missing required --workflow <path>");
   }
 
-  const workflow = await loadWorkflow(workflowPath);
+  const workflows = await loadWorkflows(workflowPath);
   const connectors = await loadConnectors(options.connectorsPath);
   const logger = createLogger(options.debug);
   const llm = createCliLlmClient(options, logger);
   let streamedChars = 0;
+  let lastStreamWorkflowId: string | undefined;
 
   const engine = new WorkflowEngine({
-    workflows: [workflow],
+    workflows,
     deps: {
       llm,
       connectors,
@@ -63,7 +84,12 @@ async function main(): Promise<void> {
     logger,
     ...(options.stream
       ? {
-          onResponseDelta: ({ delta }: { workflowId: string; delta: string }) => {
+          onResponseDelta: ({ workflowId, delta }: { workflowId: string; delta: string }) => {
+            if (workflows.length > 1 && lastStreamWorkflowId !== workflowId) {
+              if (streamedChars > 0) process.stdout.write("\n\n");
+              process.stdout.write(`## ${workflowId}\n`);
+              lastStreamWorkflowId = workflowId;
+            }
             streamedChars += delta.length;
             process.stdout.write(delta);
           },
@@ -71,15 +97,18 @@ async function main(): Promise<void> {
       : {}),
   });
 
+  const initialActiveWorkflowIds = workflows.length === 1 && workflows[0] ? [workflows[0].id] : [];
   const session = engine.createSession({
     sessionId: options.sessionId,
     userId: options.userId,
-    activeWorkflowIds: [workflow.id],
+    activeWorkflowIds: initialActiveWorkflowIds,
   });
 
   let lastTraces: EngineTraceEvent[] = [];
 
-  console.log(`Loaded workflow: ${workflow.id}@${workflow.version}`);
+  console.log(
+    `Loaded workflow${workflows.length === 1 ? "" : "s"}: ${workflows.map((workflow) => `${workflow.id}@${workflow.version}`).join(", ")}`,
+  );
 
   const handleLine = async (rawLine: string): Promise<boolean> => {
     const line = rawLine.trim();
@@ -95,20 +124,25 @@ async function main(): Promise<void> {
       return true;
     }
 
-    const workflowSnapshot = engine.getWorkflowSnapshot(session, workflow.id);
+    const workflowSnapshot = workflows.length === 1 && workflows[0]
+      ? engine.getWorkflowSnapshot(session, workflows[0].id)
+      : undefined;
+    const workflowSnapshots = workflows.length > 1
+      ? Object.fromEntries(workflows.map((item) => [item.id, engine.getWorkflowSnapshot(session, item.id) ?? null]))
+      : undefined;
 
     if (line === "/state") {
-      printJson(workflowSnapshot?.state ?? null);
+      printJson(workflowSnapshots ? mapSnapshotField(workflowSnapshots, "state") : workflowSnapshot?.state ?? null);
       return true;
     }
 
     if (line === "/messages") {
-      printJson(workflowSnapshot?.state.messages ?? []);
+      printJson(workflowSnapshots ? mapSnapshotMessages(workflowSnapshots) : workflowSnapshot?.state.messages ?? []);
       return true;
     }
 
     if (line === "/context") {
-      printJson(workflowSnapshot?.context ?? null);
+      printJson(workflowSnapshots ? mapSnapshotField(workflowSnapshots, "context") : workflowSnapshot?.context ?? null);
       return true;
     }
 
@@ -124,6 +158,7 @@ async function main(): Promise<void> {
 
     try {
       streamedChars = 0;
+      lastStreamWorkflowId = undefined;
       const time = performance.now();
       const result = await engine.onMessage(line, session);
       lastTraces = result.traces;
@@ -132,7 +167,7 @@ async function main(): Promise<void> {
       if (streamedChars > 0) {
         process.stdout.write(`\n[耗时: ${(endTime - time).toFixed(2)}ms]\n`);
       } else {
-        printResponse(`${result.response.text}\n[耗时: ${(endTime - time).toFixed(2)}ms]`);
+        printResponse(`${responseTextForCli(result)}\n[耗时: ${(endTime - time).toFixed(2)}ms]`);
       }
 
       if (options.showTraces) {

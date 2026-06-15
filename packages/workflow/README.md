@@ -64,11 +64,12 @@ export default program.render({
 
 ## Public Surface
 
-- `workflow(...)` builds workflow definitions from business steps.
+- `workflow(...)` builds workflow definitions from `patch`, `prefetch`, `effect`, `command`, and `render` business steps.
 - `definePatch(...)` creates structured patch extraction policies.
 - `defineRouting(...)` normalizes routing metadata.
 - `defineConnectorRef(...)`, `defineConnectorTool(...)`, and `createConnectorRegistry(...)` define schema-validated integration boundaries.
-- `WorkflowContextStore` provides per-workflow runtime context for in-memory coordination.
+- `WorkflowContextStore` provides per-workflow runtime context for in-memory coordination and optional cached connector calls through `context.call(id, input, { cache: true })`.
+- `WorkflowStepController` lets effect and command callbacks emit nested loading steps while async connector work is running.
 
 See the repository [API reference](https://github.com/foreleven/procedure-dynamic-workflow/blob/main/docs/API.md) for the full public API reference.
 

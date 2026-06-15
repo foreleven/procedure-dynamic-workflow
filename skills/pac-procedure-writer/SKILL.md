@@ -1,6 +1,6 @@
 ---
 name: pac-procedure-writer
-description: "Write or revise PAC scenario procedure.md files as business-facing procedure documents. Use when Codex needs to create, clean up, review, or normalize a PAC procedure from a business scenario, especially before workflow implementation. This skill keeps procedure.md focused on business rules, user situations, connector/tool usage timing, side-effect boundaries, and response obligations; it explicitly excludes workflow state, schemas, patch/prefetch/derive/command/render implementation details, ToolMessage details, and invalidation tables."
+description: "Write or revise PAC scenario procedure.md files as business-facing procedure documents. Use when Codex needs to create, clean up, review, or normalize a PAC procedure from a business scenario, especially before workflow implementation. This skill keeps procedure.md focused on business rules, user situations, connector/tool usage timing, side-effect boundaries, and response obligations; it explicitly excludes workflow state, schemas, patch/prefetch/effect/command/render implementation details, ToolMessage details, and invalidation tables."
 ---
 
 # PAC Procedure Writer
@@ -40,7 +40,7 @@ Use existing workflow files only to understand local naming conventions. Do not 
 
 - Workflow state fields, state tables, state defaults, or state writer ownership.
 - Zod schemas, TypeScript type names, code structure, or file layout.
-- Patch, prefetch, derive, command, render, ToolMessage, context, cache key, runtime message, or invalidation implementation terms.
+- Patch, prefetch, effect, command, render, ToolMessage, context, cache key, runtime message, or invalidation implementation terms.
 - LLM prompt instructions that only make sense to a developer.
 - Test internals, fake patches, or engine mechanics.
 
@@ -65,7 +65,7 @@ Good:
 Bad:
 
 ```markdown
-Patch 写 requestedAmountCents 和 useCase，derive 调 matchProducts，并把 ProductMatch 放入 ToolMessage；requestedAmountCents invalidates selectedProduct。
+Patch 写 requestedAmountCents 和 useCase，effect 调 matchProducts，并把 ProductMatch 放入 ToolMessage；requestedAmountCents invalidates selectedProduct。
 ```
 
 ## Recommended Shape
@@ -130,7 +130,7 @@ Use connector references only when the procedure intentionally requires that bus
 
 - Good: `通过 {@connectors.maintenance.getAvailableSlots} 查询门店可预约时段。`
 - Good: `只有用户明确确认预约草稿后，才通过 {@connectors.maintenance.confirmBooking} 提交正式预约。`
-- Bad: `derive("appointmentAvailability") 调用 getAvailableSlots。`
+- Bad: `effect("appointmentAvailability") 调用 getAvailableSlots。`
 
 When the connector namespace is not finalized, describe the tool capability in business words and mark the uncertainty plainly. Do not invent connector ids.
 
@@ -143,4 +143,4 @@ Before finishing a procedure, verify:
 - Every external write has an explicit user confirmation or business trigger.
 - Missing information and unsupported requests are handled.
 - Response boundaries are stated for regulated or high-risk domains.
-- No state table, schema, patch/prefetch/derive/command/render, ToolMessage, context, cache, or invalidation language remains.
+- No state table, schema, patch/prefetch/effect/command/render, ToolMessage, context, cache, or invalidation language remains.

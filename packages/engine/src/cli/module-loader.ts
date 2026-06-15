@@ -17,14 +17,36 @@ import {
  * Boundary: dynamic module exports are unknown, so this uses a schema-backed CLI boundary check.
  */
 export async function loadWorkflow(path: string): Promise<WorkflowDefinitionInput> {
-  const mod = await importModule(path);
-  const workflow = mod.default ?? mod.workflow;
+  const workflows = await loadWorkflows(path);
+  const [workflow] = workflows;
+  if (!workflow || workflows.length !== 1) {
+    throw new Error(`Module must export exactly one workflow definition: ${path}`);
+  }
+  return workflow;
+}
 
-  if (!workflowExportSchema().safeParse(workflow).success) {
-    throw new Error(`Module does not export a workflow definition: ${path}`);
+/**
+ * Loads one or more workflow definitions from a local ESM module.
+ * Input: path to a module exporting `default`, `workflow`, or `workflows`.
+ * Output: workflow definitions accepted by WorkflowEngine.
+ * Boundary: each exported workflow is validated independently at the CLI boundary.
+ */
+export async function loadWorkflows(path: string): Promise<WorkflowDefinitionInput[]> {
+  const mod = await importModule(path);
+  const exported = mod.default ?? mod.workflows ?? mod.workflow;
+  const workflows = z.array(workflowExportSchema()).safeParse(exported);
+  if (workflows.success) {
+    if (workflows.data.length === 0) {
+      throw new Error(`Module does not export any workflow definitions: ${path}`);
+    }
+    return workflows.data.map((workflow) => workflow as unknown as WorkflowDefinitionInput);
   }
 
-  return workflow as WorkflowDefinitionInput;
+  if (!workflowExportSchema().safeParse(exported).success) {
+    throw new Error(`Module does not export workflow definition(s): ${path}`);
+  }
+
+  return [exported as WorkflowDefinitionInput];
 }
 
 /**
@@ -86,15 +108,25 @@ function workflowExportSchema() {
 }
 
 function workflowNodeExportSchema() {
-  return z.object({
-    kind: z.enum(["prefetch", "effect"]),
-    name: z.string(),
-    stage: z.enum(["beforePatch", "withPatch", "afterPatch"]),
-    progress: z.string(),
-    description: z.string(),
-    when: functionSchema().optional(),
-    run: functionSchema(),
-  });
+  return z
+    .object({
+      kind: z.enum(["prefetch", "effect"]),
+      name: z.string(),
+      stage: z.enum(["beforePatch", "withPatch", "afterPatch"]),
+      progress: z.string().optional(),
+      description: z.string(),
+      when: functionSchema().optional(),
+      run: functionSchema(),
+    })
+    .superRefine((node, context) => {
+      if (node.kind === "prefetch" && !node.progress) {
+        context.addIssue({
+          code: "custom",
+          message: "prefetch node progress must be a non-empty string",
+          path: ["progress"],
+        });
+      }
+    });
 }
 
 function renderPolicyExportSchema() {

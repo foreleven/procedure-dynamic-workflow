@@ -7,11 +7,13 @@ import {
   type WorkflowPrefetchNode,
   type WorkflowRuntimeInput,
   type WorkflowRuntimeState,
+  type WorkflowStepController,
 } from "@pac/workflow";
 import { applyObjectPatch } from "../patching.js";
 import { applyWorkflowInvalidation } from "./mutations.js";
 import type { EngineSession, EngineTraceEvent, RuntimeInstance, WorkflowEngineOptions } from "../types.js";
 import { RuntimeTracer } from "./tracer.js";
+import { errorMessage } from "../utils/errors.js";
 import { sameRuntimeValue } from "../utils/json.js";
 import { appendWorkflowMessage, appendWorkflowMessages } from "../utils/messages.js";
 import { preStateFor } from "../utils/state.js";
@@ -24,6 +26,8 @@ import { TurnChangeTracker, type WorkflowTurnChanges } from "../utils/turn.js";
  * Boundary: WorkflowEngine owns turn ordering; this runner owns node execution semantics.
  */
 export class WorkflowNodeRunner {
+  private readonly effectDependencies = new WeakMap<RuntimeInstance, Map<string, readonly unknown[]>>();
+
   constructor(
     private readonly deps: WorkflowEngineOptions["deps"],
     private readonly tracer: RuntimeTracer,
@@ -95,9 +99,10 @@ export class WorkflowNodeRunner {
       if (node.stage !== stage) continue;
 
       const phase = `node.${stage}.${node.name}`;
-      const input = this.nodeInput(instance, session, message, turnChanges, preStates);
+      const input = this.nodeInput(instance, session, message, turnChanges, preStates, noopStepController);
 
       if (node.when && !(await node.when(input))) {
+        this.clearEffectDependenciesIfChanged(instance, node);
         traces.push({
           workflowId: instance.id,
           phase: `${phase}.skip`,
@@ -107,17 +112,33 @@ export class WorkflowNodeRunner {
         continue;
       }
 
-      const progressDetail = {
-        node: node.name,
-        stage: node.stage,
-        progress: node.progress,
-        description: node.description,
-      };
-      this.tracer.progress(traces, instance.id, progressDetail);
+      const dependencyState = this.effectDependencyState(instance, node);
+      if (!dependencyState.shouldRun) {
+        const dependsOn = node.kind === "effect" ? node.dependsOn ?? [] : [];
+        traces.push({
+          workflowId: instance.id,
+          phase: `${phase}.skip`,
+          detail: { reason: "dependencies", dependsOn },
+        });
+        this.tracer.skip(instance.id, phase, { reason: "dependencies", dependsOn });
+        continue;
+      }
+
+      if (node.progress !== undefined) {
+        this.tracer.progress(traces, instance.id, {
+          node: node.name,
+          stage: node.stage,
+          progress: node.progress,
+          description: node.description,
+        });
+      }
 
       const startedAt = this.tracer.start(instance.id, phase);
 
       const result = await this.runNode(instance, session, message, traces, turnChanges, preStates, node);
+      if (node.kind === "effect") {
+        this.recordEffectDependencies(instance, node, dependencyState.current);
+      }
 
       if (result.changed) {
         changed = true;
@@ -140,13 +161,19 @@ export class WorkflowNodeRunner {
   ): Promise<NodeRunResult> {
     const changes = turnChanges.forWorkflow(instance.id);
     const contextRevision = instance.context.revision;
-    const input = this.nodeInput(instance, session, message, turnChanges, preStates);
+    const stepScope = this.createStepScope(instance, node, traces);
+    const input = this.nodeInput(instance, session, message, turnChanges, preStates, stepScope.controller);
 
-    if (node.kind === "prefetch") {
-      return this.runPrefetchNode(instance, node, input, changes, contextRevision, traces);
+    try {
+      const result = node.kind === "prefetch"
+        ? await this.runPrefetchNode(instance, node, input, changes, contextRevision, traces)
+        : await this.runEffectNode(instance, node, input, changes, contextRevision, traces);
+      stepScope.closeOpenSteps("done", { autoEnded: true });
+      return result;
+    } catch (error) {
+      stepScope.closeOpenSteps("error", { autoEnded: true, error: errorMessage(error) });
+      throw error;
     }
-
-    return this.runEffectNode(instance, node, input, changes, contextRevision, traces);
   }
 
   /**
@@ -161,6 +188,7 @@ export class WorkflowNodeRunner {
     message: string,
     turnChanges: TurnChangeTracker,
     preStates: Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>,
+    step: WorkflowStepController,
   ): WorkflowRuntimeInput<JsonRecord> {
     const changes = turnChanges.forWorkflow(instance.id);
     return {
@@ -171,6 +199,7 @@ export class WorkflowNodeRunner {
       prefetch: instance.prefetch,
       deps: this.deps,
       turn: changes.snapshot(),
+      step,
       message,
     };
   }
@@ -318,6 +347,116 @@ export class WorkflowNodeRunner {
     return changedKeys;
   }
 
+  private effectDependencyState(
+    instance: RuntimeInstance,
+    node: WorkflowNode<JsonRecord>,
+  ): EffectDependencyState {
+    if (node.kind !== "effect" || node.dependsOn === undefined) {
+      return { shouldRun: true };
+    }
+
+    const current = node.dependsOn.map((field) => instance.state[field]);
+    const previous = this.effectDependencyStore(instance).get(node.name);
+    if (!previous || !sameDependencyValues(previous, current)) {
+      return { shouldRun: true, current };
+    }
+
+    return { shouldRun: false };
+  }
+
+  private recordEffectDependencies(
+    instance: RuntimeInstance,
+    node: WorkflowEffectNode<JsonRecord>,
+    current: readonly unknown[] | undefined,
+  ): void {
+    if (node.dependsOn === undefined || current === undefined) return;
+    this.effectDependencyStore(instance).set(node.name, current);
+  }
+
+  private clearEffectDependenciesIfChanged(
+    instance: RuntimeInstance,
+    node: WorkflowNode<JsonRecord>,
+  ): void {
+    const dependencyState = this.effectDependencyState(instance, node);
+    if (node.kind === "effect" && node.dependsOn !== undefined && dependencyState.shouldRun) {
+      this.effectDependencyStore(instance).delete(node.name);
+    }
+  }
+
+  private effectDependencyStore(instance: RuntimeInstance): Map<string, readonly unknown[]> {
+    const existing = this.effectDependencies.get(instance);
+    if (existing) return existing;
+
+    const next = new Map<string, readonly unknown[]>();
+    this.effectDependencies.set(instance, next);
+    return next;
+  }
+
+  private createStepScope(
+    instance: RuntimeInstance,
+    node: WorkflowNode<JsonRecord>,
+    traces: EngineTraceEvent[],
+  ): WorkflowStepScope {
+    let stepIndex = 0;
+    const openSteps = new Map<string, TrackedStep>();
+
+    const controller: WorkflowStepController = {
+      start: (label, detail) => {
+        if (!isNonEmptyString(label)) {
+          throw new Error(`Workflow ${instance.id} step label must be a non-empty string`);
+        }
+
+        stepIndex += 1;
+        const stepId = `${node.name}:${stepIndex}`;
+        const trackedStep = { label, startedAt: Date.now() };
+        openSteps.set(stepId, trackedStep);
+        this.tracer.stepStart(traces, instance.id, {
+          node: node.name,
+          stage: node.stage,
+          stepId,
+          label,
+          ...(detail !== undefined ? { detail } : {}),
+        });
+
+        return {
+          id: stepId,
+          label,
+          end: (endDetail?: unknown) => {
+            const openStep = openSteps.get(stepId);
+            if (!openStep) return;
+            openSteps.delete(stepId);
+            this.tracer.stepEnd(traces, instance.id, {
+              node: node.name,
+              stage: node.stage,
+              stepId,
+              label: openStep.label,
+              status: "done",
+              durationMs: Date.now() - openStep.startedAt,
+              ...(endDetail !== undefined ? { detail: endDetail } : {}),
+            });
+          },
+        };
+      },
+    };
+
+    return {
+      controller,
+      closeOpenSteps: (status, detail) => {
+        for (const [stepId, openStep] of [...openSteps.entries()]) {
+          openSteps.delete(stepId);
+          this.tracer.stepEnd(traces, instance.id, {
+            node: node.name,
+            stage: node.stage,
+            stepId,
+            label: openStep.label,
+            status,
+            durationMs: Date.now() - openStep.startedAt,
+            ...(detail !== undefined ? { detail } : {}),
+          });
+        }
+      },
+    };
+  }
 }
 
 type NodeRunDetail = JsonRecord & {
@@ -327,6 +466,38 @@ type NodeRunDetail = JsonRecord & {
 interface NodeRunResult {
   changed: boolean;
   detail: NodeRunDetail;
+}
+
+interface EffectDependencyState {
+  shouldRun: boolean;
+  current?: readonly unknown[];
+}
+
+interface TrackedStep {
+  label: string;
+  startedAt: number;
+}
+
+interface WorkflowStepScope {
+  controller: WorkflowStepController;
+  closeOpenSteps(status: "done" | "error", detail?: unknown): void;
+}
+
+const noopStepController: WorkflowStepController = {
+  start(label) {
+    return {
+      id: "noop",
+      label,
+      end() {
+        return undefined;
+      },
+    };
+  },
+};
+
+function sameDependencyValues(left: readonly unknown[], right: readonly unknown[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((value, index) => sameRuntimeValue(value, right[index]));
 }
 
 function isPlainObject(value: unknown): value is JsonRecord {

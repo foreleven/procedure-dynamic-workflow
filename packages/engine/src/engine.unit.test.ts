@@ -29,6 +29,11 @@ interface SameTurnInvalidationState {
   dependent: string | null;
 }
 
+interface EffectDependencyState {
+  selected: string | null;
+  runs: number;
+}
+
 test("WorkflowEngine returns fallback response when local routing does not match", async () => {
   const llm: LlmClient = {
     async text() {
@@ -93,6 +98,45 @@ test("WorkflowEngine routes, patches, invalidates, runs nodes, and renders funct
   assert.equal(llm.structuredCalls.length, 1);
   assert.ok(result.traces.some((trace) => trace.phase === "routing.local" && trace.workflowId === "test_flow"));
   assert.ok(result.traces.some((trace) => trace.phase === "invalidate"));
+});
+
+test("WorkflowEngine routes to every locally matched workflow", async () => {
+  const llm = createPatchLlm({ statePatch: { selected: "matched" } });
+  const engine = new WorkflowEngine({
+    workflows: [createTestWorkflow(), createCompetingWorkflow()],
+    deps: {
+      llm,
+      connectors: createConnectorRegistry(),
+    },
+  });
+  const session = engine.createSession({ sessionId: "session_multi_route", userId: "user_multi_route" });
+
+  const result = await engine.onMessage("please route me to competitor", session);
+
+  assert.deepEqual(result.responses.map((response) => response.workflowId), ["test_flow", "competing_flow"]);
+  assert.deepEqual(session.activeWorkflowIds, ["test_flow", "competing_flow"]);
+  assert.equal(llm.structuredCalls.length, 2);
+  assert.ok(result.traces.some((trace) => trace.phase === "routing.local" && trace.workflowId === "test_flow"));
+  assert.ok(result.traces.some((trace) => trace.phase === "routing.local" && trace.workflowId === "competing_flow"));
+});
+
+test("WorkflowEngine suppresses weak local matches when an accepted workflow exists", async () => {
+  const llm = createPatchLlm({ statePatch: { selected: "matched" } });
+  const engine = new WorkflowEngine({
+    workflows: [createTestWorkflow(), createWeakRouteWorkflow()],
+    deps: {
+      llm,
+      connectors: createConnectorRegistry(),
+    },
+  });
+  const session = engine.createSession({ sessionId: "session_route_thresholds", userId: "user_route_thresholds" });
+
+  const result = await engine.onMessage("please route me", session);
+
+  assert.deepEqual(result.responses.map((response) => response.workflowId), ["test_flow"]);
+  assert.deepEqual(session.activeWorkflowIds, ["test_flow"]);
+  assert.equal(llm.structuredCalls.length, 1);
+  assert.ok(!result.traces.some((trace) => trace.phase === "routing.local" && trace.workflowId === "weak_route_flow"));
 });
 
 test("WorkflowEngine exposes workflow snapshots without leaking mutable runtime instances", async () => {
@@ -355,6 +399,47 @@ test("WorkflowEngine passes derived ToolMessage history to render as runtime fac
   assert.match(content.text, /"slot": "09:00"/);
 });
 
+test("WorkflowEngine runs dependency-gated effects once per dependency snapshot and traces steps", async () => {
+  const llm = createSequentialPatchLlm([
+    { statePatch: { selected: "alpha" } },
+    { statePatch: {} },
+    { statePatch: { selected: "alpha" } },
+    { statePatch: { selected: "beta" } },
+  ]);
+  const engine = new WorkflowEngine({
+    workflows: [createEffectDependencyWorkflow()],
+    deps: {
+      llm,
+      connectors: createConnectorRegistry(),
+    },
+  });
+  const session = engine.createSession({
+    sessionId: "session_effect_dependencies",
+    userId: "user_effect_dependencies",
+    activeWorkflowIds: ["effect_dependency_flow"],
+  });
+
+  const first = await engine.onMessage("select alpha", session);
+  const second = await engine.onMessage("repeat without change", session);
+  const third = await engine.onMessage("select alpha again", session);
+  const fourth = await engine.onMessage("select beta", session);
+  const instance = engine.getWorkflowSnapshot<EffectDependencyState>(session, "effect_dependency_flow");
+
+  assert.equal(instance?.state.selected, "beta");
+  assert.equal(instance?.state.runs, 2);
+  assert.equal(first.response.text, "selected=alpha; runs=1");
+  assert.equal(second.response.text, "selected=alpha; runs=1");
+  assert.equal(third.response.text, "selected=alpha; runs=1");
+  assert.equal(fourth.response.text, "selected=beta; runs=2");
+  assert.equal(first.traces.filter((trace) => trace.phase === "node.step.start").length, 2);
+  assert.equal(first.traces.filter((trace) => trace.phase === "node.step.end").length, 2);
+  assert.ok(second.traces.some((trace) =>
+    trace.phase === "node.afterPatch.load_selected.skip" &&
+    isTraceReason(trace.detail, "dependencies"),
+  ));
+  assert.equal(second.traces.filter((trace) => trace.phase === "node.step.start").length, 0);
+});
+
 test("WorkflowEngine validates LLM render text output", async () => {
   const llm: LlmClient = {
     async structured(request) {
@@ -456,6 +541,42 @@ test("WorkflowEngine serializes stream deltas across active workflows", async ()
   assert.equal(result.response.text, "a1a2");
   assert.deepEqual(deltas, ["stream_a:a1", "stream_a:a2", "stream_b:b1", "stream_b:b2"]);
   assert.deepEqual(llm.streamCalls, ["stream_a_render", "stream_b_render"]);
+});
+
+test("WorkflowEngine runs afterPatch stages for active workflows concurrently", async () => {
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const engine = new WorkflowEngine({
+    workflows: [
+      createConcurrentAfterPatchWorkflow("concurrent_a", "alpha", () => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        return () => {
+          inFlight -= 1;
+        };
+      }),
+      createConcurrentAfterPatchWorkflow("concurrent_b", "beta", () => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        return () => {
+          inFlight -= 1;
+        };
+      }),
+    ],
+    deps: {
+      llm: createPatchLlm({ statePatch: {} }),
+      connectors: createConnectorRegistry(),
+    },
+  });
+  const session = engine.createSession({
+    sessionId: "session_concurrent_after_patch",
+    userId: "user_concurrent_after_patch",
+    activeWorkflowIds: ["concurrent_a", "concurrent_b"],
+  });
+
+  await engine.onMessage("run both", session);
+
+  assert.equal(maxInFlight, 2);
 });
 
 test("WorkflowEngine stops unstable afterPatch nodes at maxProgramRounds", async () => {
@@ -915,6 +1036,22 @@ function createCompetingWorkflow(): WorkflowDefinition<TestState> {
   };
 }
 
+function createWeakRouteWorkflow(): WorkflowDefinition<TestState> {
+  return {
+    ...createTestWorkflow(),
+    id: "weak_route_flow",
+    description: "Weak lexical fixture.",
+    routing: defineRouting({
+      examples: ["weak only"],
+      entities: ["route"],
+      neighbors: [],
+    }),
+    render: ({ state }) => ({
+      text: `weak=${state.selected}`,
+    }),
+  };
+}
+
 function createStreamingWorkflow(config: {
   id?: string;
   renderName?: string;
@@ -940,6 +1077,51 @@ function createStreamingWorkflow(config: {
   };
 }
 
+function createConcurrentAfterPatchWorkflow(
+  id: string,
+  route: string,
+  enter: () => () => void,
+): WorkflowDefinition<{ done: boolean }> {
+  return {
+    id,
+    version: "0.1.0",
+    description: `${id} concurrent afterPatch fixture.`,
+    routing: defineRouting({
+      examples: [route],
+      entities: [route],
+      neighbors: [],
+    }),
+    stateSchema: z.object({
+      done: z.boolean(),
+    }),
+    state: {
+      done: false,
+    },
+    patch: definePatch({
+      state: {},
+    }),
+    invalidation: {},
+    nodes: [
+      {
+        kind: "effect",
+        name: "concurrent_effect",
+        stage: "afterPatch",
+        description: "Waits briefly so the test can observe cross-workflow concurrency.",
+        when: ({ state }) => state.done === false,
+        run: async () => {
+          const leave = enter();
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          leave();
+          return { state: { done: true } };
+        },
+      },
+    ],
+    render: ({ state }) => ({
+      text: `${id}:${state.done}`,
+    }),
+  };
+}
+
 function createToolRenderWorkflow(): WorkflowDefinition<{ done: boolean }> {
   const program = workflow({
     id: "tool_render_flow",
@@ -959,20 +1141,22 @@ function createToolRenderWorkflow(): WorkflowDefinition<{ done: boolean }> {
   });
 
   program.patch({ state: {} });
-  program.derive("lookup_tool", {
-    progress: "Looking up tool data",
+  program.effect("lookup_tool", {
     description: "Appends connector-like facts as a ToolMessage so render sees provider-native tool history.",
-    when: (state) => !state.done,
-    run: () => ({
-      done: true,
-      messages: [
-        new ToolMessage({
-          name: "connectors.lookup",
-          call: { query: "slot" },
-          result: { slot: "09:00" },
-        }),
-      ],
-    }),
+    dependsOn: ["done"],
+    run: (state) => {
+      if (state.done) return {};
+      return {
+        done: true,
+        messages: [
+          new ToolMessage({
+            name: "connectors.lookup",
+            call: { query: "slot" },
+            result: { slot: "09:00" },
+          }),
+        ],
+      };
+    },
   });
 
   return program.render({
@@ -980,6 +1164,62 @@ function createToolRenderWorkflow(): WorkflowDefinition<{ done: boolean }> {
     instruction: "Reply from tool history.",
     progress: "Rendering from tools",
   });
+}
+
+function createEffectDependencyWorkflow(): WorkflowDefinition<EffectDependencyState> {
+  return {
+    id: "effect_dependency_flow",
+    version: "0.1.0",
+    description: "Effect dependency workflow test fixture.",
+    routing: defineRouting({
+      examples: ["effect dependencies"],
+      entities: ["effect"],
+      neighbors: [],
+    }),
+    stateSchema: z.object({
+      selected: z.string().nullable(),
+      runs: z.number(),
+    }),
+    state: {
+      selected: null,
+      runs: 0,
+    },
+    patch: definePatch({
+      state: {
+        selected: z.string().nullable(),
+      },
+    }),
+    invalidation: {},
+    nodes: [
+      {
+        kind: "effect",
+        name: "load_selected",
+        stage: "afterPatch",
+        progress: "Loading selected data",
+        description: "Runs only when the selected state dependency changes and emits parallel loading steps.",
+        dependsOn: ["selected"],
+        when: ({ state }) => state.selected !== null,
+        run: async ({ state, step }) => {
+          const primary = step.start("Load primary connector");
+          const secondary = step.start("Load secondary connector");
+
+          await Promise.all([
+            delay(1).then(() => primary.end({ connector: "primary" })),
+            delay(1).then(() => secondary.end({ connector: "secondary" })),
+          ]);
+
+          return {
+            state: {
+              runs: state.runs + 1,
+            },
+          };
+        },
+      },
+    ],
+    render: ({ state }) => ({
+      text: `selected=${state.selected}; runs=${state.runs}`,
+    }),
+  };
 }
 
 function createMaxRoundsWorkflow(): WorkflowDefinition<{ count: number }> {
@@ -1029,6 +1269,23 @@ function createPatchLlm(patch: unknown): LlmClient & { structuredCalls: unknown[
     },
     async structured(request) {
       structuredCalls.push(request);
+      return request.schema.parse(patch);
+    },
+  };
+}
+
+function createSequentialPatchLlm(patches: unknown[]): LlmClient & { structuredCalls: unknown[] } {
+  const structuredCalls: unknown[] = [];
+  let patchIndex = 0;
+  return {
+    structuredCalls,
+    async text() {
+      throw new Error("text generation should not run for function render policies");
+    },
+    async structured(request) {
+      structuredCalls.push(request);
+      const patch = patches[patchIndex] ?? {};
+      patchIndex += 1;
       return request.schema.parse(patch);
     },
   };
@@ -1108,4 +1365,13 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function isTraceReason(detail: unknown, reason: string): boolean {
+  return Boolean(
+    detail &&
+    typeof detail === "object" &&
+    "reason" in detail &&
+    (detail as { reason?: unknown }).reason === reason,
+  );
 }

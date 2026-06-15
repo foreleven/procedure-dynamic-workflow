@@ -35,17 +35,35 @@ export function assertProgramWorkflowInvariants<TState extends object>(
 
 export function assertProgramNodeInvariants(
   name: string,
-  config: { progress: string; description: string },
+  config: { progress?: string | undefined; description: string },
   label: string,
+  options: { requireProgress?: boolean } = {},
 ): void {
   parseSchema(nonEmptyString(`${label} name`), name);
+  const progressSchema = options.requireProgress
+    ? nonEmptyString(`${label} ${name} progress`)
+    : nonEmptyString(`${label} ${name} progress`).optional();
   parseSchema(
     z.object({
-      progress: nonEmptyString(`${label} ${name} progress`),
+      progress: progressSchema,
       description: nonEmptyString(`${label} ${name} description`),
     }),
     config,
   );
+}
+
+/**
+ * Validates state dependency metadata before effect nodes are registered.
+ * Input: optional dependency field list from the program DSL.
+ * Output: throws when a dependency is blank, duplicated, or targets runtime-reserved state.
+ * Boundary: state-schema membership remains a TypeScript concern for typed workflows.
+ */
+export function assertProgramEffectDependencies(
+  value: readonly string[] | undefined,
+  label: string,
+): void {
+  if (value === undefined) return;
+  parseSchema(effectDependenciesSchema(label), value);
 }
 
 export function assertProgramNodeStage<TState extends object, TConnectors extends ConnectorCatalog>(
@@ -74,6 +92,39 @@ export function assertPatchInvalidationInvariants(
 ): void {
   if (value === undefined) return;
   parseSchema(patchInvalidationSchema(label), value);
+}
+
+export function effectDependenciesSchema(label: string) {
+  return z.array(z.string()).superRefine((dependencies, context) => {
+    const seen = new Set<string>();
+    for (const [index, dependency] of dependencies.entries()) {
+      if (!isNonEmptyString(dependency)) {
+        context.addIssue({
+          code: "custom",
+          message: `${label} must contain only non-empty strings`,
+          path: [index],
+        });
+        continue;
+      }
+      if (dependency === "messages") {
+        context.addIssue({
+          code: "custom",
+          message: `${label} must not include reserved messages state`,
+          path: [index],
+        });
+        continue;
+      }
+      if (seen.has(dependency)) {
+        context.addIssue({
+          code: "custom",
+          message: `${label} must not contain duplicate fields`,
+          path: [index],
+        });
+        continue;
+      }
+      seen.add(dependency);
+    }
+  });
 }
 
 function patchInvalidationSchema(label: string) {

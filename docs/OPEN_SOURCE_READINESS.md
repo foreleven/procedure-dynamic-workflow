@@ -19,7 +19,7 @@ This project is being prepared for a formal open-source release. The checklist b
 - Engine construction rejects duplicate workflow ids instead of silently overwriting workflow artifacts.
 - Engine session creation and turn execution reject duplicate or unknown active workflow ids and mismatched cached workflow instances.
 - Engine invalidation resets dependent fields with schema-valid default semantics, including deleting optional fields that are absent from the workflow default state.
-- Engine invalidation preserves same-turn message-patched dependent fields when later workflow nodes derive their source fields.
+- Engine invalidation preserves same-turn message-patched dependent fields when later workflow nodes write their source fields.
 - Engine rejects raw or parsed workflow default states that define reserved `messages` and ignores state patch attempts to overwrite runtime message history.
 - Engine validates workflow render responses and LLM render stream events before recording assistant messages.
 - Engine validates raw prefetch node results before merging runtime prefetch values.

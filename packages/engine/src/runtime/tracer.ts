@@ -9,6 +9,16 @@ export interface RuntimeProgressDetail {
   description?: string;
 }
 
+export interface RuntimeStepDetail {
+  node: string;
+  stage: string;
+  stepId: string;
+  label: string;
+  status?: "done" | "error";
+  durationMs?: number;
+  detail?: unknown;
+}
+
 /**
  * Centralizes engine trace and log emission.
  * Input: optional engine logger plus trace arrays supplied by turn execution.
@@ -42,5 +52,23 @@ export class RuntimeTracer {
       detail,
     });
     this.event(workflowId, "node.progress", detail);
+  }
+
+  stepStart(traces: EngineTraceEvent[], workflowId: WorkflowId, detail: RuntimeStepDetail): void {
+    traces.push({
+      workflowId,
+      phase: "node.step.start",
+      detail,
+    });
+    this.event(workflowId, "node.step.start", detail);
+  }
+
+  stepEnd(traces: EngineTraceEvent[], workflowId: WorkflowId, detail: RuntimeStepDetail): void {
+    traces.push({
+      workflowId,
+      phase: "node.step.end",
+      detail,
+    });
+    this.event(workflowId, "node.step.end", detail);
   }
 }

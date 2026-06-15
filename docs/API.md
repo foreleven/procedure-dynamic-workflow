@@ -14,7 +14,7 @@ Runtime exports:
 - `AckOptionSchema`, `AckRequestSchema`, `ConnectorRegistry`, `DEFAULT_ROUTING_THRESHOLDS`, `JsonRecordSchema`, `PrefetchStore`, `SessionPatchSchema`, `ToolMessage`, `WorkflowContextStore`, `createConnectorRegistry`, `defineConnectorCatalog`, `defineConnectorRef`, `defineConnectorTool`, `definePatch`, `defineRouting`, `defineWorkflowDefinition`, `defineWorkflowHooks`, `effectAction`, `hydrateContextAction`, `loadWorkflowMetadata`, `prefetchAction`, `renderAction`, `resolveAckSelection`, `setContextAction`, `setStateAction`, `settlePrefetch`, `workflow`, `workflowActions`, and `z`.
 
 Public types:
-- `AckRequest`, `AckSelection`, `ConnectorCatalog`, `ConnectorInput`, `ConnectorOutput`, `PatchPolicy`, `RenderPolicy`, `RenderResponse`, `RoutingProfile`, `SessionContext`, `ToolMessageInput`, `WorkflowContext`, `WorkflowDefinition`, `WorkflowMetadata`, `WorkflowNode`, `WorkflowPatch`, `WorkflowProgram`, `WorkflowRuntimeInput`, `WorkflowStatePatch`, and `WorkflowToolMessage`.
+- `AckRequest`, `AckSelection`, `ConnectorCatalog`, `ConnectorInput`, `ConnectorOutput`, `PatchPolicy`, `RenderPolicy`, `RenderResponse`, `RoutingProfile`, `SessionContext`, `ToolMessageInput`, `WorkflowContext`, `WorkflowContextCallOptions`, `WorkflowDefinition`, `WorkflowMetadata`, `WorkflowNode`, `WorkflowPatch`, `WorkflowProgram`, `WorkflowRuntimeInput`, `WorkflowStatePatch`, `WorkflowStepController`, `WorkflowStepHandle`, and `WorkflowToolMessage`.
 
 ### Workflow Definition
 
@@ -30,11 +30,13 @@ Input:
 - `invalidation`: optional dependent-state reset rules.
 
 Output:
-- a `WorkflowProgram` with `patch(...)`, `prefetch(...)`, `derive(...)`, `command(...)`, and `render(...)`.
+- a `WorkflowProgram` with `patch(...)`, `prefetch(...)`, `effect(...)`, `command(...)`, and `render(...)`.
+- `derive(...)` remains available as a migration alias for `effect(...)`.
 
 Behavior:
 - asserts non-empty workflow metadata and invalidation invariants during definition;
-- asserts non-empty node names, progress text, and descriptions during registration;
+- asserts non-empty node names and descriptions during registration, and validates required prefetch progress text;
+- `effect(name, dependsOn, config)` and `config.dependsOn` gate an effect by state-field dependency snapshots;
 - `patch(...)` must be called exactly once before `render(...)`;
 - duplicate node names are rejected;
 - asserts render policy metadata before producing a workflow definition.
@@ -58,8 +60,32 @@ Behavior:
 - serializes to the workflow `role: "tool"` message shape.
 
 Boundary:
-- workflow code returns `ToolMessage` instances through `messages` from `derive(...)` or `command(...)`;
+- workflow code returns `ToolMessage` instances through `messages` from `effect(...)` or `command(...)`;
 - `@pac/engine` converts each workflow tool message into paired PI assistant tool-call and tool-result messages.
+
+#### Effect dependencies and steps
+
+Use `effect(...)` for deterministic, idempotent state progression after patch.
+
+Input:
+- `dependsOn`: optional state field list, either as `effect(name, dependsOn, config)` or `config.dependsOn`.
+- `run`: callback that can return partial state and `messages`.
+
+Behavior:
+- effect configs do not declare `when`; business guards belong at the start of `run`;
+- effect configs do not expose `progress`; use `step.start(...)` and `step.end(...)` for loading UI;
+- the program DSL runtime passed to effect callbacks does not expose `preState`;
+- when `dependsOn` is omitted, the effect runs during each stabilization round until it produces no semantic change;
+- when `dependsOn` is provided, the runtime compares the current dependency values to the last successful run for that node and skips unchanged snapshots during stabilization;
+- `dependsOn: []` runs once for the workflow instance;
+- the `run` callback receives `runtime.step` and a fourth `step` argument, both implementing `WorkflowStepController`;
+- `const loading = step.start("label"); ...; loading.end();` emits `node.step.start` and `node.step.end` trace events without mutating workflow state;
+- multiple step handles can be open at the same time, so workflow code can wrap parallel connector calls with independent loading steps.
+
+Boundary:
+- dependency fields are workflow state keys, not context or prefetch keys;
+- `messages` is reserved and cannot be used as a dependency field;
+- step labels are user-visible loading text, while optional step details are diagnostics.
 
 #### `defineWorkflowDefinition(definition)`
 
@@ -185,6 +211,11 @@ Boundary:
 - values are not schema validated;
 - values are not cloned;
 - values are not persisted;
+- `context.call(id, input, { cache: true })` caches in-flight and successful connector results inside the current workflow context, using `[id, JSON.stringify(input)]` as the default key;
+- `context.call(id, input, { cacheKey })` uses a custom stable JSON-native key such as `["connector", userId]`; include every input dependency that affects the result;
+- without `cache: true` and without a non-null `cacheKey`, the connector-call cache is bypassed;
+- `cache: true` requires `input` to be JSON-serializable unless a custom `cacheKey` is provided;
+- rejected connector calls are removed from the cache so later attempts can retry;
 - JSON-native values are compared structurally for change tracking, so object key ordering alone does not advance the revision;
 - non-serializable replacements are treated as changed instead of crashing change tracking;
 - workflows should keep business state in schema-validated workflow state instead.
@@ -246,16 +277,17 @@ Behavior:
 - rejects raw or parsed workflow default states that define reserved runtime fields such as `messages`;
 - rejects duplicate workflow ids during construction;
 - serializes logger diagnostics defensively so non-serializable runtime values do not crash execution;
-- routes new sessions by local routing metadata;
-- keeps active sessions on active workflows;
+- emits `node.step.start` and `node.step.end` traces for workflow-owned loading steps;
+- routes new sessions to every locally matched workflow, ordered by routing score;
+- keeps active sessions on active workflows and runs multiple active workflows in the same turn;
 - appends runtime message history and converts workflow tool messages into paired PI assistant tool-call and tool-result messages;
 - extracts structured patches through `deps.llm.structured(...)`;
 - reserves the workflow state field `messages` for runtime history and ignores attempts to write it through state patches;
 - compares JSON-native state and prefetch values structurally so object key ordering alone does not create dirty fields;
-- runs prefetch and effect nodes by stage;
+- runs prefetch and effect nodes by stage, with per-workflow after-patch stabilization running concurrently across active workflows;
 - validates raw prefetch node results before merging them into the runtime prefetch store;
 - invalidates dependent fields after state changes, resetting them to default values or deleting fields that are absent from the workflow default state;
-- preserves dependent fields explicitly extracted from the latest user message when later same-turn workflow nodes derive source fields that would otherwise invalidate them;
+- preserves dependent fields explicitly extracted from the latest user message when later same-turn workflow nodes write source fields that would otherwise invalidate them;
 - renders responses through either a workflow render function or an LLM render policy.
 - validates workflow render responses and LLM render stream events before recording assistant messages.
 - when `onResponseDelta` is configured, emits streamed render deltas sequentially by workflow response order so multiple active workflows cannot interleave user-visible output.

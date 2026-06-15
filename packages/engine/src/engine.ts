@@ -127,9 +127,11 @@ export class WorkflowEngine {
     this.applyPatches(targets.instances, patches, session, traces, turnChanges);
 
     const runnable = this.instances.forActiveTargets(session, targets.ids);
-    for (const instance of runnable) {
-      await this.nodeRunner.runStageUntilStable(instance, session, message, traces, turnChanges, preStates, "afterPatch");
-    }
+    await Promise.all(
+      runnable.map((instance) =>
+        this.nodeRunner.runStageUntilStable(instance, session, message, traces, turnChanges, preStates, "afterPatch"),
+      ),
+    );
 
     const responses = await this.renderer.renderResponses(runnable, session, message, traces, turnChanges, preStates);
     session.routingMemory.lastMatchedWorkflowIds = runnable.map((instance) => instance.id);
@@ -189,23 +191,29 @@ export class WorkflowEngine {
     }
 
     const startedAt = this.tracer.start("engine", "routing.local");
-    const best = this.findBestWorkflow(message);
-    if (!best) {
+    const matches = this.findMatchingWorkflows(message);
+    if (matches.length === 0) {
       traces.push({ workflowId: "none", phase: "routing.none" });
       this.tracer.done("engine", "routing.local", startedAt, { matched: false });
       return { instances: [], ids: new Set() };
     }
 
-    this.instances.attach(session, best.workflow.id);
-    const instance = this.instances.ensure(session, best.workflow.id);
-    const instances = instance ? [instance] : [];
+    for (const match of matches) {
+      this.instances.attach(session, match.workflow.id);
+    }
+    const instances = this.instances.forIds(session, matches.map((match) => match.workflow.id));
 
-    traces.push({
-      workflowId: best.workflow.id,
-      phase: "routing.local",
-      detail: { score: best.score },
+    for (const match of matches) {
+      traces.push({
+        workflowId: match.workflow.id,
+        phase: "routing.local",
+        detail: { score: match.score },
+      });
+    }
+    this.tracer.done("engine", "routing.local", startedAt, {
+      workflowIds: matches.map((match) => match.workflow.id),
+      scores: Object.fromEntries(matches.map((match) => [match.workflow.id, match.score])),
     });
-    this.tracer.done("engine", "routing.local", startedAt, { workflowId: best.workflow.id, score: best.score });
 
     return {
       instances,
@@ -213,8 +221,8 @@ export class WorkflowEngine {
     };
   }
 
-  private findBestWorkflow(message: string): { workflow: RuntimeWorkflow; score: number } | undefined {
-    const [best] = [...this.registry.values()]
+  private findMatchingWorkflows(message: string): Array<{ workflow: RuntimeWorkflow; score: number }> {
+    const candidates = [...this.registry.values()]
       .map((workflow) => ({
         workflow,
         score: scoreWorkflow(message, workflow),
@@ -222,7 +230,12 @@ export class WorkflowEngine {
       .filter((candidate) => candidate.score > 0)
       .sort((a, b) => b.score - a.score);
 
-    return best;
+    const accepted = candidates.filter((candidate) => candidate.score >= candidate.workflow.routing.thresholds.localAccept);
+    if (accepted.length > 0) return accepted;
+
+    const [best] = candidates;
+    if (best && best.score >= best.workflow.routing.thresholds.localUncertain) return [best];
+    return [];
   }
 
   private async extractPatch(

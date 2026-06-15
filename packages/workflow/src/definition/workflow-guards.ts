@@ -9,6 +9,7 @@ import type {
   WorkflowDefinition,
   WorkflowNode,
 } from "../workflow.js";
+import { effectDependenciesSchema } from "./program-guards.js";
 import {
   errorMessage,
   isNonEmptyString,
@@ -131,7 +132,7 @@ function invalidationSchema(label: string) {
 function workflowNodeMetadataSchema(label: string) {
   return z.object({
     name: nonEmptyString(`${label} name`),
-    progress: z.string(),
+    progress: z.string().optional(),
     description: z.string(),
   });
 }
@@ -181,8 +182,15 @@ function assertWorkflowNodeInvariants<
   const names = new Set<string>();
   for (const node of nodes) {
     parseSchema(workflowNodeMetadataSchema(label), node);
-    parseSchema(nonEmptyString(`${label} ${node.name} progress`), node.progress);
+    if (node.kind === "prefetch") {
+      parseSchema(nonEmptyString(`${label} ${node.name} progress`), node.progress);
+    } else if (node.progress !== undefined) {
+      parseSchema(nonEmptyString(`${label} ${node.name} progress`), node.progress);
+    }
     parseSchema(nonEmptyString(`${label} ${node.name} description`), node.description);
+    if (node.kind === "effect" && node.dependsOn !== undefined) {
+      parseSchema(effectDependenciesSchema(`${label} ${node.name} dependsOn`), node.dependsOn);
+    }
     if (names.has(node.name)) {
       throw new Error(`${label} contains duplicate node name: ${node.name}`);
     }

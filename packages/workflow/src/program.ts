@@ -7,6 +7,7 @@ import { sameRuntimeValue } from "./runtime/equality.js";
 import { settlePrefetch } from "./runtime/prefetch.js";
 import {
   assertPatchInvalidationInvariants,
+  assertProgramEffectDependencies,
   assertProgramNodeInvariants,
   assertProgramNodeStage,
   assertProgramWorkflowInvariants,
@@ -20,17 +21,16 @@ import type {
   WorkflowPatch,
   WorkflowStatePatch,
   WorkflowRuntimeInput,
+  WorkflowStepController,
   WorkflowToolMessage,
   WorkflowTurn,
 } from "./workflow.js";
 import { defineWorkflowDefinition } from "./workflow.js";
 
-export interface ProgramRuntime<
-  TState extends object = object,
-> {
+export interface ProgramRuntime {
   session: SessionContext;
-  preState: WorkflowRuntimeState<TState>;
   turn: WorkflowTurn;
+  step: WorkflowStepController;
   message?: string;
 }
 
@@ -40,22 +40,31 @@ export type ProgramWhen<
 > = (
   state: WorkflowRuntimeState<TState>,
   context: WorkflowContext<TConnectors>,
-  runtime: ProgramRuntime<TState>,
+  runtime: ProgramRuntime,
 ) => MaybePromise<boolean>;
 
 export type ProgramStatePatch<TState extends object> = WorkflowStatePatch<TState> & {
   messages?: WorkflowToolMessage[];
 };
 
+export type ProgramEffectDependencies<TState extends object> = readonly Exclude<keyof TState & string, "messages">[];
+
 export interface ProgramNodeMetadata {
-  /**
-   * User-visible progress text emitted when the node is selected to run.
-   */
-  progress: string;
   /**
    * Maintainer-facing explanation of the business purpose and boundary of this step.
    */
   description: string;
+}
+
+export interface ProgramProgressNodeMetadata {
+  /**
+   * Maintainer-facing explanation of the business purpose and boundary of this step.
+   */
+  description: string;
+  /**
+   * User-visible progress text emitted when the node is selected to run.
+   */
+  progress: string;
 }
 
 export interface ProgramWorkflowConfig<
@@ -83,17 +92,17 @@ export interface ProgramPatchConfig<TState extends object, TStatePatchShape exte
 export interface ProgramPrefetchConfig<
   TState extends object,
   TConnectors extends ConnectorCatalog = ConnectorCatalog,
-> extends ProgramNodeMetadata {
+> extends ProgramProgressNodeMetadata {
   when: ProgramWhen<TState, TConnectors>;
   cacheKey?: (
     state: WorkflowRuntimeState<TState>,
     context: WorkflowContext<TConnectors>,
-    runtime: ProgramRuntime<TState>,
+    runtime: ProgramRuntime,
   ) => MaybePromise<unknown>;
   run: (
     state: WorkflowRuntimeState<TState>,
     context: WorkflowContext<TConnectors>,
-    runtime: ProgramRuntime<TState>,
+    runtime: ProgramRuntime,
   ) => MaybePromise<Record<string, MaybePromise<unknown>>>;
 }
 
@@ -101,11 +110,29 @@ export interface ProgramEffectConfig<
   TState extends object,
   TConnectors extends ConnectorCatalog = ConnectorCatalog,
 > extends ProgramNodeMetadata {
+  /**
+   * State fields that gate this effect. The node runs once when the dependency
+   * snapshot changes and is skipped on later stabilization rounds until it changes again.
+   */
+  dependsOn?: ProgramEffectDependencies<TState>;
+  run: (
+    state: WorkflowRuntimeState<TState>,
+    context: WorkflowContext<TConnectors>,
+    runtime: ProgramRuntime,
+    step: WorkflowStepController,
+  ) => MaybePromise<ProgramStatePatch<TState> | void>;
+}
+
+export interface ProgramCommandConfig<
+  TState extends object,
+  TConnectors extends ConnectorCatalog = ConnectorCatalog,
+> extends ProgramNodeMetadata {
   when: ProgramWhen<TState, TConnectors>;
   run: (
     state: WorkflowRuntimeState<TState>,
     context: WorkflowContext<TConnectors>,
-    runtime: ProgramRuntime<TState>,
+    runtime: ProgramRuntime,
+    step: WorkflowStepController,
   ) => MaybePromise<ProgramStatePatch<TState> | void>;
 }
 
@@ -123,8 +150,19 @@ export interface WorkflowProgram<
     config: ProgramPatchConfig<TState, TStatePatchShape>,
   ): void;
   prefetch(name: string, config: ProgramPrefetchConfig<TState, TConnectors>): void;
+  effect(name: string, config: ProgramEffectConfig<TState, TConnectors>): void;
+  effect(
+    name: string,
+    dependsOn: ProgramEffectDependencies<TState>,
+    config: ProgramEffectConfig<TState, TConnectors>,
+  ): void;
   derive(name: string, config: ProgramEffectConfig<TState, TConnectors>): void;
-  command(name: string, config: ProgramEffectConfig<TState, TConnectors>): void;
+  derive(
+    name: string,
+    dependsOn: ProgramEffectDependencies<TState>,
+    config: ProgramEffectConfig<TState, TConnectors>,
+  ): void;
+  command(name: string, config: ProgramCommandConfig<TState, TConnectors>): void;
   render(config: ProgramRenderConfig): WorkflowDefinition<TState, unknown, TConnectors>;
 }
 
@@ -145,6 +183,38 @@ export function workflow<
   let patchPolicy: PatchPolicy<unknown> | undefined;
   let invalidation = config.invalidation ?? {};
 
+  function effect(name: string, effectConfig: ProgramEffectConfig<TState, TConnectors>): void;
+  function effect(
+    name: string,
+    dependsOn: ProgramEffectDependencies<TState>,
+    effectConfig: ProgramEffectConfig<TState, TConnectors>,
+  ): void;
+  function effect(
+    name: string,
+    dependenciesOrConfig:
+      | ProgramEffectDependencies<TState>
+      | ProgramEffectConfig<TState, TConnectors>,
+    maybeConfig?: ProgramEffectConfig<TState, TConnectors>,
+  ): void {
+    registerEffect(name, normalizeEffectConfig(dependenciesOrConfig, maybeConfig));
+  }
+
+  function derive(name: string, effectConfig: ProgramEffectConfig<TState, TConnectors>): void;
+  function derive(
+    name: string,
+    dependsOn: ProgramEffectDependencies<TState>,
+    effectConfig: ProgramEffectConfig<TState, TConnectors>,
+  ): void;
+  function derive(
+    name: string,
+    dependenciesOrConfig:
+      | ProgramEffectDependencies<TState>
+      | ProgramEffectConfig<TState, TConnectors>,
+    maybeConfig?: ProgramEffectConfig<TState, TConnectors>,
+  ): void {
+    registerEffect(name, normalizeEffectConfig(dependenciesOrConfig, maybeConfig));
+  }
+
   return {
     patch(patchConfig) {
       if (patchPolicy) {
@@ -157,11 +227,10 @@ export function workflow<
     prefetch(name, prefetchConfig) {
       registerPrefetch(name, prefetchConfig);
     },
-    derive(name, effectConfig) {
-      registerEffect(name, effectConfig);
-    },
-    command(name, effectConfig) {
-      registerEffect(name, effectConfig);
+    effect,
+    derive,
+    command(name, commandConfig) {
+      registerCommand(name, commandConfig);
     },
     render(renderConfig) {
       if (!patchPolicy) {
@@ -188,7 +257,7 @@ export function workflow<
     name: string,
     prefetchConfig: ProgramPrefetchConfig<TState, TConnectors>,
   ): void {
-    assertProgramNodeInvariants(name, prefetchConfig, `Workflow ${config.id} prefetch`);
+    assertProgramNodeInvariants(name, prefetchConfig, `Workflow ${config.id} prefetch`, { requireProgress: true });
     const cacheKeyName = `${name}:cacheKey`;
     registerNode({
       kind: "prefetch",
@@ -223,23 +292,49 @@ export function workflow<
     effectConfig: ProgramEffectConfig<TState, TConnectors>,
   ): void {
     assertProgramNodeInvariants(name, effectConfig, `Workflow ${config.id} node`);
+    assertProgramEffectDependencies(effectConfig.dependsOn, `Workflow ${config.id} node ${name} dependsOn`);
     registerNode({
       kind: "effect",
       name,
       stage: "afterPatch",
-      progress: effectConfig.progress,
       description: effectConfig.description,
-      when: async (input) => {
-        return effectConfig.when(input.state, input.context, toProgramRuntime(input));
-      },
+      ...(effectConfig.dependsOn !== undefined ? { dependsOn: [...effectConfig.dependsOn] } : {}),
       run: async (input) => {
-        const result = await effectConfig.run(input.state, input.context, toProgramRuntime(input));
+        const result = await effectConfig.run(input.state, input.context, toProgramRuntime(input), input.step);
         if (!result) return undefined;
 
         const { messages, ...statePatch } = result;
         const patch: WorkflowPatch<TState> = {};
         if (Object.keys(statePatch).length > 0) {
           // `messages` is a reserved runtime append channel; the remaining keys are workflow state fields.
+          patch.state = statePatch as WorkflowStatePatch<TState>;
+        }
+        if (messages && messages.length > 0) {
+          patch.messages = messages;
+        }
+        return Object.keys(patch).length > 0 ? patch : undefined;
+      },
+    });
+  }
+
+  function registerCommand(
+    name: string,
+    commandConfig: ProgramCommandConfig<TState, TConnectors>,
+  ): void {
+    assertProgramNodeInvariants(name, commandConfig, `Workflow ${config.id} command`);
+    registerNode({
+      kind: "effect",
+      name,
+      stage: "afterPatch",
+      description: commandConfig.description,
+      when: async (input) => commandConfig.when(input.state, input.context, toProgramRuntime(input)),
+      run: async (input) => {
+        const result = await commandConfig.run(input.state, input.context, toProgramRuntime(input), input.step);
+        if (!result) return undefined;
+
+        const { messages, ...statePatch } = result;
+        const patch: WorkflowPatch<TState> = {};
+        if (Object.keys(statePatch).length > 0) {
           patch.state = statePatch as WorkflowStatePatch<TState>;
         }
         if (messages && messages.length > 0) {
@@ -264,11 +359,11 @@ function toProgramRuntime<
   TConnectors extends ConnectorCatalog,
 >(
   input: WorkflowRuntimeInput<TState, TConnectors>,
-): ProgramRuntime<TState> {
-  const runtime: ProgramRuntime<TState> = {
+): ProgramRuntime {
+  const runtime: ProgramRuntime = {
     session: input.session,
-    preState: input.preState,
     turn: input.turn,
+    step: input.step,
   };
 
   if (input.message !== undefined) {
@@ -278,13 +373,47 @@ function toProgramRuntime<
   return runtime;
 }
 
+function normalizeEffectConfig<
+  TState extends object,
+  TConnectors extends ConnectorCatalog,
+>(
+  dependenciesOrConfig:
+    | ProgramEffectDependencies<TState>
+    | ProgramEffectConfig<TState, TConnectors>,
+  maybeConfig?: ProgramEffectConfig<TState, TConnectors>,
+): ProgramEffectConfig<TState, TConnectors> {
+  if (isEffectDependencies(dependenciesOrConfig)) {
+    if (!maybeConfig) {
+      throw new Error("Workflow effect dependencies must be followed by an effect config");
+    }
+
+    return {
+      ...maybeConfig,
+      dependsOn: dependenciesOrConfig,
+    };
+  }
+
+  return dependenciesOrConfig;
+}
+
+function isEffectDependencies<
+  TState extends object,
+  TConnectors extends ConnectorCatalog,
+>(
+  value:
+    | ProgramEffectDependencies<TState>
+    | ProgramEffectConfig<TState, TConnectors>,
+): value is ProgramEffectDependencies<TState> {
+  return Array.isArray(value);
+}
+
 async function shouldRunPrefetch<
   TState extends object,
   TConnectors extends ConnectorCatalog,
 >(
   state: WorkflowRuntimeState<TState>,
   context: WorkflowContext<TConnectors>,
-  runtime: ProgramRuntime<TState>,
+  runtime: ProgramRuntime,
   config: ProgramPrefetchConfig<TState, TConnectors>,
   currentCacheKey: unknown,
 ): Promise<boolean> {

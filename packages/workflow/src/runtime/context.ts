@@ -14,6 +14,21 @@ import type {
 } from "../connectors.js";
 import { sameRuntimeValue } from "./equality.js";
 
+/**
+ * Controls workflow-context connector calls without changing connector contracts.
+ * Boundary: cache keys are interpreted only by the current WorkflowContextStore instance.
+ */
+export interface WorkflowContextCallOptions {
+  /**
+   * Enables caching with the default key: connector id plus JSON.stringify(input).
+   */
+  cache?: boolean;
+  /**
+   * Stable key for memoizing in-flight and successful connector calls.
+   */
+  cacheKey?: unknown;
+}
+
 export interface WorkflowContext<TConnectors extends ConnectorCatalog = ConnectorCatalog> {
   readonly revision: number;
   get<T = unknown>(key: string): T | undefined;
@@ -21,6 +36,7 @@ export interface WorkflowContext<TConnectors extends ConnectorCatalog = Connecto
   call<TId extends ConnectorId<TConnectors>>(
     id: TId,
     input: ConnectorInput<TConnectors[TId]>,
+    options?: WorkflowContextCallOptions,
   ): Promise<ConnectorOutput<TConnectors[TId]>>;
   ack(request: AckRequest): AckRequest;
   getAck(): AckRequest | undefined;
@@ -43,6 +59,7 @@ export interface WorkflowContext<TConnectors extends ConnectorCatalog = Connecto
 export class WorkflowContextStore<TConnectors extends ConnectorCatalog = ConnectorCatalog> implements WorkflowContext<TConnectors> {
   private readonly values = new Map<string, unknown>();
   private readonly keyRevisions = new Map<string, number>();
+  private readonly connectorCallCache: ConnectorCallCacheEntry[] = [];
   private currentRevision = 0;
   private currentAck: AckRequest | undefined;
 
@@ -65,8 +82,24 @@ export class WorkflowContextStore<TConnectors extends ConnectorCatalog = Connect
   call<TId extends ConnectorId<TConnectors>>(
     id: TId,
     input: ConnectorInput<TConnectors[TId]>,
+    options?: WorkflowContextCallOptions,
   ): Promise<ConnectorOutput<TConnectors[TId]>> {
-    return this.connectors.call(id, input);
+    const cacheKey = resolveConnectorCallCacheKey(id, input, options);
+    if (!cacheKey.enabled) {
+      return this.connectors.call(id, input);
+    }
+
+    const cached = this.findConnectorCall(id, cacheKey.value);
+    if (cached) {
+      return cached.promise as Promise<ConnectorOutput<TConnectors[TId]>>;
+    }
+
+    const promise = this.connectors.call(id, input);
+    this.connectorCallCache.push({ connectorId: id, cacheKey: cacheKey.value, promise });
+    void promise.catch(() => {
+      this.deleteConnectorCall(id, promise);
+    });
+    return promise;
   }
 
   /**
@@ -144,4 +177,75 @@ export class WorkflowContextStore<TConnectors extends ConnectorCatalog = Connect
     this.currentRevision += 1;
     this.keyRevisions.set(key, this.currentRevision);
   }
+
+  /**
+   * Finds an in-flight or resolved connector call for this workflow context.
+   * Input: connector id plus workflow-authored cache key.
+   * Output: the stored promise when the id and cache key match.
+   * Boundary: connector input is intentionally not compared; callers must include all input dependencies in the key.
+   */
+  private findConnectorCall(connectorId: string, cacheKey: unknown): ConnectorCallCacheEntry | undefined {
+    return this.connectorCallCache.find(
+      (entry) => entry.connectorId === connectorId && sameRuntimeValue(entry.cacheKey, cacheKey),
+    );
+  }
+
+  private deleteConnectorCall(connectorId: string, promise: Promise<unknown>): void {
+    const index = this.connectorCallCache.findIndex(
+      (entry) => entry.connectorId === connectorId && entry.promise === promise,
+    );
+    if (index >= 0) {
+      this.connectorCallCache.splice(index, 1);
+    }
+  }
+}
+
+interface ConnectorCallCacheEntry {
+  readonly connectorId: string;
+  readonly cacheKey: unknown;
+  readonly promise: Promise<unknown>;
+}
+
+type ConnectorCallCacheKey =
+  | {
+      readonly enabled: false;
+    }
+  | {
+      readonly enabled: true;
+      readonly value: unknown;
+    };
+
+/**
+ * Resolves the cache key for one connector call.
+ * Input: connector id, raw connector input, and call options.
+ * Output: disabled cache, explicit cacheKey, or default id+JSON input key.
+ * Boundary: default cache requires JSON.stringify(input) because connector inputs are the stable boundary.
+ */
+function resolveConnectorCallCacheKey(
+  connectorId: string,
+  input: unknown,
+  options: WorkflowContextCallOptions | undefined,
+): ConnectorCallCacheKey {
+  if (options?.cacheKey !== undefined && options.cacheKey !== null) {
+    return { enabled: true, value: options.cacheKey };
+  }
+
+  if (options?.cache !== true) {
+    return { enabled: false };
+  }
+
+  return { enabled: true, value: [connectorId, stringifyConnectorCallInput(connectorId, input)] };
+}
+
+function stringifyConnectorCallInput(connectorId: string, input: unknown): string {
+  try {
+    const serialized = JSON.stringify(input);
+    if (serialized !== undefined) return serialized;
+  } catch (error) {
+    throw new Error(`Workflow context call cache=true requires JSON-serializable input for ${connectorId}`, {
+      cause: error,
+    });
+  }
+
+  throw new Error(`Workflow context call cache=true requires JSON-serializable input for ${connectorId}`);
 }

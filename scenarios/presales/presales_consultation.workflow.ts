@@ -134,7 +134,7 @@ const presalesInvalidation = {
 
 const metadata = loadWorkflowMetadata(import.meta.url);
 
-const { patch, prefetch, derive, command, render } = workflow<
+const { patch, prefetch, effect, command, render } = workflow<
   PresalesState,
   PresalesConnectorCatalog
 >({
@@ -188,67 +188,64 @@ prefetch("presalesProfile", {
   }),
 });
 
-derive("recommendProducts", {
-  progress: "正在匹配可咨询产品",
+effect("recommendProducts", ["requestedAmountCents", "useCase", "termMonths"], {
   description: "在金额和用途齐备后调用产品匹配工具，候选产品通过 tool message 暴露给 render，不作为长期业务 state。",
-  when: (state, context) => {
+  run: async (state, context, _runtime, step) => {
     const facts = presalesFacts(context);
     const need = financingNeed(state);
-    return Boolean(
+    if (
       state.status !== "cancelled" &&
       facts.customer &&
       facts.productCatalog &&
-      need &&
-      context.get("recommendProducts:cacheKey") !== productMatchCacheKey(facts.customer.id, need),
-    );
-  },
-  run: async (state, context) => {
-    const facts = presalesFacts(context);
-    const need = financingNeed(state);
-    if (!facts.customer || !facts.productCatalog || !need) return {};
+      need
+    ) {
+      const loading = step.start("匹配候选融资产品");
+      const input = {
+        customer: facts.customer,
+        relationships: facts.relationships ?? null,
+        products: facts.productCatalog,
+        need,
+      };
+      const matches = await context.call("connectors.presales.matchProducts", input, {
+        cache: true,
+      });
+      loading.end({ count: matches.length });
+      context.set<ProductMatch[]>("latestProductMatches", matches);
 
-    const matches = await context.call("connectors.presales.matchProducts", {
-      customer: facts.customer,
-      relationships: facts.relationships ?? null,
-      products: facts.productCatalog,
-      need,
-    });
-    context.set<ProductMatch[]>("latestProductMatches", matches);
-    context.set("recommendProducts:cacheKey", productMatchCacheKey(facts.customer.id, need));
+      return {
+        ...(state.status === "collecting" ? { status: "recommending" as const } : {}),
+        messages: [
+          new ToolMessage({
+            name: "connectors.presales.matchProducts",
+            call: {
+              customerId: facts.customer.id,
+              requestedAmountCents: need.requestedAmountCents,
+              useCase: need.useCase,
+              termMonths: need.termMonths,
+            },
+            result: matches,
+          }),
+        ],
+      };
+    }
 
-    return {
-      ...(state.status === "collecting" ? { status: "recommending" as const } : {}),
-      messages: [
-        new ToolMessage({
-          name: "connectors.presales.matchProducts",
-          call: {
-            customerId: facts.customer.id,
-            requestedAmountCents: need.requestedAmountCents,
-            useCase: need.useCase,
-            termMonths: need.termMonths,
-          },
-          result: matches,
-        }),
-      ],
-    };
+    return {};
   },
 });
 
-derive("selectedProductDetails", {
-  progress: "正在读取产品说明",
+effect("selectedProductDetails", ["selectedProduct"], {
   description: "用户明确选择产品后读取产品详情、材料和费用口径；该步骤只读，不创建线索或审批记录。",
-  when: (state, context) =>
-    Boolean(
-      state.status !== "cancelled" &&
-      state.selectedProduct &&
-      context.get("selectedProductDetails:productId") !== state.selectedProduct.id,
-    ),
-  run: async (state, context) => {
+  run: async (state, context, _runtime, step) => {
     if (!state.selectedProduct) return {};
-    const details = await context.call("connectors.presales.getProductDetails", {
+    if (state.status === "cancelled") return {};
+    const loading = step.start("读取产品详情");
+    const input = {
       productId: state.selectedProduct.id,
+    };
+    const details = await context.call("connectors.presales.getProductDetails", input, {
+      cache: true,
     });
-    context.set("selectedProductDetails:productId", state.selectedProduct.id);
+    loading.end({ productId: state.selectedProduct.id });
 
     return {
       messages: [
@@ -262,66 +259,66 @@ derive("selectedProductDetails", {
   },
 });
 
-derive("indicativeRepayment", {
-  progress: "正在进行售前试算",
+effect("indicativeRepayment", ["selectedProduct", "requestedAmountCents", "useCase", "termMonths"], {
   description: "产品、金额和期限齐备后生成非绑定还款估算；估算仅供售前咨询，不代表授信或定价承诺。",
-  when: (state, context) => {
+  run: async (state, context, _runtime, step) => {
     const facts = presalesFacts(context);
     const need = financingNeed(state);
-    return Boolean(
+    if (
       state.status !== "cancelled" &&
       facts.customer &&
       state.selectedProduct &&
-      need?.termMonths &&
-      context.get("indicativeRepayment:cacheKey") !== repaymentCacheKey(state.selectedProduct, need),
-    );
-  },
-  run: async (state, context) => {
-    const facts = presalesFacts(context);
-    const need = financingNeed(state);
-    if (!facts.customer || !state.selectedProduct || !need?.termMonths) return {};
+      need?.termMonths
+    ) {
+      const loading = step.start("计算非绑定试算");
+      const input = {
+        customer: facts.customer,
+        relationships: facts.relationships ?? null,
+        product: state.selectedProduct,
+        amountCents: need.requestedAmountCents,
+        termMonths: need.termMonths,
+      };
+      const estimate = await context.call("connectors.presales.calculateIndicativeRepayment", input, {
+        cache: true,
+      });
+      loading.end({ productId: state.selectedProduct.id });
 
-    const estimate = await context.call("connectors.presales.calculateIndicativeRepayment", {
-      customer: facts.customer,
-      relationships: facts.relationships ?? null,
-      product: state.selectedProduct,
-      amountCents: need.requestedAmountCents,
-      termMonths: need.termMonths,
-    });
-    context.set("indicativeRepayment:cacheKey", repaymentCacheKey(state.selectedProduct, need));
+      return {
+        messages: [
+          new ToolMessage({
+            name: "connectors.presales.calculateIndicativeRepayment",
+            call: {
+              productId: state.selectedProduct.id,
+              amountCents: need.requestedAmountCents,
+              termMonths: need.termMonths,
+            },
+            result: estimate,
+          }),
+        ],
+      };
+    }
 
-    return {
-      messages: [
-        new ToolMessage({
-          name: "connectors.presales.calculateIndicativeRepayment",
-          call: {
-            productId: state.selectedProduct.id,
-            amountCents: need.requestedAmountCents,
-            termMonths: need.termMonths,
-          },
-          result: estimate,
-        }),
-      ],
-    };
+    return {};
   },
 });
 
 command("createConsultationLead", {
-  progress: "正在创建销售跟进线索",
   description: "只有用户明确要求顾问跟进且产品、金额和用途齐备时才写入外部销售线索；这是本流程唯一外部写操作。",
   when: (state) =>
     state.status === "lead_requested" &&
     Boolean(state.selectedProduct && state.requestedAmountCents && state.useCase && !state.lead),
-  run: async (state, context) => {
+  run: async (state, context, _runtime, step) => {
     const facts = presalesFacts(context);
     const need = financingNeed(state);
     if (!facts.customer || !state.selectedProduct || !need) return {};
 
+    const loading = step.start("创建销售线索");
     const lead = await context.call("connectors.presales.createConsultationLead", {
       customer: facts.customer,
       product: state.selectedProduct,
       need,
     });
+    loading.end({ leadId: lead.id });
 
     return {
       lead,
@@ -394,24 +391,4 @@ function financingNeed(state: PresalesState): FinancingNeed | undefined {
     useCase: state.useCase,
     termMonths: state.termMonths,
   };
-}
-
-/**
- * Creates a stable cache key for product matching.
- * Input: customer id and normalized financing need.
- * Output: string key used in runtime context.
- * Boundary: cache only suppresses duplicate read calls in one workflow session.
- */
-function productMatchCacheKey(customerId: string, need: FinancingNeed): string {
-  return `${customerId}:${need.requestedAmountCents}:${need.useCase}:${need.termMonths ?? "none"}`;
-}
-
-/**
- * Creates a stable cache key for repayment estimates.
- * Input: selected product and normalized financing need.
- * Output: string key used in runtime context.
- * Boundary: cache only suppresses duplicate estimates for unchanged input.
- */
-function repaymentCacheKey(product: PresalesProduct, need: FinancingNeed): string {
-  return `${product.id}:${need.requestedAmountCents}:${need.termMonths ?? "none"}`;
 }

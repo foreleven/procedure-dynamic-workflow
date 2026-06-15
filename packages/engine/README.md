@@ -41,6 +41,7 @@ console.log(result.response.text);
 ## Public Surface
 
 - `WorkflowEngine` routes messages, extracts structured patches, runs workflow nodes, and renders responses.
+- One engine can register multiple workflows; locally accepted matches run in the same turn and are returned through `EngineTurnResult.responses`.
 - `createLlmClient(...)` creates an OpenAI-compatible LLM client through `@earendil-works/pi-ai`.
 - `LlmClient`, `LlmClientOptions`, and LLM request/event types describe model adapter boundaries.
 - `EngineSession`, `EngineTraceEvent`, `EngineTurnResult`, and engine option/input types describe runtime state and execution traces.

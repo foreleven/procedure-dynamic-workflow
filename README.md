@@ -6,7 +6,7 @@ This project explores a workflow runtime where a procedure is represented as a s
 
 - `patch` extracts structured state from the latest user turn.
 - `prefetch` loads baseline read-only data.
-- `derive` computes state-dependent facts and candidate options.
+- `effect` computes state-dependent facts and candidate options.
 - `command` performs irreversible or externally mutating actions.
 - `render` produces the next user-facing reply.
 
@@ -35,7 +35,7 @@ pac-dynamic-workflow/
 
 `*.workflow.ts` is the distributable workflow artifact. It defines workflow-owned schemas, initial state, patch policy, invalidation rules, business steps, and render instruction.
 
-`connectors.ts` defines external tool contracts and demo implementations. Workflow code calls connectors through `context.call("connectors.xxx", input)`.
+`connectors.ts` defines external tool contracts and demo implementations. Workflow code calls connectors through `context.call("connectors.xxx", input)`, with optional per-context caching via `context.call("connectors.xxx", input, { cache: true })`.
 
 `messages` is a runtime-owned conversation log on each workflow instance. User turns, tool messages, and rendered assistant replies are appended by the runtime or explicit workflow message outputs. Workflow schemas, default state, and state patches must not declare or overwrite the reserved `messages` field.
 
@@ -146,7 +146,9 @@ npm run chat -- \
   --user-id user_feng
 ```
 
-Add `--debug` to print full engine and LLM logs. Without `--debug`, the CLI only prints workflow progress events, LLM phase durations, and the assistant reply.
+Add `--debug` to print full engine and LLM logs. Without `--debug`, the CLI only prints workflow progress events, workflow step start/end loading lines, LLM phase durations, and the assistant reply.
+
+The `--workflow` module may export one workflow or an array named/defaulted as `workflows`. For multi-workflow modules, the CLI starts without a preselected active workflow and lets local routing select all matching workflows for each new session.
 
 Render output streams by default when the configured LLM client supports it. Add `--no-stream` to print only the final reply.
 
@@ -155,7 +157,7 @@ Render output streams by default when the configured LLM client supports it. Add
 The maintenance scenario compiles `scenarios/maintenance/procedure.md` into:
 
 - `workflow.yaml`: metadata and acceptance cases.
-- `maintenance_booking.workflow.ts`: state schema, patch instruction, prefetch/derive/command steps, and render instruction.
+- `maintenance_booking.workflow.ts`: state schema, patch instruction, prefetch/effect/command steps, and render instruction.
 - `connectors.ts`: customer, vehicle, dealer, slot, draft, and booking connector implementations.
 - `run.ts`: scenario runner with LLM semantic response checks.
 
@@ -177,10 +179,11 @@ Keep workflow instructions focused:
 
 - patch instruction only describes how to extract state;
 - render instruction only describes how to reply;
-- derive and command callbacks return partial state directly, for example `{ bookingDraft, status }`;
-- derive and command callbacks return connector facts for render as `messages: [new ToolMessage({ name, call, result })]`;
+- effect and command callbacks return partial state directly, for example `{ bookingDraft, status }`;
+- effect and command callbacks return connector facts for render as `messages: [new ToolMessage({ name, call, result })]`;
+- effect callbacks put business guard logic at the start of `run` and use `step.start(...)` / `step.end(...)` for loading UI;
 - irreversible external actions belong in `command`;
-- read-only or idempotent state-dependent work belongs in `derive`;
+- read-only or idempotent state-dependent work belongs in `effect`;
 - baseline reads belong in `prefetch`.
 
 Avoid local text classifiers for user intent. Let patch extract structured state from the conversation, and let workflow steps resolve business state against connector data.
