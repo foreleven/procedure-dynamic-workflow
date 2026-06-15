@@ -314,7 +314,7 @@ Scenario tests：
 
 手动 smoke tests：
 
-- 仅在配置真实 LLM provider 时运行 `npm run scenario:maintenance`；
+- 仅在配置真实 LLM provider 时运行 `npm run chat -- agents/maintenance --all-cases --no-stream`；
 - LLM/RAG routing opt-in 后，新增独立的 semantic-routing smoke test。
 
 ## 指标

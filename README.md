@@ -22,7 +22,7 @@ packages/
                  Internal code is grouped by CLI loading, LLM provider wiring, runtime execution, and shared utilities.
 
 agents/
-  maintenance/  Example vehicle-maintenance booking procedure, workflow artifact, mock connectors, and scenario runner.
+  maintenance/  Example vehicle-maintenance booking procedure, workflow artifact, mock connectors, and agent cases.
 
 pac-dynamic-workflow/
   SKILL.md      Authoring guide for compiling procedures into workflow artifacts.
@@ -131,10 +131,10 @@ Run one or more scripted turns for agent-driven testing:
 npm run chat:maintenance -- --message "我想预约保养" --message "就用默认车辆"
 ```
 
-Run the maintenance scenario suite:
+Run all scripted cases from `agent.yaml`:
 
 ```bash
-npm run scenario:maintenance
+npm run chat -- agents/maintenance --all-cases --no-stream
 ```
 
 Run the generic chat CLI with explicit files:
@@ -173,12 +173,11 @@ Render output streams by default when the configured LLM client supports it. Add
 
 ## Maintenance Example
 
-The maintenance scenario compiles `agents/maintenance/procedure.md` into:
+The maintenance agent compiles `agents/maintenance/procedure.md` into:
 
 - `agent.yaml`: metadata, connector file names, workflow names, and acceptance cases.
 - `workflows/maintenance_booking.workflow.ts`: state schema, patch instruction, prefetch/effect/command steps, and render instruction.
 - `connectors/main.ts`: customer, vehicle, dealer, slot, draft, and booking connector implementations.
-- `run.ts`: scenario runner with LLM semantic response checks.
 
 The example demonstrates:
 

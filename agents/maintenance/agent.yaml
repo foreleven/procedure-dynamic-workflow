@@ -46,7 +46,7 @@ workflows:
         - insurance_claim
 
 # cases 是本 workflow 的交互验收场景。
-# run.ts 会逐条执行这些 case，并用 LLM 语义判断验证每轮 response 是否符合预期。
+# CLI 可通过 --case 或 --all-cases 逐条执行这些 case。
 cases:
   - id: single_vehicle_auto_then_dealer_options
     description: 单车用户发起保养预约时，系统直接使用该车辆并进入门店选择。

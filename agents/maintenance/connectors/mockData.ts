@@ -3,7 +3,7 @@ import type {
   DealerRef,
   MaintenanceHistoryItem,
   VehicleRef,
-} from "./connectors/main.js";
+} from "./main.js";
 
 export interface MockSlotTemplate {
   id: string;

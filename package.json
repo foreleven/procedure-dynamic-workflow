@@ -28,8 +28,6 @@
     "ci": "npm test && npm run audit:check",
     "chat": "tsx packages/engine/src/cli.ts",
     "chat:maintenance": "tsx packages/engine/src/cli.ts agents/maintenance --user-id user_feng",
-    "scenario:maintenance": "tsx agents/maintenance/run.ts",
-    "scenario:investment-advisor": "tsx agents/investment-advisor/run.ts",
     "test:llm": "tsx packages/engine/src/typebox-tool.manual.ts"
   },
   "devDependencies": {
