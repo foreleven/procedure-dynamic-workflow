@@ -68,7 +68,7 @@ export class WorkflowEngine {
     this.instances = new RuntimeInstanceStore(this.registry, options.deps.connectors);
     this.tracer = new RuntimeTracer(options.logger);
     this.nodeRunner = new WorkflowNodeRunner(options.deps, this.tracer, options.maxProgramRounds ?? 6);
-    this.renderer = new ResponseRenderer(options.deps, this.tracer, options.onResponseDelta);
+    this.renderer = new ResponseRenderer(options.deps, this.tracer, options.onResponseDelta, options.render);
     this.router = options.routing?.router ?? new LlmWorkflowRouter({
       llm: options.deps.llm,
       gate: options.routing?.gate,

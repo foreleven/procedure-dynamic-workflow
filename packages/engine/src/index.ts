@@ -17,6 +17,10 @@ export type {
   WorkflowSnapshot,
   WorkflowDefinitionInput,
   WorkflowEngineOptions,
+  WorkflowRenderMergeDecision,
+  WorkflowRenderMergeStrategy,
+  WorkflowRenderMergeStrategyInput,
+  WorkflowRenderOptions,
   WorkflowRoutingOptions,
 } from "./types.js";
 export {

@@ -575,7 +575,60 @@ test("WorkflowEngine validates LLM stream events", async () => {
   );
 });
 
-test("WorkflowEngine serializes stream deltas across active workflows", async () => {
+test("WorkflowEngine merges active LLM workflow renders by default", async () => {
+  const deltas: string[] = [];
+  const llm = createNamedStreamingLlm({
+    patch: { statePatch: { selected: "multi" } },
+    streams: {
+      merged_render: {
+        deltas: ["merged", " reply"],
+        finalText: "merged reply",
+      },
+    },
+  });
+  const engine = new WorkflowEngine({
+    workflows: [
+      createStreamingWorkflow({ id: "stream_a", renderName: "stream_a_render", route: "alpha" }),
+      createStreamingWorkflow({ id: "stream_b", renderName: "stream_b_render", route: "beta" }),
+    ],
+    deps: {
+      llm,
+      connectors: createConnectorRegistry(),
+    },
+    onResponseDelta: ({ workflowId, workflowIds, delta }) => {
+      deltas.push(`${workflowIds?.join("+") ?? workflowId}:${delta}`);
+    },
+  });
+  const session = engine.createSession({
+    sessionId: "session_streams",
+    userId: "user_streams",
+    activeWorkflowIds: ["stream_a", "stream_b"],
+  });
+
+  const result = await engine.onMessage("message for active workflows", session);
+  const streamA = engine.getWorkflowSnapshot<TestState>(session, "stream_a");
+  const streamB = engine.getWorkflowSnapshot<TestState>(session, "stream_b");
+
+  assert.deepEqual(result.responses.map((response) => response.workflowId), ["stream_a", "stream_b"]);
+  assert.equal(result.response.text, "merged reply");
+  assert.deepEqual(result.responses.map((response) => response.response.text), ["merged reply", "merged reply"]);
+  assert.deepEqual(deltas, ["stream_a+stream_b:merged", "stream_a+stream_b: reply"]);
+  assert.deepEqual(llm.streamCalls, ["merged_render"]);
+  assert.match(String(llm.streamRequests[0]?.instruction), /Stream the final response/);
+  assert.match(String(llm.streamRequests[0]?.instruction), /Workflow 1: stream_a/);
+  assert.match(String(llm.streamRequests[0]?.instruction), /Workflow 2: stream_b/);
+  assert.deepEqual(streamA?.state.messages.at(-1), {
+    role: "assistant",
+    content: "merged reply",
+  });
+  assert.deepEqual(streamB?.state.messages.at(-1), {
+    role: "assistant",
+    content: "merged reply",
+  });
+  assert.ok(result.traces.some((trace) => trace.phase === "render.merge" && trace.workflowId === "engine"));
+});
+
+test("WorkflowEngine can render active LLM workflows separately through merge strategy", async () => {
   const deltas: string[] = [];
   const llm = createNamedStreamingLlm({
     patch: { statePatch: { selected: "multi" } },
@@ -600,13 +653,16 @@ test("WorkflowEngine serializes stream deltas across active workflows", async ()
       llm,
       connectors: createConnectorRegistry(),
     },
+    render: {
+      mergeStrategy: () => "separate",
+    },
     onResponseDelta: ({ workflowId, delta }) => {
       deltas.push(`${workflowId}:${delta}`);
     },
   });
   const session = engine.createSession({
-    sessionId: "session_streams",
-    userId: "user_streams",
+    sessionId: "session_separate_streams",
+    userId: "user_separate_streams",
     activeWorkflowIds: ["stream_a", "stream_b"],
   });
 
@@ -1500,14 +1556,16 @@ function createStreamingLlm(config: {
 function createNamedStreamingLlm(config: {
   patch: unknown;
   streams: Record<string, { deltas: string[]; finalText: string; delayMs?: number }>;
-}): LlmClient & { structuredCalls: unknown[]; streamCalls: string[]; textCalls: unknown[] } {
+}): LlmClient & { structuredCalls: unknown[]; streamCalls: string[]; streamRequests: LlmTextRequest[]; textCalls: unknown[] } {
   const structuredCalls: unknown[] = [];
   const streamCalls: string[] = [];
+  const streamRequests: LlmTextRequest[] = [];
   const textCalls: unknown[] = [];
 
   return {
     structuredCalls,
     streamCalls,
+    streamRequests,
     textCalls,
     async text(request) {
       textCalls.push(request);
@@ -1528,6 +1586,7 @@ function createNamedStreamingLlm(config: {
       if (!stream) throw new Error(`Missing stream config for ${name}`);
 
       streamCalls.push(name);
+      streamRequests.push(request);
       for (const delta of stream.deltas) {
         if (stream.delayMs) {
           await delay(stream.delayMs);

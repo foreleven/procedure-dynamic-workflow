@@ -165,7 +165,7 @@ Run scripted turns from a case in `agent.yaml`:
 npm run chat -- agents/maintenance --case time_ack_then_draft_then_confirm --no-stream
 ```
 
-Add `--debug` to print full engine and LLM logs. Without `--debug`, the CLI only prints workflow progress events, workflow step start/end loading lines, LLM phase durations, and the assistant reply.
+Add `--debug` to print full engine and LLM logs. Without `--debug`, the CLI only prints routing active workflows, workflow progress events, workflow step start/end loading lines, LLM phase durations, and the assistant reply.
 
 The `--workflow` module may export one workflow or an array named/defaulted as `workflows`. For multi-workflow modules, the CLI starts without a preselected active workflow and lets the structured route gate select the matching workflows for each new session.
 

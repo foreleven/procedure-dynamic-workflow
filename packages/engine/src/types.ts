@@ -74,9 +74,10 @@ export interface WorkflowEngineOptions {
   workflows: readonly WorkflowDefinitionInput[];
   deps: EngineDeps;
   routing?: WorkflowRoutingOptions | undefined;
+  render?: WorkflowRenderOptions | undefined;
   maxProgramRounds?: number;
   logger?: (line: string) => void;
-  onResponseDelta?: (event: { workflowId: WorkflowId; delta: string }) => void;
+  onResponseDelta?: (event: { workflowId: WorkflowId; workflowIds?: readonly WorkflowId[]; delta: string }) => void;
 }
 
 export interface WorkflowRoutingOptions {
@@ -87,6 +88,32 @@ export interface WorkflowRoutingOptions {
   minGateConfidence?: number | undefined;
   maxWorkflowProfiles?: number | undefined;
   recentMessageLimit?: number | undefined;
+}
+
+export type WorkflowRenderMergeDecision = "merge" | "separate";
+
+export interface WorkflowRenderMergeCandidate {
+  workflowId: WorkflowId;
+  renderName: string;
+}
+
+export interface WorkflowRenderMergeStrategyInput {
+  session: EngineSession;
+  message: string;
+  workflows: readonly WorkflowRenderMergeCandidate[];
+}
+
+export type WorkflowRenderMergeStrategy = (
+  input: WorkflowRenderMergeStrategyInput,
+) => MaybePromise<WorkflowRenderMergeDecision>;
+
+export interface WorkflowRenderOptions {
+  /**
+   * Chooses whether multiple LLM render policies should be merged into one
+   * assistant response. Defaults to `merge`; function-based renders stay
+   * separate because they do not expose instructions for the engine to merge.
+   */
+  mergeStrategy?: WorkflowRenderMergeStrategy | undefined;
 }
 
 export interface EngineTraceEvent {

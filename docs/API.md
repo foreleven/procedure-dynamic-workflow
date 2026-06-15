@@ -252,7 +252,7 @@ Runtime exports:
 - `AllWorkflowCandidateProvider`, `FlashLlmRouteGate`, `RouteGate`, `WorkflowCandidateProvider`, `WorkflowEngine`, `WorkflowRouter`, and `createLlmClient`.
 
 Public types:
-- `CreateSessionInput`, `EngineDeps`, `EngineSession`, `EngineTraceEvent`, `EngineTurnResult`, `LlmClient`, `LlmClientOptions`, `LlmStructuredRequest`, `LlmTextRequest`, `LlmTextStreamEvent`, `LlmUsage`, `RoutingAction`, `WorkflowDefinitionInput`, `WorkflowEngineOptions`, `WorkflowRoutingInput`, `WorkflowRoutingOptions`, `WorkflowRoutingResult`, and `WorkflowSnapshot`.
+- `CreateSessionInput`, `EngineDeps`, `EngineSession`, `EngineTraceEvent`, `EngineTurnResult`, `LlmClient`, `LlmClientOptions`, `LlmStructuredRequest`, `LlmTextRequest`, `LlmTextStreamEvent`, `LlmUsage`, `RoutingAction`, `WorkflowDefinitionInput`, `WorkflowEngineOptions`, `WorkflowRenderMergeDecision`, `WorkflowRenderMergeStrategy`, `WorkflowRenderMergeStrategyInput`, `WorkflowRenderOptions`, `WorkflowRoutingInput`, `WorkflowRoutingOptions`, `WorkflowRoutingResult`, and `WorkflowSnapshot`.
 
 ### Engine
 
@@ -266,6 +266,7 @@ Input:
 - `deps.connectors`: a connector registry.
 - `deps.now`: optional clock override.
 - `routing`: optional workflow router, route gate, candidate provider, gate model, confidence, and profile/message limits.
+- `render.mergeStrategy`: optional strategy for choosing whether multiple LLM render policies should merge into one response; defaults to merge and can return `separate`.
 - `maxProgramRounds`: maximum stabilizing rounds for after-patch nodes.
 - `logger`: optional engine/LLM log sink.
 - `onResponseDelta`: optional stream delta callback.
@@ -291,9 +292,11 @@ Behavior:
 - validates raw prefetch node results before merging them into the runtime prefetch store;
 - invalidates dependent fields after state changes, resetting them to default values or deleting fields that are absent from the workflow default state;
 - preserves dependent fields explicitly extracted from the latest user message when later same-turn workflow nodes write source fields that would otherwise invalidate them;
-- renders responses through either a workflow render function or an LLM render policy.
-- validates workflow render responses and LLM render stream events before recording assistant messages.
-- when `onResponseDelta` is configured, emits streamed render deltas sequentially by workflow response order so multiple active workflows cannot interleave user-visible output.
+- renders responses through either a workflow render function or an LLM render policy;
+- merges multiple LLM render policies into one provider call and records the merged assistant reply on each participating workflow by default;
+- keeps function-based renders separate because they do not expose mergeable render instructions;
+- validates workflow render responses and LLM render stream events before recording assistant messages;
+- when `onResponseDelta` is configured, emits merged render deltas with `workflowIds`, or separate render deltas in workflow response order when merge is disabled.
 
 #### `engine.createSession(input)`
 
@@ -319,7 +322,7 @@ Behavior:
 
 Output:
 - `response`: primary render response;
-- `responses`: per-workflow render responses;
+- `responses`: per-workflow render responses; merged render returns the same response text for each participating workflow id;
 - `session`: mutated session reference;
 - `traces`: runtime trace events for routing, patching, nodes, invalidation, messages, and rendering.
 

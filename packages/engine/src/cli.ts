@@ -34,9 +34,14 @@ function printResponse(text: string): void {
 
 function responseTextForCli(result: EngineTurnResult): string {
   if (result.responses.length <= 1) return result.response.text;
+  if (allResponsesSharePrimaryText(result)) return result.response.text;
   return result.responses
     .map((item) => `## ${item.workflowId}\n${item.response.text}`)
     .join("\n\n");
+}
+
+function allResponsesSharePrimaryText(result: EngineTurnResult): boolean {
+  return result.responses.every((item) => item.response.text === result.response.text);
 }
 
 function printJson(value: unknown): void {
@@ -95,8 +100,9 @@ async function main(): Promise<void> {
     logger,
     ...(options.stream
       ? {
-          onResponseDelta: ({ workflowId, delta }: { workflowId: string; delta: string }) => {
-            if (workflows.length > 1 && lastStreamWorkflowId !== workflowId) {
+          onResponseDelta: ({ workflowId, workflowIds, delta }) => {
+            const isMergedResponse = (workflowIds?.length ?? 0) > 1;
+            if (!isMergedResponse && workflows.length > 1 && lastStreamWorkflowId !== workflowId) {
               if (streamedChars > 0) process.stdout.write("\n\n");
               process.stdout.write(`## ${workflowId}\n`);
               lastStreamWorkflowId = workflowId;
