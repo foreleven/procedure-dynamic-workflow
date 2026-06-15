@@ -2,6 +2,7 @@ import {
   type JsonRecord,
   type WorkflowEffectNode,
   type WorkflowId,
+  type WorkflowInstance,
   type WorkflowNode,
   type WorkflowNodeStage,
   type WorkflowPrefetchNode,
@@ -11,7 +12,7 @@ import {
 } from "@pac/workflow";
 import { applyObjectPatch } from "../patching.js";
 import { applyWorkflowInvalidation } from "./mutations.js";
-import type { EngineSession, EngineTraceEvent, RuntimeInstance, WorkflowEngineOptions } from "../types.js";
+import type { EngineSession, EngineTraceEvent, WorkflowEngineOptions } from "../types.js";
 import { RuntimeTracer } from "./tracer.js";
 import { errorMessage } from "../utils/errors.js";
 import { sameRuntimeValue } from "../utils/json.js";
@@ -26,7 +27,7 @@ import { TurnChangeTracker, type WorkflowTurnChanges } from "../utils/turn.js";
  * Boundary: WorkflowEngine owns turn ordering; this runner owns node execution semantics.
  */
 export class WorkflowNodeRunner {
-  private readonly effectDependencies = new WeakMap<RuntimeInstance, Map<string, readonly unknown[]>>();
+  private readonly effectDependencies = new WeakMap<WorkflowInstance<JsonRecord>, Map<string, readonly unknown[]>>();
 
   constructor(
     private readonly deps: WorkflowEngineOptions["deps"],
@@ -41,7 +42,7 @@ export class WorkflowNodeRunner {
    * Boundary: used for beforePatch and withPatch stages where stabilization is not desired.
    */
   async runStageOnce(
-    instance: RuntimeInstance,
+    instance: WorkflowInstance<JsonRecord>,
     session: EngineSession,
     message: string,
     traces: EngineTraceEvent[],
@@ -59,7 +60,7 @@ export class WorkflowNodeRunner {
    * Boundary: max-round exhaustion is traced instead of throwing so callers can still render diagnostics.
    */
   async runStageUntilStable(
-    instance: RuntimeInstance,
+    instance: WorkflowInstance<JsonRecord>,
     session: EngineSession,
     message: string,
     traces: EngineTraceEvent[],
@@ -85,7 +86,7 @@ export class WorkflowNodeRunner {
   }
 
   private async runStageRound(
-    instance: RuntimeInstance,
+    instance: WorkflowInstance<JsonRecord>,
     session: EngineSession,
     message: string,
     traces: EngineTraceEvent[],
@@ -151,7 +152,7 @@ export class WorkflowNodeRunner {
   }
 
   private async runNode(
-    instance: RuntimeInstance,
+    instance: WorkflowInstance<JsonRecord>,
     session: EngineSession,
     message: string,
     traces: EngineTraceEvent[],
@@ -183,7 +184,7 @@ export class WorkflowNodeRunner {
    * Boundary: callers choose when to build the snapshot so turn data reflects the intended execution point.
    */
   private nodeInput(
-    instance: RuntimeInstance,
+    instance: WorkflowInstance<JsonRecord>,
     session: EngineSession,
     message: string,
     turnChanges: TurnChangeTracker,
@@ -211,7 +212,7 @@ export class WorkflowNodeRunner {
    * Boundary: prefetch nodes cannot patch workflow state directly; they expose fetched values through prefetch/context.
    */
   private async runPrefetchNode(
-    instance: RuntimeInstance,
+    instance: WorkflowInstance<JsonRecord>,
     node: WorkflowPrefetchNode<JsonRecord>,
     input: WorkflowRuntimeInput<JsonRecord>,
     changes: WorkflowTurnChanges,
@@ -253,7 +254,7 @@ export class WorkflowNodeRunner {
    * Boundary: irreversible external side effects happen inside node.run; this method only applies returned patches.
    */
   private async runEffectNode(
-    instance: RuntimeInstance,
+    instance: WorkflowInstance<JsonRecord>,
     node: WorkflowEffectNode<JsonRecord>,
     input: WorkflowRuntimeInput<JsonRecord>,
     changes: WorkflowTurnChanges,
@@ -309,7 +310,7 @@ export class WorkflowNodeRunner {
   }
 
   private recordNodeTraceIfChanged(
-    instance: RuntimeInstance,
+    instance: WorkflowInstance<JsonRecord>,
     node: WorkflowNode<JsonRecord>,
     detail: NodeRunDetail,
     traces: EngineTraceEvent[],
@@ -323,7 +324,7 @@ export class WorkflowNodeRunner {
     }
   }
 
-  private mergePrefetch(instance: RuntimeInstance, values: unknown): string[] {
+  private mergePrefetch(instance: WorkflowInstance<JsonRecord>, values: unknown): string[] {
     if (!values) return [];
     if (!isPlainObject(values)) {
       throw new Error(`Workflow ${instance.id} prefetch result must be a plain object`);
@@ -348,7 +349,7 @@ export class WorkflowNodeRunner {
   }
 
   private effectDependencyState(
-    instance: RuntimeInstance,
+    instance: WorkflowInstance<JsonRecord>,
     node: WorkflowNode<JsonRecord>,
   ): EffectDependencyState {
     if (node.kind !== "effect" || node.dependsOn === undefined) {
@@ -365,7 +366,7 @@ export class WorkflowNodeRunner {
   }
 
   private recordEffectDependencies(
-    instance: RuntimeInstance,
+    instance: WorkflowInstance<JsonRecord>,
     node: WorkflowEffectNode<JsonRecord>,
     current: readonly unknown[] | undefined,
   ): void {
@@ -374,7 +375,7 @@ export class WorkflowNodeRunner {
   }
 
   private clearEffectDependenciesIfChanged(
-    instance: RuntimeInstance,
+    instance: WorkflowInstance<JsonRecord>,
     node: WorkflowNode<JsonRecord>,
   ): void {
     const dependencyState = this.effectDependencyState(instance, node);
@@ -383,7 +384,7 @@ export class WorkflowNodeRunner {
     }
   }
 
-  private effectDependencyStore(instance: RuntimeInstance): Map<string, readonly unknown[]> {
+  private effectDependencyStore(instance: WorkflowInstance<JsonRecord>): Map<string, readonly unknown[]> {
     const existing = this.effectDependencies.get(instance);
     if (existing) return existing;
 
@@ -393,7 +394,7 @@ export class WorkflowNodeRunner {
   }
 
   private createStepScope(
-    instance: RuntimeInstance,
+    instance: WorkflowInstance<JsonRecord>,
     node: WorkflowNode<JsonRecord>,
     traces: EngineTraceEvent[],
   ): WorkflowStepScope {

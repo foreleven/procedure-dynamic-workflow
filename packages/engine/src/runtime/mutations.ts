@@ -1,6 +1,6 @@
-import type { JsonRecord, MessagePatch } from "@pac/workflow";
+import type { JsonRecord, MessagePatch, WorkflowInstance } from "@pac/workflow";
 import { applyObjectPatch, applySessionPatch } from "../patching.js";
-import type { EngineSession, EngineTraceEvent, RuntimeInstance } from "../types.js";
+import type { EngineSession, EngineTraceEvent } from "../types.js";
 import { resetStateField } from "../utils/state.js";
 
 /**
@@ -10,7 +10,7 @@ import { resetStateField } from "../utils/state.js";
  * Boundary: reserved runtime fields are filtered by applyObjectPatch before mutation.
  */
 export function applyWorkflowMessagePatch(
-  instance: RuntimeInstance,
+  instance: WorkflowInstance<JsonRecord>,
   session: EngineSession,
   patch: MessagePatch,
   traces: EngineTraceEvent[],
@@ -38,7 +38,7 @@ export function applyWorkflowMessagePatch(
  * Boundary: invalidation metadata is definition-time validated; this applies runtime reset semantics only.
  */
 export function applyWorkflowInvalidation(
-  instance: RuntimeInstance,
+  instance: WorkflowInstance<JsonRecord>,
   dirtyFields: string[],
   traces: EngineTraceEvent[],
   protectedFields: Iterable<string> = [],

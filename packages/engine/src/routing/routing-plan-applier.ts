@@ -1,12 +1,12 @@
-import type { WorkflowId } from "@pac/workflow";
-import { RuntimeInstanceStore } from "../runtime/instances.js";
-import type { EngineSession, RuntimeInstance, TargetSelection } from "../types.js";
+import type { JsonRecord, WorkflowId, WorkflowInstance } from "@pac/workflow";
+import { WorkflowInstanceStore } from "../runtime/instances.js";
+import type { EngineSession, TargetSelection } from "../types.js";
 import type { WorkflowRoutingResult } from "./router.js";
 
 export interface RoutingPlanApplyInput {
   session: EngineSession;
-  instances: RuntimeInstanceStore;
-  activeInstances: readonly RuntimeInstance[];
+  instances: WorkflowInstanceStore;
+  activeInstances: readonly WorkflowInstance<JsonRecord>[];
   result: WorkflowRoutingResult;
 }
 

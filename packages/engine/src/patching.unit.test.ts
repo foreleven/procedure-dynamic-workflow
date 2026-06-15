@@ -108,6 +108,7 @@ function createSession(): EngineSession {
     sessionId: "session_test",
     userId: "user_test",
     activeWorkflowIds: [] as WorkflowId[],
+    messages: [],
     facts: { tier: "gold" },
     preferences: {},
     goals: ["existing goal"],

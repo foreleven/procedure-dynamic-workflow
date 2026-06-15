@@ -6,6 +6,7 @@ import {
   definePatch,
   defineRouting,
   type WorkflowDefinition,
+  type WorkflowMessage,
   workflow,
   z,
 } from "@pac/workflow";
@@ -231,6 +232,52 @@ test("WorkflowEngine exposes workflow snapshots without leaking mutable runtime 
   assert.deepEqual(nextSnapshot?.prefetch, { baseline: "loaded" });
 });
 
+test("WorkflowEngine keeps session messages authoritative and preserves existing message metadata", async () => {
+  const priorMessage = {
+    role: "assistant",
+    id: "server-message-1",
+    content: "Existing cached answer",
+    responseId: "response-1",
+  } satisfies WorkflowMessage;
+  const llm = createPatchLlm({ statePatch: { selected: "picked" } });
+  const engine = new WorkflowEngine({
+    workflows: [createTestWorkflow()],
+    deps: {
+      llm,
+      connectors: createConnectorRegistry(),
+    },
+  });
+  const session = engine.createSession({
+    sessionId: "session_authoritative_messages",
+    userId: "user_authoritative_messages",
+    messages: [priorMessage],
+  });
+
+  await engine.onMessage("please route me", session);
+  const snapshot = engine.getWorkflowSnapshot<TestState>(session, "test_flow");
+
+  assert.deepEqual(session.messages[0], priorMessage);
+  assert.equal(session.messages.at(-1)?.role, "assistant");
+  assert.deepEqual(snapshot?.state.messages, session.messages);
+  const patchRequest = llm.structuredCalls.find(
+    (call): call is LlmTextRequest =>
+      Boolean(call && typeof call === "object" && (call as { name?: unknown }).name === "test_flow_patch"),
+  );
+  const providerPriorMessage = patchRequest?.messages.find((item) =>
+    item.role === "assistant" && assistantText(item).includes("Existing cached answer")
+  );
+  assert.equal(providerPriorMessage?.role, "assistant");
+  if (providerPriorMessage?.role !== "assistant") {
+    throw new Error("Expected prior assistant message in patch request");
+  }
+  assert.equal(providerPriorMessage.responseId, "response-1");
+  assert.deepEqual(providerPriorMessage.content[0], {
+    type: "text",
+    text: "Existing cached answer",
+    textSignature: "server-message-1",
+  });
+});
+
 test("WorkflowEngine invalidation deletes fields that are absent from the default state", async () => {
   const engine = new WorkflowEngine({
     workflows: [createOptionalInvalidationWorkflow()],
@@ -294,12 +341,19 @@ test("WorkflowEngine ignores state patch writes to reserved runtime messages", a
   const result = await engine.onMessage("please route me", session);
   const instance = engine.getWorkflowSnapshot<TestState>(session, "reserved_messages_patch_flow");
 
-  assert.equal(result.response.text, "selected=picked; messages=2");
+  assert.equal(result.response.text, "selected=picked; messages=3");
   assert.deepEqual(instance?.state.messages, [
     { role: "user", content: "please route me" },
     { role: "tool", name: "load_baseline", call: { stage: "beforePatch" }, result: { baseline: "loaded" } },
-    { role: "assistant", content: "selected=picked; messages=2" },
+    {
+      role: "tool",
+      name: "reserved_messages_patch_flow.patch",
+      call: { stage: "patch", workflowId: "reserved_messages_patch_flow" },
+      result: { statePatch: { selected: "picked" } },
+    },
+    { role: "assistant", content: "selected=picked; messages=3" },
   ]);
+  assert.deepEqual(session.messages, instance?.state.messages);
 });
 
 test("WorkflowEngine validates function render responses", async () => {
@@ -424,6 +478,13 @@ test("WorkflowEngine streams render policy deltas and stores final assistant res
     content: "hello world",
   });
   assert.equal(llm.streamCalls.length, 1);
+  const streamRequest = llm.streamCalls[0] as LlmTextRequest | undefined;
+  assert.ok(streamRequest);
+  const patchFact = streamRequest.messages.find((item) =>
+    item.role === "assistant" && assistantText(item).includes("Runtime tool fact: stream_flow.patch")
+  );
+  assert.ok(patchFact);
+  assert.match(assistantText(patchFact), /"selected": "streamed"/);
   assert.equal(llm.textCalls.length, 0);
 });
 
@@ -588,15 +649,27 @@ test("WorkflowEngine merges active LLM workflow renders by default", async () =>
   });
   const engine = new WorkflowEngine({
     workflows: [
-      createStreamingWorkflow({ id: "stream_a", renderName: "stream_a_render", route: "alpha" }),
-      createStreamingWorkflow({ id: "stream_b", renderName: "stream_b_render", route: "beta" }),
+      createToolStreamingWorkflow({
+        id: "stream_a",
+        renderName: "stream_a_render",
+        route: "alpha",
+        toolName: "connectors.alpha",
+        result: { portfolio: "growth" },
+      }),
+      createToolStreamingWorkflow({
+        id: "stream_b",
+        renderName: "stream_b_render",
+        route: "beta",
+        toolName: "connectors.beta",
+        result: { risk: "moderate" },
+      }),
     ],
     deps: {
       llm,
       connectors: createConnectorRegistry(),
     },
     onResponseDelta: ({ workflowId, workflowIds, delta }) => {
-      deltas.push(`${workflowIds?.join("+") ?? workflowId}:${delta}`);
+      deltas.push(`${workflowId}|${workflowIds?.join("+") ?? ""}:${delta}`);
     },
   });
   const session = engine.createSession({
@@ -606,17 +679,39 @@ test("WorkflowEngine merges active LLM workflow renders by default", async () =>
   });
 
   const result = await engine.onMessage("message for active workflows", session);
-  const streamA = engine.getWorkflowSnapshot<TestState>(session, "stream_a");
-  const streamB = engine.getWorkflowSnapshot<TestState>(session, "stream_b");
+  const streamA = engine.getWorkflowSnapshot<{ loaded: boolean }>(session, "stream_a");
+  const streamB = engine.getWorkflowSnapshot<{ loaded: boolean }>(session, "stream_b");
 
   assert.deepEqual(result.responses.map((response) => response.workflowId), ["stream_a", "stream_b"]);
   assert.equal(result.response.text, "merged reply");
   assert.deepEqual(result.responses.map((response) => response.response.text), ["merged reply", "merged reply"]);
-  assert.deepEqual(deltas, ["stream_a+stream_b:merged", "stream_a+stream_b: reply"]);
+  assert.deepEqual(deltas, [
+    "stream_a+stream_b|stream_a+stream_b:merged",
+    "stream_a+stream_b|stream_a+stream_b: reply",
+  ]);
   assert.deepEqual(llm.streamCalls, ["merged_render"]);
-  assert.match(String(llm.streamRequests[0]?.instruction), /Stream the final response/);
+  const mergeRequest = llm.streamRequests[0];
+  assert.ok(mergeRequest);
+  assert.match(mergeRequest.instruction, /Stream the final response/);
   assert.match(String(llm.streamRequests[0]?.instruction), /Workflow 1: stream_a/);
   assert.match(String(llm.streamRequests[0]?.instruction), /Workflow 2: stream_b/);
+  assert.deepEqual(mergeRequest.messages.map((message) => message.role), ["user", "assistant", "assistant"]);
+  const [mergedUserMessage] = mergeRequest.messages;
+  assert.equal(mergedUserMessage?.role, "user");
+  if (mergedUserMessage?.role !== "user") {
+    throw new Error("Expected merged render request to start with one latest user message");
+  }
+  assert.equal(mergedUserMessage.content, "message for active workflows");
+  assert.match(assistantText(mergeRequest.messages[1]), /Runtime tool fact: connectors\.alpha/);
+  assert.match(assistantText(mergeRequest.messages[1]), /"portfolio": "growth"/);
+  assert.match(assistantText(mergeRequest.messages[2]), /Runtime tool fact: connectors\.beta/);
+  assert.match(assistantText(mergeRequest.messages[2]), /"risk": "moderate"/);
+  assert.deepEqual(streamA?.state.messages.map((message) => message.role), ["user", "tool", "tool", "assistant"]);
+  assert.deepEqual(streamB?.state.messages.map((message) => message.role), ["user", "tool", "tool", "assistant"]);
+  assert.deepEqual(session.messages, streamA?.state.messages);
+  assert.deepEqual(streamA?.state.messages, streamB?.state.messages);
+  assert.equal(streamA?.state.messages.filter((message) => message.role === "assistant").length, 1);
+  assert.equal(streamB?.state.messages.filter((message) => message.role === "assistant").length, 1);
   assert.deepEqual(streamA?.state.messages.at(-1), {
     role: "assistant",
     content: "merged reply",
@@ -1299,6 +1394,55 @@ function createStreamingWorkflow(config: {
   };
 }
 
+function createToolStreamingWorkflow(config: {
+  id: string;
+  renderName: string;
+  route: string;
+  toolName: string;
+  result: Record<string, unknown>;
+}): WorkflowDefinition<{ loaded: boolean }> {
+  const program = workflow({
+    id: config.id,
+    version: "0.1.0",
+    description: `${config.id} merged tool render workflow fixture.`,
+    routing: defineRouting({
+      examples: [config.route],
+      entities: [config.route],
+      neighbors: [],
+    }),
+    stateSchema: z.object({
+      loaded: z.boolean(),
+    }),
+    state: {
+      loaded: false,
+    },
+  });
+
+  program.patch({ state: {} });
+  program.effect("load_tool_fact", {
+    description: "Appends one current-turn tool fact so merged render can compose across workflows.",
+    run: (state) => {
+      if (state.loaded) return {};
+      return {
+        loaded: true,
+        messages: [
+          new ToolMessage({
+            name: config.toolName,
+            call: { route: config.route },
+            result: config.result,
+          }),
+        ],
+      };
+    },
+  });
+
+  return program.render({
+    name: config.renderName,
+    instruction: "Stream the final response.",
+    progress: "Streaming response",
+  });
+}
+
 function createConcurrentAfterPatchWorkflow(
   id: string,
   route: string,
@@ -1596,6 +1740,16 @@ function createNamedStreamingLlm(config: {
       yield { type: "done", text: stream.finalText };
     },
   };
+}
+
+function assistantText(message: LlmTextRequest["messages"][number] | undefined): string {
+  if (!message || message.role !== "assistant") {
+    throw new Error("Expected assistant message");
+  }
+  return message.content
+    .filter((block): block is { type: "text"; text: string } => block.type === "text")
+    .map((block) => block.text)
+    .join("\n");
 }
 
 function delay(ms: number): Promise<void> {

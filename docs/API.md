@@ -35,6 +35,7 @@ Output:
 
 Behavior:
 - asserts non-empty workflow metadata and invalidation invariants during definition;
+- rejects author `TState`/default state shapes that declare the runtime-owned `messages` field;
 - asserts non-empty node names and descriptions during registration, and validates required prefetch progress text;
 - `effect(name, dependsOn, config)` and `config.dependsOn` gate an effect by state-field dependency snapshots;
 - `patch(...)` must be called exactly once before `render(...)`;
@@ -61,7 +62,7 @@ Behavior:
 
 Boundary:
 - workflow code returns `ToolMessage` instances through `messages` from `effect(...)` or `command(...)`;
-- `@pac/engine` converts each workflow tool message into paired PI assistant tool-call and tool-result messages.
+- `@pac/engine` converts each workflow tool message into plain runtime fact text for patch/render prompts, not provider-native tool-call transcripts.
 
 #### Effect dependencies and steps
 
@@ -284,19 +285,20 @@ Behavior:
 - routes existing sessions through protocol fast path or a structured route gate that can continue, switch, run parallel workflows, clarify, or select no workflow;
 - keeps short replies that resolve an active workflow acknowledgement on the active workflow without calling the route gate;
 - supports custom `WorkflowRouter`, `RouteGate`, and `WorkflowCandidateProvider` implementations through `WorkflowEngineOptions.routing`;
-- appends runtime message history and converts workflow tool messages into paired PI assistant tool-call and tool-result messages;
+- keeps the session `messages` log authoritative, gives selected workflow instances a shallow copy for the current turn, and converts workflow tool messages into plain runtime fact text for patch/render prompts;
 - extracts structured patches through `deps.llm.structured(...)`;
-- reserves the workflow state field `messages` for runtime history and ignores attempts to write it through state patches;
+- reserves the workflow state field `messages` for runtime-provided history snapshots and ignores attempts to write it through state patches;
 - compares JSON-native state and prefetch values structurally so object key ordering alone does not create dirty fields;
 - runs prefetch and effect nodes by stage, with per-workflow after-patch stabilization running concurrently across active workflows;
 - validates raw prefetch node results before merging them into the runtime prefetch store;
 - invalidates dependent fields after state changes, resetting them to default values or deleting fields that are absent from the workflow default state;
 - preserves dependent fields explicitly extracted from the latest user message when later same-turn workflow nodes write source fields that would otherwise invalidate them;
 - renders responses through either a workflow render function or an LLM render policy;
-- merges multiple LLM render policies into one provider call and records the merged assistant reply on each participating workflow by default;
+- merges multiple LLM render policies into one provider call and commits the merged assistant reply to the session message log by default;
+- builds merged render provider messages from the session message log after selected workflows' new runtime tool facts are merged, with the latest user turn included once; patch and routing gate LLM request messages are never appended to session or workflow messages;
 - keeps function-based renders separate because they do not expose mergeable render instructions;
-- validates workflow render responses and LLM render stream events before recording assistant messages;
-- when `onResponseDelta` is configured, emits merged render deltas with `workflowIds`, or separate render deltas in workflow response order when merge is disabled.
+- validates workflow render responses and LLM render stream events before committing assistant messages to the session log;
+- when `onResponseDelta` is configured, emits merged render deltas with `workflowIds` and a synthetic joined `workflowId`, or separate render deltas in workflow response order when merge is disabled.
 
 #### `engine.createSession(input)`
 
@@ -306,6 +308,7 @@ Input:
 - `sessionId`
 - `userId`
 - optional active workflow ids
+- optional existing `messages` history, preserving stable ids and metadata
 - optional facts, preferences, goals, and constraints
 
 Behavior:
@@ -369,7 +372,7 @@ Important public types include:
 - `WorkflowSnapshot`
 
 The package root intentionally does not export internal runtime implementation types such as
-`RuntimeWorkflow`, `RuntimeInstance`, or `TargetSelection`.
+`RuntimeWorkflow` or `TargetSelection`.
 
 ## Non-Default Surfaces
 

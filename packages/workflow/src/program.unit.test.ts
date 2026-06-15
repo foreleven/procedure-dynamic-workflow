@@ -47,6 +47,28 @@ test("workflow program rejects invalid workflow config invariants", () => {
   );
 });
 
+test("workflow program type rejects reserved messages in author state", () => {
+  if (false) {
+    type StateWithMessages = {
+      count: number;
+      messages: string[];
+    };
+
+    workflow<StateWithMessages>({
+      id: "reserved_messages_state",
+      version: "0.1.0",
+      description: "Compile-time fixture for reserved runtime state fields.",
+      routing,
+      stateSchema: z.object({
+        count: z.number(),
+        messages: z.array(z.string()),
+      }),
+      // @ts-expect-error messages is runtime-owned and must not be declared by workflow state.
+      state: { count: 0, messages: [] },
+    });
+  }
+});
+
 test("workflow program rejects duplicate node names", () => {
   const program = createProgram("duplicate_node");
   const effect = {

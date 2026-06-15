@@ -20,7 +20,6 @@ import type { WorkflowCandidateProvider } from "./routing/candidate-provider.js"
 import type { WorkflowRouter } from "./routing/router.js";
 
 export type RuntimeWorkflow = WorkflowDefinition<JsonRecord, unknown>;
-export type RuntimeInstance = WorkflowInstance<JsonRecord>;
 
 export interface WorkflowDefinitionNodeInput {
   kind: "prefetch" | "effect";
@@ -60,6 +59,7 @@ export interface CreateSessionInput {
   sessionId: string;
   userId: string;
   activeWorkflowIds?: WorkflowId[];
+  messages?: WorkflowMessage[];
   facts?: JsonRecord;
   preferences?: JsonRecord;
   goals?: string[];
@@ -77,6 +77,10 @@ export interface WorkflowEngineOptions {
   render?: WorkflowRenderOptions | undefined;
   maxProgramRounds?: number;
   logger?: (line: string) => void;
+  /**
+   * Streams render deltas. For merged render, `workflowId` is a synthetic joined
+   * id and `workflowIds` is the authoritative participant list.
+   */
   onResponseDelta?: (event: { workflowId: WorkflowId; workflowIds?: readonly WorkflowId[]; delta: string }) => void;
 }
 
@@ -130,7 +134,7 @@ export interface EngineTurnResult {
 }
 
 export interface TargetSelection {
-  instances: RuntimeInstance[];
+  instances: WorkflowInstance<JsonRecord>[];
   ids: Set<WorkflowId>;
 }
 

@@ -2,16 +2,19 @@ import {
   type JsonRecord,
   type MessagePatch,
   type WorkflowId,
+  type WorkflowInstance,
   type WorkflowMessage,
   type WorkflowRuntimeState,
+  type WorkflowToolMessage,
 } from "@pac/workflow";
 import { cloneDefault, normalizeMessagePatch } from "./patching.js";
 import { errorMessage } from "./utils/errors.js";
 import { safeJsonStringify } from "./utils/json.js";
-import { RuntimeInstanceStore } from "./runtime/instances.js";
+import { WorkflowInstanceStore } from "./runtime/instances.js";
 import { createEngineSession } from "./session.js";
 import {
   appendWorkflowMessage,
+  copyWorkflowMessages,
   messagesForPatch,
   withRuntimeMessages,
 } from "./utils/messages.js";
@@ -32,7 +35,6 @@ import type {
   EngineSession,
   EngineTraceEvent,
   EngineTurnResult,
-  RuntimeInstance,
   RuntimeWorkflow,
   TargetSelection,
   WorkflowEngineOptions,
@@ -41,7 +43,7 @@ import type {
 
 export class WorkflowEngine {
   private readonly registry = new Map<WorkflowId, RuntimeWorkflow>();
-  private readonly instances: RuntimeInstanceStore;
+  private readonly instances: WorkflowInstanceStore;
   private readonly nodeRunner: WorkflowNodeRunner;
   private readonly renderer: ResponseRenderer;
   private readonly tracer: RuntimeTracer;
@@ -65,7 +67,7 @@ export class WorkflowEngine {
     }
 
     this.deps = options.deps;
-    this.instances = new RuntimeInstanceStore(this.registry, options.deps.connectors);
+    this.instances = new WorkflowInstanceStore(this.registry, options.deps.connectors);
     this.tracer = new RuntimeTracer(options.logger);
     this.nodeRunner = new WorkflowNodeRunner(options.deps, this.tracer, options.maxProgramRounds ?? 6);
     this.renderer = new ResponseRenderer(options.deps, this.tracer, options.onResponseDelta, options.render);
@@ -109,25 +111,21 @@ export class WorkflowEngine {
     const traces: EngineTraceEvent[] = [];
     const turnChanges = new TurnChangeTracker();
     const turnStartedAt = this.tracer.start("engine", "turn", { message });
+    const sessionMessagesBeforeTurn = copyWorkflowMessages(session.messages);
+    const turnBaseMessages = [...sessionMessagesBeforeTurn, userWorkflowMessage(message)];
     const activeInstances = this.instances.forIds(session, session.activeWorkflowIds);
-    const recentMessages = recentWorkflowMessages(activeInstances, this.recentMessageLimit);
-    const speculativePatchPromise = this.extractSpeculativeActivePatches(message, activeInstances);
+    const recentMessages = recentWorkflowMessages(session.messages, this.recentMessageLimit);
+    const speculativePatchPromise = this.extractSpeculativeActivePatches(activeInstances, turnBaseMessages);
 
     const routed = await this.selectTargetWorkflows(message, session, activeInstances, recentMessages, traces);
     const targets = routed.selection;
     const preStates = new Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>(
-      targets.instances.map((instance) => [instance.id, withRuntimeMessages(cloneDefault(instance.state))]),
+      targets.instances.map((instance) => [
+        instance.id,
+        withRuntimeMessages(cloneDefault(instance.state), sessionMessagesBeforeTurn),
+      ]),
     );
-    for (const instance of targets.instances) {
-      if (appendWorkflowMessage(instance.state, { role: "user", content: message })) {
-        traces.push({
-          workflowId: instance.id,
-          phase: "messages.user",
-          detail: { contentChars: message.length },
-        });
-        turnChanges.forWorkflow(instance.id).recordState(["messages"]);
-      }
-    }
+    this.attachWorkflowMessagesForTurn(targets.instances, turnBaseMessages, message, traces, turnChanges);
 
     await Promise.all(
       targets.instances.map((instance) =>
@@ -156,15 +154,41 @@ export class WorkflowEngine {
       ),
     );
 
-    const responses = await this.renderer.renderResponses(runnable, session, message, traces, turnChanges, preStates);
+    if (runnable.length === 0) {
+      const response = {
+        text: "我还不能确定要执行哪个 workflow。",
+      };
+      this.commitSessionMessages(session, [...turnBaseMessages, assistantWorkflowMessage(response.text)]);
+      this.syncActiveWorkflowMessages(session);
+      this.tracer.done("engine", "turn", turnStartedAt, { responseTextChars: response.text.length });
+      return {
+        response,
+        responses: [],
+        session,
+        traces,
+      };
+    }
+
+    const mergedMessages = mergeWorkflowMessages(turnBaseMessages, runnable);
+    setWorkflowMessages(runnable, mergedMessages);
+    const rendered = await this.renderer.renderResponses(
+      runnable,
+      mergedMessages,
+      session,
+      message,
+      traces,
+      turnChanges,
+      preStates,
+    );
+    const responses = rendered.responses;
+    this.commitSessionMessages(session, [...mergedMessages, ...rendered.messages]);
+    this.syncActiveWorkflowMessages(session);
     session.routingMemory.lastMatchedWorkflowIds = runnable.map((instance) => instance.id);
 
     this.tracer.done("engine", "turn", turnStartedAt, { responseTextChars: responses[0]?.response.text.length ?? 0 });
 
     return {
-      response: responses[0]?.response ?? {
-        text: "我还不能确定要执行哪个 workflow。",
-      },
+      response: responses[0]?.response ?? { text: "" },
       responses,
       session,
       traces,
@@ -195,7 +219,7 @@ export class WorkflowEngine {
   private async selectTargetWorkflows(
     message: string,
     session: EngineSession,
-    activeInstances: RuntimeInstance[],
+    activeInstances: WorkflowInstance<JsonRecord>[],
     recentMessages: readonly WorkflowMessage[],
     traces: EngineTraceEvent[],
   ): Promise<RoutedTargetSelection> {
@@ -241,7 +265,7 @@ export class WorkflowEngine {
   }
 
   private async extractPatch(
-    instance: RuntimeInstance,
+    instance: WorkflowInstance<JsonRecord>,
     traces: EngineTraceEvent[],
     state: WorkflowRuntimeState<JsonRecord> = instance.state,
     mode: "live" | "speculative" = "live",
@@ -280,14 +304,13 @@ export class WorkflowEngine {
   }
 
   private extractSpeculativeActivePatches(
-    message: string,
-    activeInstances: readonly RuntimeInstance[],
+    activeInstances: readonly WorkflowInstance<JsonRecord>[],
+    turnBaseMessages: readonly WorkflowMessage[],
   ): Promise<SpeculativePatchResult[]> | undefined {
     if (activeInstances.length === 0) return undefined;
     return Promise.all(
       activeInstances.map(async (instance): Promise<SpeculativePatchResult> => {
-        const transientState = withRuntimeMessages(cloneDefault(instance.state));
-        appendWorkflowMessage(transientState, { role: "user", content: message });
+        const transientState = withRuntimeMessages(cloneDefault(instance.state), turnBaseMessages);
         try {
           return {
             workflowId: instance.id,
@@ -304,7 +327,7 @@ export class WorkflowEngine {
   }
 
   private async extractTargetPatches(
-    instances: RuntimeInstance[],
+    instances: WorkflowInstance<JsonRecord>[],
     routingResult: WorkflowRoutingResult,
     speculativePatchPromise: Promise<SpeculativePatchResult[]> | undefined,
     traces: EngineTraceEvent[],
@@ -341,7 +364,7 @@ export class WorkflowEngine {
   }
 
   private applyPatches(
-    instances: RuntimeInstance[],
+    instances: WorkflowInstance<JsonRecord>[],
     patches: MessagePatch[],
     session: EngineSession,
     traces: EngineTraceEvent[],
@@ -352,10 +375,46 @@ export class WorkflowEngine {
       const dirtyFields = applyWorkflowMessagePatch(instance, session, patch, traces);
       const changes = turnChanges.forWorkflow(instance.id);
       changes.recordMessagePatchState(Object.keys(patch.statePatch ?? {}));
+      const patchMessage = patchToolMessage(instance.id, patch);
+      if (patchMessage) {
+        appendWorkflowMessage(instance.state, patchMessage);
+        traces.push({
+          workflowId: instance.id,
+          phase: "messages.patch",
+          detail: { contentChars: safeJsonStringify(patchMessage.result).length },
+        });
+        changes.recordState(["messages"]);
+      }
       const invalidated = applyWorkflowInvalidation(instance, dirtyFields, traces);
       changes.recordState(dirtyFields);
       changes.recordInvalidatedState(invalidated);
     }
+  }
+
+  private attachWorkflowMessagesForTurn(
+    instances: readonly WorkflowInstance<JsonRecord>[],
+    messages: readonly WorkflowMessage[],
+    latestUserMessage: string,
+    traces: EngineTraceEvent[],
+    turnChanges: TurnChangeTracker,
+  ): void {
+    for (const instance of instances) {
+      instance.state.messages = copyWorkflowMessages(messages);
+      traces.push({
+        workflowId: instance.id,
+        phase: "messages.user",
+        detail: { contentChars: latestUserMessage.length },
+      });
+      turnChanges.forWorkflow(instance.id).recordState(["messages"]);
+    }
+  }
+
+  private commitSessionMessages(session: EngineSession, messages: readonly WorkflowMessage[]): void {
+    session.messages = copyWorkflowMessages(messages);
+  }
+
+  private syncActiveWorkflowMessages(session: EngineSession): void {
+    setWorkflowMessages(this.instances.forIds(session, session.activeWorkflowIds), session.messages);
   }
 
 }
@@ -384,12 +443,53 @@ function isPositiveInteger(value: unknown): boolean {
 }
 
 function recentWorkflowMessages(
-  instances: readonly RuntimeInstance[],
+  messages: readonly WorkflowMessage[],
   limit: number,
 ): WorkflowMessage[] {
   if (limit <= 0) return [];
-  const messages = instances.flatMap((instance) => instance.state.messages);
   return messages.slice(Math.max(0, messages.length - limit));
+}
+
+function userWorkflowMessage(content: string): WorkflowMessage {
+  return { role: "user", content };
+}
+
+function assistantWorkflowMessage(content: string): WorkflowMessage {
+  return { role: "assistant", content };
+}
+
+function patchToolMessage(workflowId: WorkflowId, patch: MessagePatch): WorkflowToolMessage | undefined {
+  const result: JsonRecord = {};
+  if (patch.sessionPatch !== undefined) result.sessionPatch = patch.sessionPatch;
+  if (patch.statePatch !== undefined) result.statePatch = patch.statePatch;
+  if (Object.keys(result).length === 0) return undefined;
+
+  return {
+    role: "tool",
+    name: `${workflowId}.patch`,
+    call: { stage: "patch", workflowId },
+    result,
+  };
+}
+
+function mergeWorkflowMessages(
+  baseMessages: readonly WorkflowMessage[],
+  instances: readonly WorkflowInstance<JsonRecord>[],
+): WorkflowMessage[] {
+  const merged = copyWorkflowMessages(baseMessages);
+  for (const instance of instances) {
+    merged.push(...instance.state.messages.slice(baseMessages.length));
+  }
+  return merged;
+}
+
+function setWorkflowMessages(
+  instances: readonly WorkflowInstance<JsonRecord>[],
+  messages: readonly WorkflowMessage[],
+): void {
+  for (const instance of instances) {
+    instance.state.messages = copyWorkflowMessages(messages);
+  }
 }
 
 function patchInstructionForRuntime(instruction: string, now: string, state: JsonRecord): string {

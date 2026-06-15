@@ -53,6 +53,7 @@ function sessionSnapshot(session: EngineSession): unknown {
     sessionId: session.sessionId,
     userId: session.userId,
     activeWorkflowIds: session.activeWorkflowIds,
+    messages: session.messages,
     facts: session.facts,
     preferences: session.preferences,
     goals: session.goals,
@@ -66,10 +67,6 @@ function mapSnapshotField(
   field: "state" | "context",
 ): Record<string, unknown> {
   return Object.fromEntries(Object.entries(snapshots).map(([id, snapshot]) => [id, snapshot?.[field] ?? null]));
-}
-
-function mapSnapshotMessages(snapshots: Record<string, WorkflowSnapshot<object> | null>): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(snapshots).map(([id, snapshot]) => [id, snapshot?.state.messages ?? []]));
 }
 
 async function main(): Promise<void> {
@@ -228,7 +225,7 @@ async function main(): Promise<void> {
     }
 
     if (line === "/messages") {
-      printJson(workflowSnapshots ? mapSnapshotMessages(workflowSnapshots) : workflowSnapshot?.state.messages ?? []);
+      printJson(session.messages);
       return true;
     }
 

@@ -70,7 +70,7 @@ interface WorkflowRoutingInput {
   message: string;
   session: EngineSession;
   workflows: readonly RuntimeWorkflow[];
-  activeInstances: readonly RuntimeInstance[];
+  activeInstances: readonly WorkflowInstance<JsonRecord>[];
   recentMessages: readonly WorkflowMessage[];
 }
 ```

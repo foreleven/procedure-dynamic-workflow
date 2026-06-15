@@ -34,6 +34,12 @@ export interface ProgramRuntime {
   message?: string;
 }
 
+/**
+ * Prevents author-owned state from shadowing runtime fields.
+ * `messages` is appended by the engine, so workflow authors must model only business state here.
+ */
+type WorkflowAuthorState<TState extends object> = TState & Record<Extract<keyof TState, "messages">, never>;
+
 export type ProgramWhen<
   TState extends object,
   TConnectors extends ConnectorCatalog = ConnectorCatalog,
@@ -76,7 +82,7 @@ export interface ProgramWorkflowConfig<
   description: string;
   routing: RoutingProfile;
   stateSchema: z.ZodType<TState>;
-  state: TState;
+  state: WorkflowAuthorState<TState>;
   invalidation?: Partial<Record<keyof TState & string, Array<keyof TState & string>>>;
   connectors?: TConnectors;
 }

@@ -31,6 +31,7 @@ test("messagesForRender converts workflow tool messages to runtime fact text", (
     throw new Error("Expected text runtime fact content");
   }
   assert.match(content.text, /Runtime tool fact: connectors\.lookup/);
+  assert.match(content.text, /Id: lookup-1/);
   assert.match(content.text, /Do not imitate it as an output format/);
   assert.match(content.text, /"vehicleId": "vehicle_1"/);
   assert.match(content.text, /"slots": \[\s+"09:00"\s+\]/);
@@ -40,6 +41,7 @@ test("appendWorkflowMessages stores ToolMessage instances as plain workflow mess
   const state = withRuntimeMessages({});
   const expected = {
     role: "tool" as const,
+    id: "lookup-1",
     name: "connectors.lookup",
     call: { vehicleId: "vehicle_1" },
     result: { slots: ["09:00"] },
@@ -47,6 +49,7 @@ test("appendWorkflowMessages stores ToolMessage instances as plain workflow mess
 
   const appended = appendWorkflowMessages(state, [
     new ToolMessage({
+      id: "lookup-1",
       name: "connectors.lookup",
       call: { vehicleId: "vehicle_1" },
       result: { slots: ["09:00"] },

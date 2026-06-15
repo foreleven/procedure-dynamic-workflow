@@ -3,21 +3,29 @@ import {
   type RenderPolicy,
   type RenderResponse,
   type WorkflowId,
+  type WorkflowAssistantMessage,
+  type WorkflowInstance,
+  type WorkflowMessage,
   type WorkflowRuntimeState,
   type WorkflowStepController,
 } from "@pac/workflow";
-import type { EngineSession, EngineTraceEvent, RuntimeInstance, WorkflowEngineOptions } from "../types.js";
+import type { EngineSession, EngineTraceEvent, WorkflowEngineOptions } from "../types.js";
 import { RuntimeTracer } from "./tracer.js";
-import { appendWorkflowMessage, messagesForRender } from "../utils/messages.js";
+import { messagesForRender, messagesForWorkflowMessages } from "../utils/messages.js";
 import { safeJsonStringify } from "../utils/json.js";
 import { normalizeRenderResponse, normalizeStreamTextEvent, renderText } from "../utils/rendering.js";
 import { preStateFor } from "../utils/state.js";
 import { TurnChangeTracker } from "../utils/turn.js";
 
+export interface RenderResponsesResult {
+  responses: Array<{ workflowId: WorkflowId; response: RenderResponse }>;
+  messages: WorkflowAssistantMessage[];
+}
+
 /**
- * Renders workflow responses and records assistant messages in runtime state.
+ * Renders workflow responses and returns assistant messages for session-level commit.
  * Input: runtime dependencies, runtime tracer, and optional stream delta callback.
- * Output: per-workflow render responses with assistant message side effects applied.
+ * Output: per-workflow render responses plus assistant messages in commit order.
  * Boundary: WorkflowEngine owns turn scheduling; this class owns only response rendering and render traces.
  */
 export class ResponseRenderer {
@@ -35,14 +43,15 @@ export class ResponseRenderer {
    * Boundary: streaming mode renders sequentially so deltas stay ordered; non-streaming mode renders concurrently.
    */
   async renderResponses(
-    instances: RuntimeInstance[],
+    instances: WorkflowInstance<JsonRecord>[],
+    mergedMessages: readonly WorkflowMessage[],
     session: EngineSession,
     message: string,
     traces: EngineTraceEvent[],
     turnChanges: TurnChangeTracker,
     preStates: Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>,
-  ): Promise<Array<{ workflowId: WorkflowId; response: RenderResponse }>> {
-    const merged = await this.renderMergedResponses(instances, session, message, traces, turnChanges);
+  ): Promise<RenderResponsesResult> {
+    const merged = await this.renderMergedResponses(instances, mergedMessages, session, message, traces, turnChanges);
     if (merged) return merged;
 
     if (this.onResponseDelta) {
@@ -50,24 +59,31 @@ export class ResponseRenderer {
       for (const instance of instances) {
         responses.push(await this.renderAndRecordResponse(instance, session, message, traces, turnChanges, preStates));
       }
-      return responses;
+      return {
+        responses,
+        messages: responses.map(({ response }) => assistantMessage(response.text)),
+      };
     }
 
-    return Promise.all(
+    const responses = await Promise.all(
       instances.map(async (instance) =>
         this.renderAndRecordResponse(instance, session, message, traces, turnChanges, preStates),
       ),
     );
+    return {
+      responses,
+      messages: responses.map(({ response }) => assistantMessage(response.text)),
+    };
   }
 
   /**
-   * Renders one workflow response and records the assistant message in that workflow's runtime state.
+   * Renders one workflow response and traces the assistant message selected for session commit.
    * Input: one runtime workflow instance plus the current session, message, traces, and turn-change stores.
    * Output: the workflow id paired with its rendered response.
-   * Boundary: appending assistant messages is the only state mutation this method performs.
+   * Boundary: this method does not mutate message history; WorkflowEngine commits messages after render.
    */
   private async renderAndRecordResponse(
-    instance: RuntimeInstance,
+    instance: WorkflowInstance<JsonRecord>,
     session: EngineSession,
     message: string,
     traces: EngineTraceEvent[],
@@ -77,7 +93,7 @@ export class ResponseRenderer {
     const startedAt = this.tracer.start(instance.id, "render");
     const response = await this.renderInstance(instance, session, message, turnChanges, preStates, traces);
     this.tracer.done(instance.id, "render", startedAt, { textChars: response.text.length });
-    this.recordAssistantMessage(instance, response, traces, turnChanges);
+    this.traceAssistantMessage(instance, response, traces, turnChanges);
     return {
       workflowId: instance.id,
       response,
@@ -90,12 +106,13 @@ export class ResponseRenderer {
    * semantics are workflow-owned code rather than mergeable instructions.
    */
   private async renderMergedResponses(
-    instances: RuntimeInstance[],
+    instances: WorkflowInstance<JsonRecord>[],
+    mergedMessages: readonly WorkflowMessage[],
     session: EngineSession,
     message: string,
     traces: EngineTraceEvent[],
     turnChanges: TurnChangeTracker,
-  ): Promise<Array<{ workflowId: WorkflowId; response: RenderResponse }> | undefined> {
+  ): Promise<RenderResponsesResult | undefined> {
     const participants = mergeableRenderParticipants(instances);
     if (!participants) return undefined;
 
@@ -120,7 +137,7 @@ export class ResponseRenderer {
       });
     }
 
-    const response = await this.renderMergedInstance(participants);
+    const response = await this.renderMergedInstance(participants, mergedMessages);
     const detail = { workflowIds, textChars: response.text.length };
     traces.push({
       workflowId: "engine",
@@ -130,35 +147,41 @@ export class ResponseRenderer {
     this.tracer.done("engine", "render.merge", startedAt, detail);
 
     for (const { instance } of participants) {
-      this.recordAssistantMessage(instance, response, traces, turnChanges);
+      this.traceAssistantMessage(instance, response, traces, turnChanges);
     }
 
-    return participants.map(({ instance }) => ({
-      workflowId: instance.id,
-      response,
-    }));
+    return {
+      responses: participants.map(({ instance }) => ({
+        workflowId: instance.id,
+        response,
+      })),
+      messages: [assistantMessage(response.text)],
+    };
   }
 
-  private async renderMergedInstance(participants: MergeRenderParticipant[]): Promise<RenderResponse> {
+  private async renderMergedInstance(
+    participants: MergeRenderParticipant[],
+    mergedMessages: readonly WorkflowMessage[],
+  ): Promise<RenderResponse> {
     const workflowIds = participants.map(({ instance }) => instance.id);
-    const primaryWorkflowId = workflowIds[0];
-    if (!primaryWorkflowId) {
+    if (workflowIds.length === 0) {
       return { text: "" };
     }
+    const mergedWorkflowId = mergedRenderWorkflowId(workflowIds);
 
     const request = {
       name: "merged_render",
       instruction: mergedRenderInstructionForRuntime(participants),
-      messages: participants.flatMap(({ instance }) => messagesForRender(instance.state)),
+      messages: messagesForWorkflowMessages(mergedMessages),
     };
 
     if (this.deps.llm.streamText) {
       let text = "";
       for await (const event of this.deps.llm.streamText(request)) {
-        const normalizedEvent = normalizeStreamTextEvent(primaryWorkflowId, event);
+        const normalizedEvent = normalizeStreamTextEvent(mergedWorkflowId, event);
         if (normalizedEvent.type === "text_delta") {
           text += normalizedEvent.delta;
-          this.onResponseDelta?.({ workflowId: primaryWorkflowId, workflowIds, delta: normalizedEvent.delta });
+          this.onResponseDelta?.({ workflowId: mergedWorkflowId, workflowIds, delta: normalizedEvent.delta });
           continue;
         }
 
@@ -168,25 +191,23 @@ export class ResponseRenderer {
       return { text: text.trim() };
     }
 
-    const text = renderText(primaryWorkflowId, await this.deps.llm.text(request), "llm.text");
+    const text = renderText(mergedWorkflowId, await this.deps.llm.text(request), "llm.text");
 
     return { text: text.trim() };
   }
 
-  private recordAssistantMessage(
-    instance: RuntimeInstance,
+  private traceAssistantMessage(
+    instance: WorkflowInstance<JsonRecord>,
     response: RenderResponse,
     traces: EngineTraceEvent[],
     turnChanges: TurnChangeTracker,
   ): void {
-    if (appendWorkflowMessage(instance.state, { role: "assistant", content: response.text })) {
-      traces.push({
-        workflowId: instance.id,
-        phase: "messages.assistant",
-        detail: { contentChars: response.text.length },
-      });
-      turnChanges.forWorkflow(instance.id).recordState(["messages"]);
-    }
+    traces.push({
+      workflowId: instance.id,
+      phase: "messages.assistant",
+      detail: { contentChars: response.text.length },
+    });
+    turnChanges.forWorkflow(instance.id).recordState(["messages"]);
   }
 
   /**
@@ -196,7 +217,7 @@ export class ResponseRenderer {
    * Boundary: workflow-owned render functions may read runtime context but must return render data only.
    */
   private async renderInstance(
-    instance: RuntimeInstance,
+    instance: WorkflowInstance<JsonRecord>,
     session: EngineSession,
     message: string,
     turnChanges: TurnChangeTracker,
@@ -255,6 +276,14 @@ export class ResponseRenderer {
   }
 }
 
+function mergedRenderWorkflowId(workflowIds: readonly WorkflowId[]): WorkflowId {
+  return workflowIds.join("+");
+}
+
+function assistantMessage(content: string): WorkflowAssistantMessage {
+  return { role: "assistant", content };
+}
+
 const noopStepController: WorkflowStepController = {
   start(label) {
     return {
@@ -308,11 +337,11 @@ function renderInstructionForRuntime(instruction: string, state: JsonRecord): st
 }
 
 interface MergeRenderParticipant {
-  instance: RuntimeInstance;
+  instance: WorkflowInstance<JsonRecord>;
   render: RenderPolicy;
 }
 
-function mergeableRenderParticipants(instances: RuntimeInstance[]): MergeRenderParticipant[] | undefined {
+function mergeableRenderParticipants(instances: WorkflowInstance<JsonRecord>[]): MergeRenderParticipant[] | undefined {
   if (instances.length <= 1) return undefined;
 
   const participants: MergeRenderParticipant[] = [];
@@ -366,7 +395,8 @@ function mergedRenderInstructionForRuntime(participants: MergeRenderParticipant[
     "",
     "PAC merged render runtime contract:",
     "- The workflow states above are authoritative after the latest user turn, patch extraction, invalidation, and workflow nodes.",
-    "- Provider-facing messages may include the same user turn once per workflow; treat repeated copies as the same user message.",
+    "- Provider-facing messages use the session message log after selected workflows' new runtime tool facts are merged, so the latest user turn appears once.",
+    "- Patch and routing gate LLM request messages are internal runtime calls and are never part of session or workflow messages.",
     "- Use runtime tool facts from any selected workflow as supporting facts, not as callable tools.",
     "- Render must only produce the next user-visible assistant message.",
   ].join("\n");

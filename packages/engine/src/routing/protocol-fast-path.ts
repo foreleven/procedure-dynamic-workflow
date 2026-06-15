@@ -1,9 +1,8 @@
-import type { WorkflowId } from "@pac/workflow";
-import type { RuntimeInstance } from "../types.js";
+import type { JsonRecord, WorkflowId, WorkflowInstance } from "@pac/workflow";
 
 export interface ProtocolFastPathInput {
   message: string;
-  activeInstances: readonly RuntimeInstance[];
+  activeInstances: readonly WorkflowInstance<JsonRecord>[];
 }
 
 export interface ProtocolFastPathResult {

@@ -37,7 +37,7 @@ pac-dynamic-workflow/
 
 `connectors/*.ts` files define external tool contracts and demo implementations. Each connector file default-exports a loader function that returns connector tools; the engine builds the registry after loading all files listed in `agent.yaml`. Workflow code calls connectors through `context.call("connectors.xxx", input)`, with optional per-context caching via `context.call("connectors.xxx", input, { cache: true })`.
 
-`messages` is a runtime-owned conversation log on each workflow instance. User turns, tool messages, and rendered assistant replies are appended by the runtime or explicit workflow message outputs. Workflow schemas, default state, and state patches must not declare or overwrite the reserved `messages` field.
+`messages` is a runtime-owned conversation log on the engine session. Each selected workflow receives a shallow copy for the current turn, appends its own workflow tool facts, and the engine merges those new facts before render. Rendered assistant replies are committed back to the session log. Patch and routing gate LLM requests are internal calls and are not appended. Workflow schemas, default state, and state patches must not declare or overwrite the reserved `messages` field.
 
 ## API Reference
 

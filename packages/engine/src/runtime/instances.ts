@@ -1,21 +1,23 @@
 import {
+  type JsonRecord,
   PrefetchStore,
   WorkflowContextStore,
   type WorkflowId,
+  type WorkflowInstance,
 } from "@pac/workflow";
 import { cloneDefault } from "../patching.js";
-import type { EngineDeps, EngineSession, RuntimeInstance, RuntimeWorkflow, WorkflowSnapshot } from "../types.js";
+import type { EngineDeps, EngineSession, RuntimeWorkflow, WorkflowSnapshot } from "../types.js";
 import { safeJsonStringify } from "../utils/json.js";
 import { withRuntimeMessages } from "../utils/messages.js";
 
 /**
  * Owns per-session workflow runtime instances for an engine registry.
  * Input: immutable runtime workflow registry plus the connector dependency shared by new contexts.
- * Output: session-scoped RuntimeInstance objects and immutable snapshots.
+ * Output: session-scoped WorkflowInstance objects and immutable snapshots.
  * Boundary: this class owns instance lifecycle only; turn scheduling and workflow execution stay in WorkflowEngine.
  */
-export class RuntimeInstanceStore {
-  private readonly sessionInstances = new WeakMap<EngineSession, Map<WorkflowId, RuntimeInstance>>();
+export class WorkflowInstanceStore {
+  private readonly sessionInstances = new WeakMap<EngineSession, Map<WorkflowId, WorkflowInstance<JsonRecord>>>();
 
   constructor(
     private readonly registry: ReadonlyMap<WorkflowId, RuntimeWorkflow>,
@@ -51,7 +53,7 @@ export class RuntimeInstanceStore {
     return {
       id: instance.id,
       version: instance.version,
-      state: cloneSnapshotValue(instance.state) as WorkflowSnapshot<TState>["state"],
+      state: cloneSnapshotValue(withRuntimeMessages(instance.state, session.messages)) as WorkflowSnapshot<TState>["state"],
       context: cloneSnapshotValue(instance.context.toJSON()),
       prefetch: cloneSnapshotValue(instance.prefetch.toJSON()),
     };
@@ -63,7 +65,7 @@ export class RuntimeInstanceStore {
    * Output: runtime instances in active workflow order.
    * Boundary: this does not attach new workflows; routing owns target selection.
    */
-  forActiveTargets(session: EngineSession, targetIds: Set<WorkflowId>): RuntimeInstance[] {
+  forActiveTargets(session: EngineSession, targetIds: Set<WorkflowId>): WorkflowInstance<JsonRecord>[] {
     return this.forIds(
       session,
       session.activeWorkflowIds.filter((id) => targetIds.has(id)),
@@ -76,10 +78,10 @@ export class RuntimeInstanceStore {
    * Output: existing or newly created instances, omitting ids missing from the registry.
    * Boundary: callers validate unknown ids when unknown ids should be treated as errors.
    */
-  forIds(session: EngineSession, workflowIds: WorkflowId[]): RuntimeInstance[] {
+  forIds(session: EngineSession, workflowIds: WorkflowId[]): WorkflowInstance<JsonRecord>[] {
     return workflowIds
       .map((id) => this.ensure(session, id))
-      .filter((instance): instance is RuntimeInstance => Boolean(instance));
+      .filter((instance): instance is WorkflowInstance<JsonRecord> => Boolean(instance));
   }
 
   /**
@@ -88,7 +90,7 @@ export class RuntimeInstanceStore {
    * Output: runtime instance with fresh context/state/prefetch, or undefined for unknown workflow ids.
    * Boundary: this creates in-memory runtime state only; workflow callbacks are not executed here.
    */
-  ensure(session: EngineSession, workflowId: WorkflowId): RuntimeInstance | undefined {
+  ensure(session: EngineSession, workflowId: WorkflowId): WorkflowInstance<JsonRecord> | undefined {
     const instances = this.instancesForSession(session);
     const existing = instances.get(workflowId);
     if (existing) return existing;
@@ -96,12 +98,12 @@ export class RuntimeInstanceStore {
     const artifact = this.registry.get(workflowId);
     if (!artifact) return undefined;
 
-    const instance: RuntimeInstance = {
+    const instance: WorkflowInstance<JsonRecord> = {
       id: artifact.id,
       version: artifact.version,
       artifact,
       context: new WorkflowContextStore(this.connectors),
-      state: withRuntimeMessages(artifact.stateSchema.parse(cloneDefault(artifact.state))),
+      state: withRuntimeMessages(artifact.stateSchema.parse(cloneDefault(artifact.state)), session.messages),
       prefetch: new PrefetchStore(),
     };
 
@@ -121,7 +123,7 @@ export class RuntimeInstanceStore {
     this.ensure(session, workflowId);
   }
 
-  private instancesForSession(session: EngineSession): Map<WorkflowId, RuntimeInstance> {
+  private instancesForSession(session: EngineSession): Map<WorkflowId, WorkflowInstance<JsonRecord>> {
     let instances = this.sessionInstances.get(session);
     if (!instances) {
       instances = new Map();

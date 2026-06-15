@@ -1,20 +1,23 @@
 import { z } from "zod";
+import type { JsonRecord } from "../common.js";
 import {
   nonEmptyString,
   parseSchema,
 } from "../utils/schema.js";
 
-export interface WorkflowUserMessage {
+export interface WorkflowUserMessage extends JsonRecord {
   role: "user";
+  id?: string;
   content: string;
 }
 
-export interface WorkflowAssistantMessage {
+export interface WorkflowAssistantMessage extends JsonRecord {
   role: "assistant";
+  id?: string;
   content: string;
 }
 
-export interface WorkflowToolMessage {
+export interface WorkflowToolMessage extends JsonRecord {
   role: "tool";
   id?: string;
   name: string;
@@ -40,6 +43,7 @@ export interface ToolMessageInput {
  * Boundary: this class does not know provider-specific LLM formats; engine adapters convert it later.
  */
 export class ToolMessage implements WorkflowToolMessage {
+  readonly [key: string]: unknown;
   readonly role = "tool";
   readonly id?: string;
   readonly name: string;

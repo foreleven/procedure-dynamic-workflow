@@ -1,5 +1,5 @@
-import type { WorkflowId, WorkflowMessage } from "@pac/workflow";
-import type { EngineSession, RuntimeInstance, RuntimeWorkflow } from "../types.js";
+import type { JsonRecord, WorkflowId, WorkflowInstance, WorkflowMessage } from "@pac/workflow";
+import type { EngineSession, RuntimeWorkflow } from "../types.js";
 
 export type RoutingAction = "continue" | "switch" | "parallel" | "clarify" | "none";
 
@@ -7,7 +7,7 @@ export interface WorkflowRoutingInput {
   message: string;
   session: EngineSession;
   workflows: readonly RuntimeWorkflow[];
-  activeInstances: readonly RuntimeInstance[];
+  activeInstances: readonly WorkflowInstance<JsonRecord>[];
   recentMessages: readonly WorkflowMessage[];
 }
 

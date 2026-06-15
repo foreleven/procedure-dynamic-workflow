@@ -10,20 +10,27 @@ const JsonObjectSchema = z.record(z.string(), z.unknown());
 const OptionalSourceSchema = JsonObjectSchema.nullable().optional();
 const OptionalStringSchema = z.string().nullable().optional();
 const OptionalIntegerSchema = z.number().int().nullable().optional();
-const OptionalStringOrIntegerSchema = z.union([z.string(), z.number().int()]).nullable().optional();
+const OptionalStringOrIntegerSchema = z
+  .union([z.string(), z.number().int()])
+  .nullable()
+  .optional();
 
-export const McpContentSchema = z.object({
-  type: z.string(),
-  text: z.string().optional(),
-  data: z.string().optional(),
-  mimeType: z.string().optional(),
-  uri: z.string().optional(),
-}).passthrough();
+export const McpContentSchema = z
+  .object({
+    type: z.string(),
+    text: z.string().optional(),
+    data: z.string().optional(),
+    mimeType: z.string().optional(),
+    uri: z.string().optional(),
+  })
+  .passthrough();
 
-export const McpToolCallResultSchema = z.object({
-  content: z.array(McpContentSchema),
-  isError: z.boolean().optional(),
-}).passthrough();
+export const McpToolCallResultSchema = z
+  .object({
+    content: z.array(McpContentSchema),
+    isError: z.boolean().optional(),
+  })
+  .passthrough();
 
 export type McpToolCallResult = z.infer<typeof McpToolCallResultSchema>;
 
@@ -43,7 +50,7 @@ export const NewsHotTopicsSearchInputSchema = z.object({
 export const FinancialInvestmentReportSearchInputSchema = z.object({
   query: OptionalStringSchema,
   symbols: z.array(z.string()).nullable().optional(),
-  industries: z.array(z.string()).nullable().optional(),
+  // industries: z.array(z.string()).nullable().optional(),
   num: OptionalIntegerSchema,
   start_datetime: OptionalStringSchema,
   end_datetime: OptionalStringSchema,
@@ -177,7 +184,8 @@ export type InvestmentAdvisorMcpToolName =
 
 export const getTechnicalIndicatorSignalsConnector = defineConnectorRef({
   id: "connectors.investmentAdvisor.getTechnicalIndicatorSignals",
-  description: "Call the iFinD MCP tool for technical indicator signals by security code and interval.",
+  description:
+    "Call the iFinD MCP tool for technical indicator signals by security code and interval.",
   inputSchema: TechnicalIndicatorSignalsInputSchema,
   outputSchema: McpToolCallResultSchema,
 });
@@ -191,7 +199,8 @@ export const searchNewsHotTopicsConnector = defineConnectorRef({
 
 export const searchFinancialInvestmentReportsConnector = defineConnectorRef({
   id: "connectors.investmentAdvisor.searchFinancialInvestmentReports",
-  description: "Call the iFinD MCP tool for financial and investment report search.",
+  description:
+    "Call the iFinD MCP tool for financial and investment report search.",
   inputSchema: FinancialInvestmentReportSearchInputSchema,
   outputSchema: McpToolCallResultSchema,
 });
@@ -212,21 +221,24 @@ export const getCompanyProfileConnector = defineConnectorRef({
 
 export const getCompanyEquityHoldingsConnector = defineConnectorRef({
   id: "connectors.investmentAdvisor.getCompanyEquityHoldings",
-  description: "Call the iFinD MCP tool for company equity participation and control information.",
+  description:
+    "Call the iFinD MCP tool for company equity participation and control information.",
   inputSchema: CompanyBySecurityInputSchema,
   outputSchema: McpToolCallResultSchema,
 });
 
 export const getCompanyIndustryRankingsConnector = defineConnectorRef({
   id: "connectors.investmentAdvisor.getCompanyIndustryRankings",
-  description: "Call the iFinD MCP tool for company industry ranking information.",
+  description:
+    "Call the iFinD MCP tool for company industry ranking information.",
   inputSchema: CompanyBySecurityInputSchema,
   outputSchema: McpToolCallResultSchema,
 });
 
 export const getCompanyExecutivesConnector = defineConnectorRef({
   id: "connectors.investmentAdvisor.getCompanyExecutives",
-  description: "Call the iFinD MCP tool for company executive team information.",
+  description:
+    "Call the iFinD MCP tool for company executive team information.",
   inputSchema: CompanyBySecurityInputSchema,
   outputSchema: McpToolCallResultSchema,
 });
@@ -282,7 +294,8 @@ export const getTopPriceMoversConnector = defineConnectorRef({
 
 export const getHistoricalQuotesByDateRangeConnector = defineConnectorRef({
   id: "connectors.investmentAdvisor.getHistoricalQuotesByDateRange",
-  description: "Call the iFinD MCP tool for historical quotes over a date range.",
+  description:
+    "Call the iFinD MCP tool for historical quotes over a date range.",
   inputSchema: HistoricalQuotesByDateRangeInputSchema,
   outputSchema: McpToolCallResultSchema,
 });
@@ -310,7 +323,8 @@ export const getEtfTopHoldingsConnector = defineConnectorRef({
 
 export const getIndustryChainUpstreamDownstreamConnector = defineConnectorRef({
   id: "connectors.investmentAdvisor.getIndustryChainUpstreamDownstream",
-  description: "Call the iFinD MCP tool for upstream and downstream industry chain data.",
+  description:
+    "Call the iFinD MCP tool for upstream and downstream industry chain data.",
   inputSchema: IndustryChainInputSchema,
   outputSchema: McpToolCallResultSchema,
 });
@@ -324,79 +338,146 @@ export const getSectorRelatedEtfsConnector = defineConnectorRef({
 
 export const listSecurityBasicsConnector = defineConnectorRef({
   id: "connectors.investmentAdvisor.listSecurityBasics",
-  description: "Call the iFinD MCP tool for paginated security basic information.",
+  description:
+    "Call the iFinD MCP tool for paginated security basic information.",
   inputSchema: SecurityBasicsInputSchema,
   outputSchema: McpToolCallResultSchema,
 });
 
 export const investmentAdvisorConnectorCatalog = defineConnectorCatalog({
-  "connectors.investmentAdvisor.getTechnicalIndicatorSignals": getTechnicalIndicatorSignalsConnector,
-  "connectors.investmentAdvisor.searchNewsHotTopics": searchNewsHotTopicsConnector,
-  "connectors.investmentAdvisor.searchFinancialInvestmentReports": searchFinancialInvestmentReportsConnector,
+  "connectors.investmentAdvisor.getTechnicalIndicatorSignals":
+    getTechnicalIndicatorSignalsConnector,
+  "connectors.investmentAdvisor.searchNewsHotTopics":
+    searchNewsHotTopicsConnector,
+  "connectors.investmentAdvisor.searchFinancialInvestmentReports":
+    searchFinancialInvestmentReportsConnector,
   "connectors.investmentAdvisor.searchHotConcepts": searchHotConceptsConnector,
   "connectors.investmentAdvisor.getCompanyProfile": getCompanyProfileConnector,
-  "connectors.investmentAdvisor.getCompanyEquityHoldings": getCompanyEquityHoldingsConnector,
-  "connectors.investmentAdvisor.getCompanyIndustryRankings": getCompanyIndustryRankingsConnector,
-  "connectors.investmentAdvisor.getCompanyExecutives": getCompanyExecutivesConnector,
-  "connectors.investmentAdvisor.getMainBusinessComposition": getMainBusinessCompositionConnector,
-  "connectors.investmentAdvisor.getExDividendEvents": getExDividendEventsConnector,
-  "connectors.investmentAdvisor.getNorthboundStockList": getNorthboundStockListConnector,
-  "connectors.investmentAdvisor.getSouthboundCapitalFlows": getSouthboundCapitalFlowsConnector,
+  "connectors.investmentAdvisor.getCompanyEquityHoldings":
+    getCompanyEquityHoldingsConnector,
+  "connectors.investmentAdvisor.getCompanyIndustryRankings":
+    getCompanyIndustryRankingsConnector,
+  "connectors.investmentAdvisor.getCompanyExecutives":
+    getCompanyExecutivesConnector,
+  "connectors.investmentAdvisor.getMainBusinessComposition":
+    getMainBusinessCompositionConnector,
+  "connectors.investmentAdvisor.getExDividendEvents":
+    getExDividendEventsConnector,
+  "connectors.investmentAdvisor.getNorthboundStockList":
+    getNorthboundStockListConnector,
+  "connectors.investmentAdvisor.getSouthboundCapitalFlows":
+    getSouthboundCapitalFlowsConnector,
   "connectors.investmentAdvisor.getRealtimeQuotes": getRealtimeQuotesConnector,
-  "connectors.investmentAdvisor.getCapitalFlowStats": getCapitalFlowStatsConnector,
+  "connectors.investmentAdvisor.getCapitalFlowStats":
+    getCapitalFlowStatsConnector,
   "connectors.investmentAdvisor.getTopPriceMovers": getTopPriceMoversConnector,
-  "connectors.investmentAdvisor.getHistoricalQuotesByDateRange": getHistoricalQuotesByDateRangeConnector,
-  "connectors.investmentAdvisor.getStockRelatedSectors": getStockRelatedSectorsConnector,
-  "connectors.investmentAdvisor.getEtfRelatedSectors": getEtfRelatedSectorsConnector,
+  "connectors.investmentAdvisor.getHistoricalQuotesByDateRange":
+    getHistoricalQuotesByDateRangeConnector,
+  "connectors.investmentAdvisor.getStockRelatedSectors":
+    getStockRelatedSectorsConnector,
+  "connectors.investmentAdvisor.getEtfRelatedSectors":
+    getEtfRelatedSectorsConnector,
   "connectors.investmentAdvisor.getEtfTopHoldings": getEtfTopHoldingsConnector,
-  "connectors.investmentAdvisor.getIndustryChainUpstreamDownstream": getIndustryChainUpstreamDownstreamConnector,
-  "connectors.investmentAdvisor.getSectorRelatedEtfs": getSectorRelatedEtfsConnector,
-  "connectors.investmentAdvisor.listSecurityBasics": listSecurityBasicsConnector,
+  "connectors.investmentAdvisor.getIndustryChainUpstreamDownstream":
+    getIndustryChainUpstreamDownstreamConnector,
+  "connectors.investmentAdvisor.getSectorRelatedEtfs":
+    getSectorRelatedEtfsConnector,
+  "connectors.investmentAdvisor.listSecurityBasics":
+    listSecurityBasicsConnector,
 });
 
-export type InvestmentAdvisorConnectorCatalog = typeof investmentAdvisorConnectorCatalog;
+export type InvestmentAdvisorConnectorCatalog =
+  typeof investmentAdvisorConnectorCatalog;
 
 export const investmentAdvisorConnectorTools = [
   defineMcpConnectorTool(
     getTechnicalIndicatorSignalsConnector,
     investmentAdvisorMcpToolNames.getTechnicalIndicatorSignals,
   ),
-  defineMcpConnectorTool(searchNewsHotTopicsConnector, investmentAdvisorMcpToolNames.searchNewsHotTopics),
+  defineMcpConnectorTool(
+    searchNewsHotTopicsConnector,
+    investmentAdvisorMcpToolNames.searchNewsHotTopics,
+  ),
   defineMcpConnectorTool(
     searchFinancialInvestmentReportsConnector,
     investmentAdvisorMcpToolNames.searchFinancialInvestmentReports,
   ),
-  defineMcpConnectorTool(searchHotConceptsConnector, investmentAdvisorMcpToolNames.searchHotConcepts),
-  defineMcpConnectorTool(getCompanyProfileConnector, investmentAdvisorMcpToolNames.getCompanyProfile),
-  defineMcpConnectorTool(getCompanyEquityHoldingsConnector, investmentAdvisorMcpToolNames.getCompanyEquityHoldings),
+  defineMcpConnectorTool(
+    searchHotConceptsConnector,
+    investmentAdvisorMcpToolNames.searchHotConcepts,
+  ),
+  defineMcpConnectorTool(
+    getCompanyProfileConnector,
+    investmentAdvisorMcpToolNames.getCompanyProfile,
+  ),
+  defineMcpConnectorTool(
+    getCompanyEquityHoldingsConnector,
+    investmentAdvisorMcpToolNames.getCompanyEquityHoldings,
+  ),
   defineMcpConnectorTool(
     getCompanyIndustryRankingsConnector,
     investmentAdvisorMcpToolNames.getCompanyIndustryRankings,
   ),
-  defineMcpConnectorTool(getCompanyExecutivesConnector, investmentAdvisorMcpToolNames.getCompanyExecutives),
+  defineMcpConnectorTool(
+    getCompanyExecutivesConnector,
+    investmentAdvisorMcpToolNames.getCompanyExecutives,
+  ),
   defineMcpConnectorTool(
     getMainBusinessCompositionConnector,
     investmentAdvisorMcpToolNames.getMainBusinessComposition,
   ),
-  defineMcpConnectorTool(getExDividendEventsConnector, investmentAdvisorMcpToolNames.getExDividendEvents),
-  defineMcpConnectorTool(getNorthboundStockListConnector, investmentAdvisorMcpToolNames.getNorthboundStockList),
-  defineMcpConnectorTool(getSouthboundCapitalFlowsConnector, investmentAdvisorMcpToolNames.getSouthboundCapitalFlows),
-  defineMcpConnectorTool(getRealtimeQuotesConnector, investmentAdvisorMcpToolNames.getRealtimeQuotes),
-  defineMcpConnectorTool(getCapitalFlowStatsConnector, investmentAdvisorMcpToolNames.getCapitalFlowStats),
-  defineMcpConnectorTool(getTopPriceMoversConnector, investmentAdvisorMcpToolNames.getTopPriceMovers),
+  defineMcpConnectorTool(
+    getExDividendEventsConnector,
+    investmentAdvisorMcpToolNames.getExDividendEvents,
+  ),
+  defineMcpConnectorTool(
+    getNorthboundStockListConnector,
+    investmentAdvisorMcpToolNames.getNorthboundStockList,
+  ),
+  defineMcpConnectorTool(
+    getSouthboundCapitalFlowsConnector,
+    investmentAdvisorMcpToolNames.getSouthboundCapitalFlows,
+  ),
+  defineMcpConnectorTool(
+    getRealtimeQuotesConnector,
+    investmentAdvisorMcpToolNames.getRealtimeQuotes,
+  ),
+  defineMcpConnectorTool(
+    getCapitalFlowStatsConnector,
+    investmentAdvisorMcpToolNames.getCapitalFlowStats,
+  ),
+  defineMcpConnectorTool(
+    getTopPriceMoversConnector,
+    investmentAdvisorMcpToolNames.getTopPriceMovers,
+  ),
   defineMcpConnectorTool(
     getHistoricalQuotesByDateRangeConnector,
     investmentAdvisorMcpToolNames.getHistoricalQuotesByDateRange,
   ),
-  defineMcpConnectorTool(getStockRelatedSectorsConnector, investmentAdvisorMcpToolNames.getStockRelatedSectors),
-  defineMcpConnectorTool(getEtfRelatedSectorsConnector, investmentAdvisorMcpToolNames.getEtfRelatedSectors),
-  defineMcpConnectorTool(getEtfTopHoldingsConnector, investmentAdvisorMcpToolNames.getEtfTopHoldings),
+  defineMcpConnectorTool(
+    getStockRelatedSectorsConnector,
+    investmentAdvisorMcpToolNames.getStockRelatedSectors,
+  ),
+  defineMcpConnectorTool(
+    getEtfRelatedSectorsConnector,
+    investmentAdvisorMcpToolNames.getEtfRelatedSectors,
+  ),
+  defineMcpConnectorTool(
+    getEtfTopHoldingsConnector,
+    investmentAdvisorMcpToolNames.getEtfTopHoldings,
+  ),
   defineMcpConnectorTool(
     getIndustryChainUpstreamDownstreamConnector,
     investmentAdvisorMcpToolNames.getIndustryChainUpstreamDownstream,
   ),
-  defineMcpConnectorTool(getSectorRelatedEtfsConnector, investmentAdvisorMcpToolNames.getSectorRelatedEtfs),
-  defineMcpConnectorTool(listSecurityBasicsConnector, investmentAdvisorMcpToolNames.listSecurityBasics),
+  defineMcpConnectorTool(
+    getSectorRelatedEtfsConnector,
+    investmentAdvisorMcpToolNames.getSectorRelatedEtfs,
+  ),
+  defineMcpConnectorTool(
+    listSecurityBasicsConnector,
+    investmentAdvisorMcpToolNames.listSecurityBasics,
+  ),
 ];
 
 /**
@@ -409,18 +490,22 @@ export default function loadInvestmentAdvisorConnectorTools() {
   return investmentAdvisorConnectorTools;
 }
 
-const JsonRpcErrorSchema = z.object({
-  code: z.number().optional(),
-  message: z.string(),
-  data: z.unknown().optional(),
-}).passthrough();
+const JsonRpcErrorSchema = z
+  .object({
+    code: z.number().optional(),
+    message: z.string(),
+    data: z.unknown().optional(),
+  })
+  .passthrough();
 
-const JsonRpcEnvelopeSchema = z.object({
-  jsonrpc: z.string().optional(),
-  id: z.union([z.string(), z.number(), z.null()]).optional(),
-  result: z.unknown().optional(),
-  error: JsonRpcErrorSchema.optional(),
-}).passthrough();
+const JsonRpcEnvelopeSchema = z
+  .object({
+    jsonrpc: z.string().optional(),
+    id: z.union([z.string(), z.number(), z.null()]).optional(),
+    result: z.unknown().optional(),
+    error: JsonRpcErrorSchema.optional(),
+  })
+  .passthrough();
 
 const HeaderMapSchema = z.record(z.string(), z.string());
 
@@ -441,7 +526,9 @@ function defineMcpConnectorTool<TInput>(
   ref: ConnectorRef<string, TInput, McpToolCallResult>,
   toolName: InvestmentAdvisorMcpToolName,
 ) {
-  return defineConnectorTool(ref, (input) => callInvestmentAdvisorMcpTool(toolName, input));
+  return defineConnectorTool(ref, (input) =>
+    callInvestmentAdvisorMcpTool(toolName, input),
+  );
 }
 
 /**
@@ -455,22 +542,29 @@ export async function callInvestmentAdvisorMcpTool(
   input: unknown,
 ): Promise<McpToolCallResult> {
   const config = readMcpConfig();
-  const initialized = await postMcpRequest(config, undefined, {
-    jsonrpc: "2.0",
-    id: nextRpcId(),
-    method: "initialize",
-    params: {
-      protocolVersion: "2025-03-26",
-      capabilities: {},
-      clientInfo: {
-        name: "pac-investment-advisor-connectors",
-        version: "0.0.0",
+  const initialized = await postMcpRequest(
+    config,
+    undefined,
+    {
+      jsonrpc: "2.0",
+      id: nextRpcId(),
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-03-26",
+        capabilities: {},
+        clientInfo: {
+          name: "pac-investment-advisor-connectors",
+          version: "0.0.0",
+        },
       },
     },
-  }, z.unknown());
+    z.unknown(),
+  );
 
   if (!initialized.sessionId) {
-    throw new Error("Investment advisor MCP initialize response did not include Mcp-Session-Id.");
+    throw new Error(
+      "Investment advisor MCP initialize response did not include Mcp-Session-Id.",
+    );
   }
 
   await postMcpNotification(config, initialized.sessionId, {
@@ -479,15 +573,20 @@ export async function callInvestmentAdvisorMcpTool(
     params: {},
   });
 
-  const called = await postMcpRequest(config, initialized.sessionId, {
-    jsonrpc: "2.0",
-    id: nextRpcId(),
-    method: "tools/call",
-    params: {
-      name: toolName,
-      arguments: input,
+  const called = await postMcpRequest(
+    config,
+    initialized.sessionId,
+    {
+      jsonrpc: "2.0",
+      id: nextRpcId(),
+      method: "tools/call",
+      params: {
+        name: toolName,
+        arguments: input,
+      },
     },
-  }, McpToolCallResultSchema);
+    McpToolCallResultSchema,
+  );
 
   return called.result;
 }
@@ -501,16 +600,20 @@ export async function callInvestmentAdvisorMcpTool(
 function readMcpConfig(): McpConfig {
   const url = process.env.PAC_INVESTMENT_ADVISOR_MCP_URL?.trim();
   if (!url) {
-    throw new Error("Missing PAC_INVESTMENT_ADVISOR_MCP_URL for investment advisor MCP connectors.");
+    throw new Error(
+      "Missing PAC_INVESTMENT_ADVISOR_MCP_URL for investment advisor MCP connectors.",
+    );
   }
 
   const headers: Record<string, string> = {};
-  const authorization = process.env.PAC_INVESTMENT_ADVISOR_MCP_AUTHORIZATION?.trim();
+  const authorization =
+    process.env.PAC_INVESTMENT_ADVISOR_MCP_AUTHORIZATION?.trim();
   if (authorization) {
     headers.Authorization = authorization;
   }
 
-  const rawHeaders = process.env.PAC_INVESTMENT_ADVISOR_MCP_HEADERS_JSON?.trim();
+  const rawHeaders =
+    process.env.PAC_INVESTMENT_ADVISOR_MCP_HEADERS_JSON?.trim();
   if (rawHeaders) {
     Object.assign(headers, HeaderMapSchema.parse(JSON.parse(rawHeaders)));
   }
@@ -538,20 +641,28 @@ async function postMcpRequest<T>(
   const text = await response.text();
 
   if (!response.ok) {
-    throw new Error(`Investment advisor MCP request failed: HTTP ${response.status} ${response.statusText}.`);
+    throw new Error(
+      `Investment advisor MCP request failed: HTTP ${response.status} ${response.statusText}.`,
+    );
   }
 
   const envelope = JsonRpcEnvelopeSchema.parse(parseMcpResponse(text));
   if (envelope.error) {
-    throw new Error(`Investment advisor MCP JSON-RPC error: ${envelope.error.message}`);
+    throw new Error(
+      `Investment advisor MCP JSON-RPC error: ${envelope.error.message}`,
+    );
   }
   if (!Object.hasOwn(envelope, "result")) {
-    throw new Error("Investment advisor MCP JSON-RPC response did not include a result.");
+    throw new Error(
+      "Investment advisor MCP JSON-RPC response did not include a result.",
+    );
   }
 
   const result = resultSchema.parse(envelope.result);
   const returnedSessionId = response.headers.get("mcp-session-id");
-  return returnedSessionId ? { result, sessionId: returnedSessionId } : { result };
+  return returnedSessionId
+    ? { result, sessionId: returnedSessionId }
+    : { result };
 }
 
 /**
@@ -560,7 +671,11 @@ async function postMcpRequest<T>(
  * Output: none.
  * Boundary: only transport failure is checked because JSON-RPC notifications have no result.
  */
-async function postMcpNotification(config: McpConfig, sessionId: string, body: unknown): Promise<void> {
+async function postMcpNotification(
+  config: McpConfig,
+  sessionId: string,
+  body: unknown,
+): Promise<void> {
   const response = await fetch(config.url, {
     method: "POST",
     headers: buildMcpHeaders(config, sessionId),
@@ -569,7 +684,9 @@ async function postMcpNotification(config: McpConfig, sessionId: string, body: u
 
   await response.text();
   if (!response.ok) {
-    throw new Error(`Investment advisor MCP notification failed: HTTP ${response.status} ${response.statusText}.`);
+    throw new Error(
+      `Investment advisor MCP notification failed: HTTP ${response.status} ${response.statusText}.`,
+    );
   }
 }
 
@@ -579,7 +696,10 @@ async function postMcpNotification(config: McpConfig, sessionId: string, body: u
  * Output: headers accepted by JSON and SSE MCP responses.
  * Boundary: user-supplied headers can override only endpoint-specific values, not content negotiation.
  */
-function buildMcpHeaders(config: McpConfig, sessionId: string | undefined): Record<string, string> {
+function buildMcpHeaders(
+  config: McpConfig,
+  sessionId: string | undefined,
+): Record<string, string> {
   return {
     ...config.headers,
     "Content-Type": "application/json",
@@ -627,7 +747,9 @@ function extractLastSseData(text: string): string {
 
   const last = dataBlocks.at(-1);
   if (!last) {
-    throw new Error("Investment advisor MCP SSE response did not include a data block.");
+    throw new Error(
+      "Investment advisor MCP SSE response did not include a data block.",
+    );
   }
 
   return last;

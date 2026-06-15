@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { WorkflowMessage } from "./runtime/messages.js";
 
 export type JsonRecord = Record<string, unknown>;
 export type MaybePromise<T> = T | Promise<T>;
@@ -11,6 +12,7 @@ export interface SessionContext {
   sessionId: string;
   userId: string;
   activeWorkflowIds: WorkflowId[];
+  messages: WorkflowMessage[];
   facts: JsonRecord;
   preferences: JsonRecord;
   goals: string[];
