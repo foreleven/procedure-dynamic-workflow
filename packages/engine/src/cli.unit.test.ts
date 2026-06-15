@@ -223,6 +223,27 @@ test("createLogger prints node step loading events in non-debug mode", () => {
   ]);
 });
 
+test("createLogger prints routing active workflows in non-debug mode", () => {
+  const output: string[] = [];
+  const originalLog = console.log;
+  console.log = (value?: unknown) => {
+    output.push(String(value));
+  };
+
+  try {
+    const logger = createLogger(false);
+    logger('[engine] engine routing.gate.new_session event {"action":"switch","targetWorkflowIds":["flow_a","flow_b"]}');
+    logger('[engine] engine routing.gate.existing_session event {"action":"none","targetWorkflowIds":[]}');
+  } finally {
+    console.log = originalLog;
+  }
+
+  assert.deepEqual(output, [
+    "- Routing active workflows: flow_a, flow_b",
+    "- Routing active workflows: none",
+  ]);
+});
+
 test("loadWorkflows accepts workflow array exports and loadWorkflow rejects them", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pac-engine-loader-"));
   const modulePath = join(dir, "multi-workflow.mjs");

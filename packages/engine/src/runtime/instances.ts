@@ -111,7 +111,7 @@ export class RuntimeInstanceStore {
 
   /**
    * Adds a workflow to the session's active list and prepares its runtime instance.
-   * Input: session and workflow id selected by local routing.
+   * Input: session and workflow id selected by the routing subsystem.
    * Output: mutates session.activeWorkflowIds only when the workflow is registered and not already active.
    * Boundary: selection scoring remains in WorkflowEngine; this only applies the attachment.
    */

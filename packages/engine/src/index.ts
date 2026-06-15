@@ -17,4 +17,21 @@ export type {
   WorkflowSnapshot,
   WorkflowDefinitionInput,
   WorkflowEngineOptions,
+  WorkflowRoutingOptions,
 } from "./types.js";
+export {
+  AllWorkflowCandidateProvider,
+  WorkflowCandidateProvider,
+} from "./routing/candidate-provider.js";
+export {
+  FlashLlmRouteGate,
+  RouteGate,
+} from "./routing/route-gate.js";
+export {
+  WorkflowRouter,
+} from "./routing/router.js";
+export type {
+  RoutingAction,
+  WorkflowRoutingInput,
+  WorkflowRoutingResult,
+} from "./routing/router.js";

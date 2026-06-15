@@ -2,12 +2,12 @@ import {
   type JsonRecord,
   type MessagePatch,
   type WorkflowId,
+  type WorkflowMessage,
   type WorkflowRuntimeState,
 } from "@pac/workflow";
 import { cloneDefault, normalizeMessagePatch } from "./patching.js";
 import { errorMessage } from "./utils/errors.js";
 import { safeJsonStringify } from "./utils/json.js";
-import { scoreWorkflow } from "./routing.js";
 import { RuntimeInstanceStore } from "./runtime/instances.js";
 import { createEngineSession } from "./session.js";
 import {
@@ -20,6 +20,9 @@ import { ResponseRenderer } from "./runtime/response-renderer.js";
 import { WorkflowNodeRunner } from "./runtime/node-runner.js";
 import { applyWorkflowInvalidation, applyWorkflowMessagePatch } from "./runtime/mutations.js";
 import { RuntimeTracer } from "./runtime/tracer.js";
+import { LlmWorkflowRouter } from "./routing/llm-workflow-router.js";
+import { RoutingPlanApplier } from "./routing/routing-plan-applier.js";
+import type { WorkflowRouter, WorkflowRoutingResult } from "./routing/router.js";
 import {
   firstDuplicate,
   toRuntimeWorkflow,
@@ -43,6 +46,9 @@ export class WorkflowEngine {
   private readonly renderer: ResponseRenderer;
   private readonly tracer: RuntimeTracer;
   private readonly deps: WorkflowEngineOptions["deps"];
+  private readonly router: WorkflowRouter;
+  private readonly routingPlanApplier = new RoutingPlanApplier();
+  private readonly recentMessageLimit: number;
 
   constructor(options: WorkflowEngineOptions) {
     if (options.maxProgramRounds !== undefined && !isPositiveInteger(options.maxProgramRounds)) {
@@ -63,6 +69,16 @@ export class WorkflowEngine {
     this.tracer = new RuntimeTracer(options.logger);
     this.nodeRunner = new WorkflowNodeRunner(options.deps, this.tracer, options.maxProgramRounds ?? 6);
     this.renderer = new ResponseRenderer(options.deps, this.tracer, options.onResponseDelta);
+    this.router = options.routing?.router ?? new LlmWorkflowRouter({
+      llm: options.deps.llm,
+      gate: options.routing?.gate,
+      candidateProvider: options.routing?.candidateProvider,
+      gateModel: options.routing?.gateModel,
+      minGateConfidence: options.routing?.minGateConfidence,
+      maxWorkflowProfiles: options.routing?.maxWorkflowProfiles,
+      recentMessageLimit: options.routing?.recentMessageLimit,
+    });
+    this.recentMessageLimit = options.routing?.recentMessageLimit ?? 8;
   }
 
   createSession(input: CreateSessionInput): EngineSession {
@@ -93,8 +109,12 @@ export class WorkflowEngine {
     const traces: EngineTraceEvent[] = [];
     const turnChanges = new TurnChangeTracker();
     const turnStartedAt = this.tracer.start("engine", "turn", { message });
+    const activeInstances = this.instances.forIds(session, session.activeWorkflowIds);
+    const recentMessages = recentWorkflowMessages(activeInstances, this.recentMessageLimit);
+    const speculativePatchPromise = this.extractSpeculativeActivePatches(message, activeInstances);
 
-    const targets = this.selectTargetWorkflows(message, session, traces);
+    const routed = await this.selectTargetWorkflows(message, session, activeInstances, recentMessages, traces);
+    const targets = routed.selection;
     const preStates = new Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>(
       targets.instances.map((instance) => [instance.id, withRuntimeMessages(cloneDefault(instance.state))]),
     );
@@ -120,8 +140,11 @@ export class WorkflowEngine {
         this.nodeRunner.runStageOnce(instance, session, message, traces, turnChanges, preStates, "withPatch"),
       ),
     );
-    const patches = await Promise.all(
-      targets.instances.map((instance) => this.extractPatch(instance, traces)),
+    const patches = await this.extractTargetPatches(
+      targets.instances,
+      routed.result,
+      speculativePatchPromise,
+      traces,
     );
 
     this.applyPatches(targets.instances, patches, session, traces, turnChanges);
@@ -169,81 +192,62 @@ export class WorkflowEngine {
     return undefined;
   }
 
-  private selectTargetWorkflows(
+  private async selectTargetWorkflows(
     message: string,
     session: EngineSession,
+    activeInstances: RuntimeInstance[],
+    recentMessages: readonly WorkflowMessage[],
     traces: EngineTraceEvent[],
-  ): TargetSelection {
-    if (session.activeWorkflowIds.length > 0) {
-      const startedAt = this.tracer.start("engine", "routing.active");
-      const instances = this.instances.forIds(session, session.activeWorkflowIds);
-      traces.push({
-        workflowId: instances[0]?.id ?? "none",
-        phase: "routing.active",
-        detail: instances.map((instance) => instance.id),
-      });
-      this.tracer.done("engine", "routing.active", startedAt, instances.map((instance) => instance.id));
-
-      return {
-        instances,
-        ids: new Set(instances.map((instance) => instance.id)),
-      };
-    }
-
-    const startedAt = this.tracer.start("engine", "routing.local");
-    const matches = this.findMatchingWorkflows(message);
-    if (matches.length === 0) {
-      traces.push({ workflowId: "none", phase: "routing.none" });
-      this.tracer.done("engine", "routing.local", startedAt, { matched: false });
-      return { instances: [], ids: new Set() };
-    }
-
-    for (const match of matches) {
-      this.instances.attach(session, match.workflow.id);
-    }
-    const instances = this.instances.forIds(session, matches.map((match) => match.workflow.id));
-
-    for (const match of matches) {
-      traces.push({
-        workflowId: match.workflow.id,
-        phase: "routing.local",
-        detail: { score: match.score },
-      });
-    }
-    this.tracer.done("engine", "routing.local", startedAt, {
-      workflowIds: matches.map((match) => match.workflow.id),
-      scores: Object.fromEntries(matches.map((match) => [match.workflow.id, match.score])),
+  ): Promise<RoutedTargetSelection> {
+    const gatePhase = activeInstances.length > 0 ? "routing.gate.existing_session" : "routing.gate.new_session";
+    const startedAt = this.tracer.start("engine", "routing", {
+      mode: activeInstances.length > 0 ? "existing_session" : "new_session",
+    });
+    const result = await this.router.route({
+      message,
+      session,
+      workflows: [...this.registry.values()],
+      activeInstances,
+      recentMessages,
+    });
+    const selection = this.routingPlanApplier.apply({
+      session,
+      instances: this.instances,
+      activeInstances,
+      result,
     });
 
-    return {
-      instances,
-      ids: new Set(instances.map((item) => item.id)),
+    const detail = {
+      action: result.action,
+      targetWorkflowIds: result.targetWorkflowIds,
+      suspendedWorkflowIds: result.suspendedWorkflowIds,
+      ...(result.detail === undefined ? {} : { detail: result.detail }),
     };
-  }
+    const phase = isProtocolFastPathResult(result) ? "routing.protocol_fast_path" : gatePhase;
+    traces.push({
+      workflowId: "engine",
+      phase,
+      detail,
+    });
+    traces.push({
+      workflowId: "engine",
+      phase: `routing.${result.action}`,
+      detail,
+    });
+    this.tracer.event("engine", phase, detail);
+    this.tracer.done("engine", "routing", startedAt, detail);
 
-  private findMatchingWorkflows(message: string): Array<{ workflow: RuntimeWorkflow; score: number }> {
-    const candidates = [...this.registry.values()]
-      .map((workflow) => ({
-        workflow,
-        score: scoreWorkflow(message, workflow),
-      }))
-      .filter((candidate) => candidate.score > 0)
-      .sort((a, b) => b.score - a.score);
-
-    const accepted = candidates.filter((candidate) => candidate.score >= candidate.workflow.routing.thresholds.localAccept);
-    if (accepted.length > 0) return accepted;
-
-    const [best] = candidates;
-    if (best && best.score >= best.workflow.routing.thresholds.localUncertain) return [best];
-    return [];
+    return { selection, result };
   }
 
   private async extractPatch(
     instance: RuntimeInstance,
     traces: EngineTraceEvent[],
+    state: WorkflowRuntimeState<JsonRecord> = instance.state,
+    mode: "live" | "speculative" = "live",
   ): Promise<MessagePatch> {
     const name = `${instance.id}_patch`;
-    if (instance.artifact.patch.progress) {
+    if (mode === "live" && instance.artifact.patch.progress) {
       this.tracer.progress(traces, instance.id, {
         node: name,
         stage: "patch",
@@ -261,9 +265,9 @@ export class WorkflowEngine {
       const patch = await this.deps.llm.structured({
         name,
         ...(instance.artifact.patch.model ? { model: instance.artifact.patch.model } : {}),
-        instruction: patchInstructionForRuntime(instance.artifact.patch.instruction, now, instance.state),
+        instruction: patchInstructionForRuntime(instance.artifact.patch.instruction, now, state),
         schema: instance.artifact.patch.schema,
-        messages: messagesForPatch(instance.state),
+        messages: messagesForPatch(state),
       });
 
       const normalized = normalizeMessagePatch(patch);
@@ -273,6 +277,67 @@ export class WorkflowEngine {
       this.tracer.done(instance.id, "llm.patch", startedAt, { error: errorMessage(error) });
       throw error;
     }
+  }
+
+  private extractSpeculativeActivePatches(
+    message: string,
+    activeInstances: readonly RuntimeInstance[],
+  ): Promise<SpeculativePatchResult[]> | undefined {
+    if (activeInstances.length === 0) return undefined;
+    return Promise.all(
+      activeInstances.map(async (instance): Promise<SpeculativePatchResult> => {
+        const transientState = withRuntimeMessages(cloneDefault(instance.state));
+        appendWorkflowMessage(transientState, { role: "user", content: message });
+        try {
+          return {
+            workflowId: instance.id,
+            patch: await this.extractPatch(instance, [], transientState, "speculative"),
+          };
+        } catch (error) {
+          return {
+            workflowId: instance.id,
+            error,
+          };
+        }
+      }),
+    );
+  }
+
+  private async extractTargetPatches(
+    instances: RuntimeInstance[],
+    routingResult: WorkflowRoutingResult,
+    speculativePatchPromise: Promise<SpeculativePatchResult[]> | undefined,
+    traces: EngineTraceEvent[],
+  ): Promise<MessagePatch[]> {
+    const speculativeByWorkflow = new Map<WorkflowId, SpeculativePatchResult>();
+    if (
+      speculativePatchPromise &&
+      (routingResult.action === "continue" || routingResult.action === "parallel")
+    ) {
+      for (const result of await speculativePatchPromise) {
+        speculativeByWorkflow.set(result.workflowId, result);
+      }
+    } else if (speculativePatchPromise) {
+      void speculativePatchPromise;
+      traces.push({
+        workflowId: "engine",
+        phase: "routing.speculative_patch.discard",
+        detail: { action: routingResult.action },
+      });
+    }
+
+    return Promise.all(
+      instances.map((instance) => {
+        const speculative = speculativeByWorkflow.get(instance.id);
+        if (speculative) {
+          if ("error" in speculative) {
+            throw speculative.error;
+          }
+          return speculative.patch;
+        }
+        return this.extractPatch(instance, traces);
+      }),
+    );
   }
 
   private applyPatches(
@@ -295,12 +360,36 @@ export class WorkflowEngine {
 
 }
 
+interface RoutedTargetSelection {
+  selection: TargetSelection;
+  result: WorkflowRoutingResult;
+}
+
+type SpeculativePatchResult =
+  | {
+      workflowId: WorkflowId;
+      patch: MessagePatch;
+    }
+  | {
+      workflowId: WorkflowId;
+      error: unknown;
+    };
+
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
 function isPositiveInteger(value: unknown): boolean {
   return typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+
+function recentWorkflowMessages(
+  instances: readonly RuntimeInstance[],
+  limit: number,
+): WorkflowMessage[] {
+  if (limit <= 0) return [];
+  const messages = instances.flatMap((instance) => instance.state.messages);
+  return messages.slice(Math.max(0, messages.length - limit));
 }
 
 function patchInstructionForRuntime(instruction: string, now: string, state: JsonRecord): string {
@@ -341,4 +430,13 @@ function stateForPatch(state: JsonRecord): JsonRecord {
     snapshot[key] = value;
   }
   return snapshot;
+}
+
+function isProtocolFastPathResult(result: WorkflowRoutingResult): boolean {
+  return Boolean(
+    result.detail &&
+    typeof result.detail === "object" &&
+    "reason" in result.detail &&
+    (result.detail as { reason?: unknown }).reason === "ack_resolved",
+  );
 }

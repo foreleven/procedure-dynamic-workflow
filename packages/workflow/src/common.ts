@@ -18,8 +18,11 @@ export interface SessionContext {
   conversationSummary?: string;
   sharedCache: Map<string, unknown>;
   routingMemory: {
+    summary?: string;
     lastMatchedWorkflowIds: WorkflowId[];
     lastGlobalSearchAt?: number;
+    suspendedWorkflowIds?: WorkflowId[];
+    lastRoutingAction?: "continue" | "switch" | "parallel" | "clarify" | "none";
   };
 }
 

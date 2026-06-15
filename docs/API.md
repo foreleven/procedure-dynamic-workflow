@@ -249,10 +249,10 @@ Use this package to execute workflow artifacts.
 ### Public Surface Index
 
 Runtime exports:
-- `WorkflowEngine` and `createLlmClient`.
+- `AllWorkflowCandidateProvider`, `FlashLlmRouteGate`, `RouteGate`, `WorkflowCandidateProvider`, `WorkflowEngine`, `WorkflowRouter`, and `createLlmClient`.
 
 Public types:
-- `CreateSessionInput`, `EngineDeps`, `EngineSession`, `EngineTraceEvent`, `EngineTurnResult`, `LlmClient`, `LlmClientOptions`, `LlmStructuredRequest`, `LlmTextRequest`, `LlmTextStreamEvent`, `LlmUsage`, `WorkflowDefinitionInput`, `WorkflowEngineOptions`, and `WorkflowSnapshot`.
+- `CreateSessionInput`, `EngineDeps`, `EngineSession`, `EngineTraceEvent`, `EngineTurnResult`, `LlmClient`, `LlmClientOptions`, `LlmStructuredRequest`, `LlmTextRequest`, `LlmTextStreamEvent`, `LlmUsage`, `RoutingAction`, `WorkflowDefinitionInput`, `WorkflowEngineOptions`, `WorkflowRoutingInput`, `WorkflowRoutingOptions`, `WorkflowRoutingResult`, and `WorkflowSnapshot`.
 
 ### Engine
 
@@ -265,6 +265,7 @@ Input:
 - `deps.llm`: an `LlmClient`.
 - `deps.connectors`: a connector registry.
 - `deps.now`: optional clock override.
+- `routing`: optional workflow router, route gate, candidate provider, gate model, confidence, and profile/message limits.
 - `maxProgramRounds`: maximum stabilizing rounds for after-patch nodes.
 - `logger`: optional engine/LLM log sink.
 - `onResponseDelta`: optional stream delta callback.
@@ -278,8 +279,10 @@ Behavior:
 - rejects duplicate workflow ids during construction;
 - serializes logger diagnostics defensively so non-serializable runtime values do not crash execution;
 - emits `node.step.start` and `node.step.end` traces for workflow-owned loading steps;
-- routes new sessions to every locally matched workflow, ordered by routing score;
-- keeps active sessions on active workflows and runs multiple active workflows in the same turn;
+- routes new sessions through a structured workflow-level route gate before running any workflow;
+- routes existing sessions through protocol fast path or a structured route gate that can continue, switch, run parallel workflows, clarify, or select no workflow;
+- keeps short replies that resolve an active workflow acknowledgement on the active workflow without calling the route gate;
+- supports custom `WorkflowRouter`, `RouteGate`, and `WorkflowCandidateProvider` implementations through `WorkflowEngineOptions.routing`;
 - appends runtime message history and converts workflow tool messages into paired PI assistant tool-call and tool-result messages;
 - extracts structured patches through `deps.llm.structured(...)`;
 - reserves the workflow state field `messages` for runtime history and ignores attempts to write it through state patches;

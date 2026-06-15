@@ -10,10 +10,14 @@ import type {
   WorkflowDeps,
   WorkflowId,
   WorkflowInstance,
+  WorkflowMessage,
   WorkflowNodeStage,
   WorkflowRuntimeState,
 } from "@pac/workflow";
 import type { LlmClient } from "./llm/client.js";
+import type { RouteGate } from "./routing/route-gate.js";
+import type { WorkflowCandidateProvider } from "./routing/candidate-provider.js";
+import type { WorkflowRouter } from "./routing/router.js";
 
 export type RuntimeWorkflow = WorkflowDefinition<JsonRecord, unknown>;
 export type RuntimeInstance = WorkflowInstance<JsonRecord>;
@@ -69,13 +73,24 @@ export interface EngineDeps extends WorkflowDeps {
 export interface WorkflowEngineOptions {
   workflows: readonly WorkflowDefinitionInput[];
   deps: EngineDeps;
+  routing?: WorkflowRoutingOptions | undefined;
   maxProgramRounds?: number;
   logger?: (line: string) => void;
   onResponseDelta?: (event: { workflowId: WorkflowId; delta: string }) => void;
 }
 
+export interface WorkflowRoutingOptions {
+  router?: WorkflowRouter | undefined;
+  gate?: RouteGate | undefined;
+  candidateProvider?: WorkflowCandidateProvider | undefined;
+  gateModel?: string | undefined;
+  minGateConfidence?: number | undefined;
+  maxWorkflowProfiles?: number | undefined;
+  recentMessageLimit?: number | undefined;
+}
+
 export interface EngineTraceEvent {
-  workflowId: WorkflowId;
+  workflowId: WorkflowId | "engine";
   phase: string;
   detail?: unknown;
 }
@@ -91,3 +106,5 @@ export interface TargetSelection {
   instances: RuntimeInstance[];
   ids: Set<WorkflowId>;
 }
+
+export type RecentWorkflowMessage = WorkflowMessage;

@@ -34,12 +34,15 @@ interface EffectDependencyState {
   runs: number;
 }
 
-test("WorkflowEngine returns fallback response when local routing does not match", async () => {
+test("WorkflowEngine returns fallback response when the route gate does not match", async () => {
   const llm: LlmClient = {
     async text() {
       throw new Error("text generation should not run without a matched workflow");
     },
-    async structured() {
+    async structured(request) {
+      if (request.name === "workflow_route") {
+        return request.schema.parse(routeDecisionForRequest(request));
+      }
       throw new Error("patch extraction should not run without a matched workflow");
     },
   };
@@ -57,6 +60,74 @@ test("WorkflowEngine returns fallback response when local routing does not match
   assert.equal(result.response.text, "我还不能确定要执行哪个 workflow。");
   assert.deepEqual(result.responses, []);
   assert.deepEqual(session.activeWorkflowIds, []);
+});
+
+test("WorkflowEngine fails closed when the route gate output is malformed", async () => {
+  const structuredCalls: unknown[] = [];
+  const llm: LlmClient & { structuredCalls: unknown[] } = {
+    structuredCalls,
+    async text() {
+      throw new Error("text generation should not run without a matched workflow");
+    },
+    async structured(request) {
+      structuredCalls.push(request);
+      if (request.name === "workflow_route") {
+        throw new Error("malformed route output");
+      }
+      throw new Error("patch extraction should not run after a malformed route decision");
+    },
+  };
+  const engine = new WorkflowEngine({
+    workflows: [createTestWorkflow()],
+    deps: {
+      llm,
+      connectors: createConnectorRegistry(),
+    },
+  });
+  const session = engine.createSession({ sessionId: "session_malformed_route", userId: "user_malformed_route" });
+
+  const result = await engine.onMessage("please route me", session);
+
+  assert.equal(result.response.text, "我还不能确定要执行哪个 workflow。");
+  assert.deepEqual(result.responses, []);
+  assert.deepEqual(session.activeWorkflowIds, []);
+  assert.equal(routeCallCount(llm), 1);
+  assert.equal(patchCallCount(llm), 0);
+  assert.ok(result.traces.some((trace) => trace.phase === "routing.none"));
+});
+
+test("WorkflowEngine fails closed when the route gate returns an unknown workflow id", async () => {
+  const structuredCalls: unknown[] = [];
+  const llm: LlmClient & { structuredCalls: unknown[] } = {
+    structuredCalls,
+    async text() {
+      throw new Error("text generation should not run without a matched workflow");
+    },
+    async structured(request) {
+      structuredCalls.push(request);
+      if (request.name === "workflow_route") {
+        return request.schema.parse(routeDecision("switch", ["missing_flow"], []));
+      }
+      throw new Error("patch extraction should not run after an invalid route decision");
+    },
+  };
+  const engine = new WorkflowEngine({
+    workflows: [createTestWorkflow()],
+    deps: {
+      llm,
+      connectors: createConnectorRegistry(),
+    },
+  });
+  const session = engine.createSession({ sessionId: "session_unknown_route", userId: "user_unknown_route" });
+
+  const result = await engine.onMessage("please route me", session);
+
+  assert.equal(result.response.text, "我还不能确定要执行哪个 workflow。");
+  assert.deepEqual(result.responses, []);
+  assert.deepEqual(session.activeWorkflowIds, []);
+  assert.equal(routeCallCount(llm), 1);
+  assert.equal(patchCallCount(llm), 0);
+  assert.ok(result.traces.some((trace) => trace.phase === "routing.none"));
 });
 
 test("WorkflowEngine routes, patches, invalidates, runs nodes, and renders function output", async () => {
@@ -94,12 +165,12 @@ test("WorkflowEngine routes, patches, invalidates, runs nodes, and renders funct
     role: "assistant",
     content: result.response.text,
   });
-  assert.equal(llm.structuredCalls.length, 1);
-  assert.ok(result.traces.some((trace) => trace.phase === "routing.local" && trace.workflowId === "test_flow"));
+  assert.equal(patchCallCount(llm), 1);
+  assert.ok(result.traces.some((trace) => trace.phase === "routing.gate.new_session" && trace.workflowId === "engine"));
   assert.ok(result.traces.some((trace) => trace.phase === "invalidate"));
 });
 
-test("WorkflowEngine routes to every locally matched workflow", async () => {
+test("WorkflowEngine routes to every gate-matched workflow", async () => {
   const llm = createPatchLlm({ statePatch: { selected: "matched" } });
   const engine = new WorkflowEngine({
     workflows: [createTestWorkflow(), createCompetingWorkflow()],
@@ -114,12 +185,11 @@ test("WorkflowEngine routes to every locally matched workflow", async () => {
 
   assert.deepEqual(result.responses.map((response) => response.workflowId), ["test_flow", "competing_flow"]);
   assert.deepEqual(session.activeWorkflowIds, ["test_flow", "competing_flow"]);
-  assert.equal(llm.structuredCalls.length, 2);
-  assert.ok(result.traces.some((trace) => trace.phase === "routing.local" && trace.workflowId === "test_flow"));
-  assert.ok(result.traces.some((trace) => trace.phase === "routing.local" && trace.workflowId === "competing_flow"));
+  assert.equal(patchCallCount(llm), 2);
+  assert.ok(result.traces.some((trace) => trace.phase === "routing.gate.new_session" && trace.workflowId === "engine"));
 });
 
-test("WorkflowEngine suppresses weak local matches when an accepted workflow exists", async () => {
+test("WorkflowEngine suppresses weak gate matches when an accepted workflow exists", async () => {
   const llm = createPatchLlm({ statePatch: { selected: "matched" } });
   const engine = new WorkflowEngine({
     workflows: [createTestWorkflow(), createWeakRouteWorkflow()],
@@ -134,8 +204,8 @@ test("WorkflowEngine suppresses weak local matches when an accepted workflow exi
 
   assert.deepEqual(result.responses.map((response) => response.workflowId), ["test_flow"]);
   assert.deepEqual(session.activeWorkflowIds, ["test_flow"]);
-  assert.equal(llm.structuredCalls.length, 1);
-  assert.ok(!result.traces.some((trace) => trace.phase === "routing.local" && trace.workflowId === "weak_route_flow"));
+  assert.equal(patchCallCount(llm), 1);
+  assert.ok(!result.responses.some((response) => response.workflowId === "weak_route_flow"));
 });
 
 test("WorkflowEngine exposes workflow snapshots without leaking mutable runtime instances", async () => {
@@ -442,6 +512,9 @@ test("WorkflowEngine runs dependency-gated effects once per dependency snapshot 
 test("WorkflowEngine validates LLM render text output", async () => {
   const llm: LlmClient = {
     async structured(request) {
+      if (request.name === "workflow_route") {
+        return request.schema.parse(routeDecisionForRequest(request));
+      }
       return request.schema.parse({ statePatch: {} });
     },
     async text() {
@@ -470,6 +543,9 @@ test("WorkflowEngine validates LLM render text output", async () => {
 test("WorkflowEngine validates LLM stream events", async () => {
   const llm: LlmClient = {
     async structured(request) {
+      if (request.name === "workflow_route") {
+        return request.schema.parse(routeDecisionForRequest(request));
+      }
       return request.schema.parse({ statePatch: {} });
     },
     async text() {
@@ -601,7 +677,7 @@ test("WorkflowEngine stops unstable afterPatch nodes at maxProgramRounds", async
   assert.ok(result.traces.some((trace) => trace.phase === "nodes.afterPatch.maxRounds"));
 });
 
-test("WorkflowEngine keeps routing to active workflows instead of rematching local keywords", async () => {
+test("WorkflowEngine can switch away from active workflows through the route gate", async () => {
   const llm = createPatchLlm({ statePatch: { selected: "active" } });
   const engine = new WorkflowEngine({
     workflows: [createTestWorkflow(), createCompetingWorkflow()],
@@ -620,12 +696,61 @@ test("WorkflowEngine keeps routing to active workflows instead of rematching loc
   const activeInstance = engine.getWorkflowSnapshot<TestState>(session, "test_flow");
   const competingInstance = engine.getWorkflowSnapshot<TestState>(session, "competing_flow");
 
-  assert.deepEqual(result.responses.map((response) => response.workflowId), ["test_flow"]);
-  assert.deepEqual(session.activeWorkflowIds, ["test_flow"]);
-  assert.equal(activeInstance?.state.selected, "active");
-  assert.equal(competingInstance, undefined);
-  assert.ok(result.traces.some((trace) => trace.phase === "routing.active"));
-  assert.equal(llm.structuredCalls.length, 1);
+  assert.deepEqual(result.responses.map((response) => response.workflowId), ["competing_flow"]);
+  assert.deepEqual(session.activeWorkflowIds, ["competing_flow"]);
+  assert.deepEqual(session.routingMemory.suspendedWorkflowIds, ["test_flow"]);
+  assert.equal(activeInstance?.state.selected, null);
+  assert.equal(competingInstance?.state.selected, "active");
+  assert.ok(result.traces.some((trace) => trace.phase === "routing.switch"));
+  assert.equal(patchCallCount(llm), 2);
+});
+
+test("WorkflowEngine can append a parallel workflow through the route gate", async () => {
+  const llm = createPatchLlm({ statePatch: { selected: "active" } });
+  const engine = new WorkflowEngine({
+    workflows: [createTestWorkflow(), createCompetingWorkflow()],
+    deps: {
+      llm,
+      connectors: createConnectorRegistry(),
+    },
+  });
+  const session = engine.createSession({
+    sessionId: "session_parallel_route",
+    userId: "user_parallel_route",
+    activeWorkflowIds: ["test_flow"],
+  });
+
+  const result = await engine.onMessage("also competitor", session);
+
+  assert.deepEqual(result.responses.map((response) => response.workflowId), ["test_flow", "competing_flow"]);
+  assert.deepEqual(session.activeWorkflowIds, ["test_flow", "competing_flow"]);
+  assert.equal(session.routingMemory.suspendedWorkflowIds, undefined);
+  assert.ok(result.traces.some((trace) => trace.phase === "routing.parallel"));
+});
+
+test("WorkflowEngine skips the route gate when a short reply resolves active ack", async () => {
+  const llm = createPatchLlm({ statePatch: {} });
+  const engine = new WorkflowEngine({
+    workflows: [createAckWorkflow()],
+    deps: {
+      llm,
+      connectors: createConnectorRegistry(),
+    },
+  });
+  const session = engine.createSession({
+    sessionId: "session_ack_fast_path",
+    userId: "user_ack_fast_path",
+    activeWorkflowIds: ["ack_flow"],
+  });
+
+  await engine.onMessage("start ack", session);
+  const routeCallsAfterFirstTurn = routeCallCount(llm);
+  const result = await engine.onMessage("确认", session);
+
+  assert.equal(routeCallCount(llm), routeCallsAfterFirstTurn);
+  assert.deepEqual(result.responses.map((response) => response.workflowId), ["ack_flow"]);
+  assert.ok(result.traces.some((trace) => trace.phase === "routing.protocol_fast_path"));
+  assert.ok(result.traces.some((trace) => trace.phase === "routing.continue"));
 });
 
 test("WorkflowEngine rejects invalid active workflow ids during session creation", () => {
@@ -1035,6 +1160,48 @@ function createCompetingWorkflow(): WorkflowDefinition<TestState> {
   };
 }
 
+function createAckWorkflow(): WorkflowDefinition<{ acknowledged: boolean }> {
+  return {
+    id: "ack_flow",
+    version: "0.1.0",
+    description: "Ack workflow test fixture.",
+    routing: defineRouting({
+      examples: ["ack"],
+      entities: ["ack"],
+      neighbors: [],
+    }),
+    stateSchema: z.object({
+      acknowledged: z.boolean(),
+    }),
+    state: {
+      acknowledged: false,
+    },
+    patch: definePatch({
+      state: {},
+    }),
+    invalidation: {},
+    nodes: [
+      {
+        kind: "effect",
+        name: "request_ack",
+        stage: "afterPatch",
+        description: "Stores an ack request so the next short reply can use protocol fast path.",
+        run: ({ context }) => {
+          context.ack({
+            id: "confirm_ack",
+            prompt: "确认继续吗？",
+            options: [{ id: "yes", label: "确认" }],
+          });
+          return {};
+        },
+      },
+    ],
+    render: () => ({
+      text: "ack pending",
+    }),
+  };
+}
+
 function createWeakRouteWorkflow(): WorkflowDefinition<TestState> {
   return {
     ...createTestWorkflow(),
@@ -1268,6 +1435,9 @@ function createPatchLlm(patch: unknown): LlmClient & { structuredCalls: unknown[
     },
     async structured(request) {
       structuredCalls.push(request);
+      if (request.name === "workflow_route") {
+        return request.schema.parse(routeDecisionForRequest(request));
+      }
       return request.schema.parse(patch);
     },
   };
@@ -1283,6 +1453,9 @@ function createSequentialPatchLlm(patches: unknown[]): LlmClient & { structuredC
     },
     async structured(request) {
       structuredCalls.push(request);
+      if (request.name === "workflow_route") {
+        return request.schema.parse(routeDecisionForRequest(request));
+      }
       const patch = patches[patchIndex] ?? {};
       patchIndex += 1;
       return request.schema.parse(patch);
@@ -1309,6 +1482,9 @@ function createStreamingLlm(config: {
     },
     async structured(request) {
       structuredCalls.push(request);
+      if (request.name === "workflow_route") {
+        return request.schema.parse(routeDecisionForRequest(request));
+      }
       return request.schema.parse(config.patch);
     },
     async *streamText(request) {
@@ -1341,6 +1517,9 @@ function createNamedStreamingLlm(config: {
     },
     async structured(request) {
       structuredCalls.push(request);
+      if (request.name === "workflow_route") {
+        return request.schema.parse(routeDecisionForRequest(request));
+      }
       return request.schema.parse(config.patch);
     },
     async *streamText(request) {
@@ -1364,6 +1543,103 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function patchCallCount(llm: { structuredCalls: unknown[] }): number {
+  return llm.structuredCalls.filter((call) => {
+    return !call || typeof call !== "object" || (call as { name?: unknown }).name !== "workflow_route";
+  }).length;
+}
+
+function routeCallCount(llm: { structuredCalls: unknown[] }): number {
+  return llm.structuredCalls.filter((call) => {
+    return call && typeof call === "object" && (call as { name?: unknown }).name === "workflow_route";
+  }).length;
+}
+
+function routeDecisionForRequest(request: {
+  messages: Array<{ content?: unknown }>;
+}): unknown {
+  const payload = parseRoutePayload(request.messages[0]?.content);
+  const latestUserMessage = typeof payload.latestUserMessage === "string" ? payload.latestUserMessage : "";
+  const activeWorkflows = Array.isArray(payload.activeWorkflows) ? payload.activeWorkflows : [];
+  const candidateWorkflows = Array.isArray(payload.candidateWorkflows) ? payload.candidateWorkflows : [];
+  const activeIds = activeWorkflows.flatMap(profileId);
+  const matches = matchingRouteProfiles(latestUserMessage, candidateWorkflows);
+  const matchedIds = matches.flatMap(profileId);
+
+  if (activeIds.length > 0 && matchedIds.length === 0) {
+    return routeDecision("continue", activeIds, []);
+  }
+
+  if (activeIds.length > 0 && matchedIds.every((id) => activeIds.includes(id))) {
+    return routeDecision("continue", activeIds, []);
+  }
+
+  if (matchedIds.length > 0) {
+    if (activeIds.length > 0 && /\balso\b|顺便|同时/.test(latestUserMessage)) {
+      return routeDecision("parallel", matchedIds, []);
+    }
+    return routeDecision("switch", matchedIds, activeIds.filter((id) => !matchedIds.includes(id)));
+  }
+
+  return routeDecision("none", [], []);
+}
+
+function parseRoutePayload(content: unknown): Record<string, unknown> {
+  if (typeof content !== "string") return {};
+  try {
+    const parsed = JSON.parse(content);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function matchingRouteProfiles(message: string, profiles: unknown[]): unknown[] {
+  const normalized = message.toLowerCase();
+  const exampleMatches = profiles.filter((profile) => profileTerms(profile, "examples").some((term) => includesTerm(normalized, term)));
+  if (exampleMatches.length > 0) return exampleMatches;
+
+  const entityMatches = profiles.filter((profile) => profileTerms(profile, "entities").some((term) => includesTerm(normalized, term)));
+  if (entityMatches.length > 0) return entityMatches;
+
+  return profiles.filter((profile) => {
+    const description = profile && typeof profile === "object"
+      ? (profile as { description?: unknown }).description
+      : undefined;
+    if (typeof description !== "string") return false;
+    return description.toLowerCase().split(/[,\s/，、]+/).filter(Boolean).some((term) => includesTerm(normalized, term));
+  });
+}
+
+function profileTerms(profile: unknown, key: "examples" | "entities"): string[] {
+  if (!profile || typeof profile !== "object") return [];
+  const value = (profile as Record<string, unknown>)[key];
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function profileId(profile: unknown): string[] {
+  if (!profile || typeof profile !== "object") return [];
+  const id = (profile as { id?: unknown }).id;
+  return typeof id === "string" ? [id] : [];
+}
+
+function routeDecision(action: string, targetWorkflowIds: string[], suspendedWorkflowIds: string[]): unknown {
+  return {
+    action,
+    targetWorkflowIds,
+    suspendedWorkflowIds,
+    confidence: 0.95,
+    reason: "unit-test route decision",
+  };
+}
+
+function includesTerm(message: string, term: string): boolean {
+  const lowered = term.toLowerCase();
+  return lowered.length >= 2 && message.includes(lowered);
 }
 
 function isTraceReason(detail: unknown, reason: string): boolean {

@@ -167,7 +167,7 @@ npm run chat -- agents/maintenance --case time_ack_then_draft_then_confirm --no-
 
 Add `--debug` to print full engine and LLM logs. Without `--debug`, the CLI only prints workflow progress events, workflow step start/end loading lines, LLM phase durations, and the assistant reply.
 
-The `--workflow` module may export one workflow or an array named/defaulted as `workflows`. For multi-workflow modules, the CLI starts without a preselected active workflow and lets local routing select all matching workflows for each new session.
+The `--workflow` module may export one workflow or an array named/defaulted as `workflows`. For multi-workflow modules, the CLI starts without a preselected active workflow and lets the structured route gate select the matching workflows for each new session.
 
 Render output streams by default when the configured LLM client supports it. Add `--no-stream` to print only the final reply.
 

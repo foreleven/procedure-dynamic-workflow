@@ -141,6 +141,12 @@ export function createLogger(debug: boolean): (line: string) => void {
   }
 
   return (line) => {
+    const routing = routingActiveWorkflowsFromLogLine(line);
+    if (routing) {
+      console.log(routing);
+      return;
+    }
+
     const progress = progressFromLogLine(line);
     if (progress) {
       console.log(progress);
@@ -278,6 +284,17 @@ function stepFromLogLine(line: string): string | undefined {
   }
 
   return undefined;
+}
+
+function routingActiveWorkflowsFromLogLine(line: string): string | undefined {
+  if (!line.includes("[engine] engine routing.") || !line.includes(" event ")) return undefined;
+
+  const detail = parseLogDetail(line);
+  const targetWorkflowIds = detail?.targetWorkflowIds;
+  if (!Array.isArray(targetWorkflowIds)) return undefined;
+
+  const workflowIds = targetWorkflowIds.filter((item): item is string => typeof item === "string" && item.length > 0);
+  return `- Routing active workflows: ${workflowIds.length > 0 ? workflowIds.join(", ") : "none"}`;
 }
 
 function llmDurationFromLogLine(line: string): string | undefined {

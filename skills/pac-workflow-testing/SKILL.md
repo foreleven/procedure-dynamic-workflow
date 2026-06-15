@@ -33,17 +33,20 @@ description: PAC workflow goal-driven scenario testing with formal-user simulati
 
 ## 标准流程
 
-1. 启动一个真实 workflow session。
-   - 手工 CLI 调试可用 `npm run chat:maintenance -- --session-id <id> --no-stream`
-   - 自动 runner 优先直接使用 `WorkflowEngine`，因为同一进程里更容易保留 session、读取 state 和 traces
-2. 给“用户模拟器”这些输入：
+1. 启动真实 workflow runtime。根据测试输入选择一种方式：
+   - 如果已有 `agent.yaml` cases，优先直接用 CLI 执行，例如 `npm run chat -- agents/<name> --all-cases --no-stream` 或 `npm run chat -- agents/<name> --case <id> --no-stream`。CLI 输出是本次 review 的事实来源。
+   - 如果是探索式多轮目标、需要动态生成下一轮用户消息、或需要保留同一 live session 的复杂状态，才考虑直接使用 `WorkflowEngine` 写临时 runner。
+   - 手工 CLI 调试可用 `npm run chat:maintenance -- --session-id <id> --no-stream`。
+2. 生成或读取本轮用户消息：
+   - 对 `agent.yaml` cases，直接读取每个 turn 的 `message` 和 `expect.responseSatisfies`，不要再另写脚本改写输入。
+   - 对探索式目标，给“用户模拟器”这些输入：
    - goal
    - user id
    - turn index / max turns
    - 上一轮 assistant 回复
    - compact state
    - 已发生 transcript
-3. 用户模拟器只输出本轮：
+3. 探索式目标中，用户模拟器只输出本轮：
    ```json
    {
      "send": "1",
@@ -51,11 +54,11 @@ description: PAC workflow goal-driven scenario testing with formal-user simulati
      "stop": false
    }
    ```
-4. 把 `send` 真实发给 workflow。
-5. 记录本轮实际结果：
+4. 把 `send` 真实发给 workflow；如果使用 CLI all-cases，则每个 manifest turn 已由 CLI 真实发送。
+5. 记录本轮实际结果；如果使用 CLI all-cases，至少从 CLI 输出中记录 case id、user message、expected、assistant reply、response workflow ids、runtime error 和耗时：
    - assistant reply
-   - compact state
-   - trace phases
+   - compact state（CLI 没有输出 state 时，明确写 `not captured by CLI`，不要伪造）
+   - trace phases（CLI 未启用 `--traces` 时，明确写 `not captured by CLI`）
    - runtime error
    - turn total duration；从真实发送 `send` 前开始计时，到 evaluator verdict 和本轮 transcript 记录完成为止
 6. 用“本轮评估器”比较 `expected` 和实际结果，输出：
@@ -67,7 +70,7 @@ description: PAC workflow goal-driven scenario testing with formal-user simulati
    }
    ```
 7. 把本轮追加进 transcript，再进入下一轮。不要回头改上一轮，也不要提前补全后续剧本。
-8. 测试结束后为整个场景计算评分，生成 review 文件，并在最终回复里给出文件路径。
+8. 测试结束后为整个场景计算评分，生成 review 文件，并在最终回复里给出文件路径。CLI all-cases 也必须落 review 文件，不能只在对话里总结。
 
 ## 用户模拟器要求
 
