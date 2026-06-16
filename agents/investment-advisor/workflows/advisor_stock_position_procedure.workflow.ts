@@ -1,6 +1,5 @@
 import {
   ToolMessage,
-  defineRouting,
   type ConnectorId,
   type ConnectorInput,
   type WorkflowContext,
@@ -61,18 +60,6 @@ type NormalizedSecurity = {
   capitalFlowCode: string | null;
 };
 
-const metadata = {
-  id: PROCEDURE,
-  version: "1.0.0",
-  description: "投资顾问股票仓位策略研究，处理买入卖出建仓加仓离场持有止盈止损。",
-  routing: defineRouting({
-    examples: ["圣邦股份股票现在可以进吗","比亚迪现在能不能买","比亚迪要不要加仓","隆基绿能止损还是持有"],
-    entities: ["买入","卖出","建仓","加仓","离场","持有","止盈","止损","可以进","能不能买","要不要买"],
-    neighbors: ["trade_order","portfolio_account","risk_assessment"],
-    thresholds: { localAccept: 0.7 },
-  }),
-};
-
 const initialState = AdvisorStateSchema.parse({
   status: "collecting",
   procedure: PROCEDURE,
@@ -99,7 +86,6 @@ const invalidation = {
 } satisfies Partial<Record<keyof AdvisorState & string, Array<keyof AdvisorState & string>>>;
 
 const { patch, effect, render } = workflow<AdvisorState, InvestmentAdvisorConnectorCatalog>({
-  ...metadata,
   stateSchema: AdvisorStateSchema,
   state: initialState,
 });
@@ -174,7 +160,7 @@ effect("collectResearchEvidence", [
 });
 
 export default render({
-  name: metadata.id + "_reply",
+  name: PROCEDURE + "_reply",
   progress: "正在生成仓位策略回复",
   instruction: `
 本 workflow 的回复目标是提供条件化仓位策略和风险控制。

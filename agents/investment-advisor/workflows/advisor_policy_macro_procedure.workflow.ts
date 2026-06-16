@@ -1,6 +1,5 @@
 import {
   ToolMessage,
-  defineRouting,
   type ConnectorId,
   type ConnectorInput,
   type WorkflowContext,
@@ -61,18 +60,6 @@ type NormalizedSecurity = {
   capitalFlowCode: string | null;
 };
 
-const metadata = {
-  id: PROCEDURE,
-  version: "1.0.0",
-  description: "投资顾问政策宏观研究，处理政策宏观经济经济指标贸易摩擦影响。",
-  routing: defineRouting({
-    examples: ["育儿补贴政策对母婴行业的影响","降准对银行股有什么影响","贸易摩擦影响哪些行业"],
-    entities: ["政策","宏观","经济指标","贸易摩擦","降准","补贴"],
-    neighbors: ["trade_order","portfolio_account","risk_assessment"],
-    thresholds: { localAccept: 0.7 },
-  }),
-};
-
 const initialState = AdvisorStateSchema.parse({
   status: "collecting",
   procedure: PROCEDURE,
@@ -99,7 +86,6 @@ const invalidation = {
 } satisfies Partial<Record<keyof AdvisorState & string, Array<keyof AdvisorState & string>>>;
 
 const { patch, effect, render } = workflow<AdvisorState, InvestmentAdvisorConnectorCatalog>({
-  ...metadata,
   stateSchema: AdvisorStateSchema,
   state: initialState,
 });
@@ -174,7 +160,7 @@ effect("collectResearchEvidence", [
 });
 
 export default render({
-  name: metadata.id + "_reply",
+  name: PROCEDURE + "_reply",
   progress: "正在生成政策宏观回复",
   instruction: `
 本 workflow 的回复目标是解释政策或宏观变量的传导路径。

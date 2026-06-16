@@ -1,6 +1,5 @@
 import {
   ToolMessage,
-  defineRouting,
   type ConnectorId,
   type ConnectorInput,
   type WorkflowContext,
@@ -61,18 +60,6 @@ type NormalizedSecurity = {
   capitalFlowCode: string | null;
 };
 
-const metadata = {
-  id: PROCEDURE,
-  version: "1.0.0",
-  description: "投资顾问股票异动原因研究，处理涨跌原因涨停跌停异动啥情况怎么了。",
-  routing: defineRouting({
-    examples: ["300322涨停原因","工业富联今天为什么大涨","这只股票啥情况"],
-    entities: ["涨停","跌停","涨跌原因","为什么大涨","为什么大跌","异动","啥情况","怎么了"],
-    neighbors: ["trade_order","portfolio_account","risk_assessment"],
-    thresholds: { localAccept: 0.7 },
-  }),
-};
-
 const initialState = AdvisorStateSchema.parse({
   status: "collecting",
   procedure: PROCEDURE,
@@ -99,7 +86,6 @@ const invalidation = {
 } satisfies Partial<Record<keyof AdvisorState & string, Array<keyof AdvisorState & string>>>;
 
 const { patch, effect, render } = workflow<AdvisorState, InvestmentAdvisorConnectorCatalog>({
-  ...metadata,
   stateSchema: AdvisorStateSchema,
   state: initialState,
 });
@@ -174,7 +160,7 @@ effect("collectResearchEvidence", [
 });
 
 export default render({
-  name: metadata.id + "_reply",
+  name: PROCEDURE + "_reply",
   progress: "正在生成异动原因回复",
   instruction: `
 本 workflow 的回复目标是解释可能驱动并标明证据等级。

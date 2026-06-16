@@ -1,6 +1,5 @@
 import {
   ToolMessage,
-  defineRouting,
   type ConnectorId,
   type ConnectorInput,
   type WorkflowContext,
@@ -61,18 +60,6 @@ type NormalizedSecurity = {
   capitalFlowCode: string | null;
 };
 
-const metadata = {
-  id: PROCEDURE,
-  version: "1.0.0",
-  description: "投资顾问研究方法论，处理方法论步骤范本预测模型成功案例政策方案。",
-  routing: defineRouting({
-    examples: ["推荐一些解读建材板块资金流向与宏观经济数据的方法范本","怎么分析行业资金流","给我一个预测模型范本"],
-    entities: ["方法论","方法范本","步骤","模型","范本","成功案例"],
-    neighbors: ["trade_order","portfolio_account","risk_assessment"],
-    thresholds: { localAccept: 0.7 },
-  }),
-};
-
 const initialState = AdvisorStateSchema.parse({
   status: "collecting",
   procedure: PROCEDURE,
@@ -99,7 +86,6 @@ const invalidation = {
 } satisfies Partial<Record<keyof AdvisorState & string, Array<keyof AdvisorState & string>>>;
 
 const { patch, effect, render } = workflow<AdvisorState, InvestmentAdvisorConnectorCatalog>({
-  ...metadata,
   stateSchema: AdvisorStateSchema,
   state: initialState,
 });
@@ -174,7 +160,7 @@ effect("collectResearchEvidence", [
 });
 
 export default render({
-  name: metadata.id + "_reply",
+  name: PROCEDURE + "_reply",
   progress: "正在生成方法论回复",
   instruction: `
 本 workflow 的回复目标是输出可复用研究框架。

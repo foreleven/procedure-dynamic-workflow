@@ -1,6 +1,5 @@
 import {
   ToolMessage,
-  defineRouting,
   type ConnectorId,
   type ConnectorInput,
   type WorkflowContext,
@@ -61,18 +60,6 @@ type NormalizedSecurity = {
   capitalFlowCode: string | null;
 };
 
-const metadata = {
-  id: PROCEDURE,
-  version: "1.0.0",
-  description: "投资顾问股票财务研究，处理财务状况财报业绩现金流盈利能力营收增长。",
-  routing: defineRouting({
-    examples: ["贵州茅台2025Q1业绩","比亚迪财务状况怎么样","宁德时代现金流分析"],
-    entities: ["财务","财报","业绩","现金流","盈利能力","营收"],
-    neighbors: ["trade_order","portfolio_account","risk_assessment"],
-    thresholds: { localAccept: 0.7 },
-  }),
-};
-
 const initialState = AdvisorStateSchema.parse({
   status: "collecting",
   procedure: PROCEDURE,
@@ -99,7 +86,6 @@ const invalidation = {
 } satisfies Partial<Record<keyof AdvisorState & string, Array<keyof AdvisorState & string>>>;
 
 const { patch, effect, render } = workflow<AdvisorState, InvestmentAdvisorConnectorCatalog>({
-  ...metadata,
   stateSchema: AdvisorStateSchema,
   state: initialState,
 });
@@ -174,7 +160,7 @@ effect("collectResearchEvidence", [
 });
 
 export default render({
-  name: metadata.id + "_reply",
+  name: PROCEDURE + "_reply",
   progress: "正在生成财务分析回复",
   instruction: `
 本 workflow 的回复目标是解释经营质量和财务线索。

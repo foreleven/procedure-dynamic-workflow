@@ -17,7 +17,6 @@ import {
   createConnectorRegistry,
   defineConnectorRef,
   defineConnectorTool,
-  defineRouting,
   workflow,
   z,
 } from "@pac/workflow";
@@ -33,14 +32,6 @@ export const connectors = createConnectorRegistry([
 ]);
 
 const program = workflow({
-  id: "example",
-  version: "0.1.0",
-  description: "Example workflow.",
-  routing: defineRouting({
-    examples: ["run example"],
-    entities: ["example"],
-    neighbors: [],
-  }),
   stateSchema: z.object({
     userId: z.string().nullable(),
   }),
@@ -62,9 +53,11 @@ export default program.render({
 });
 ```
 
+When a workflow file is loaded through an agent manifest, `agent.yaml` supplies the stable `id`, `version`, `description`, and `routing` metadata. Standalone modules can still pass those fields directly to `workflow(...)` and export a complete workflow definition.
+
 ## Public Surface
 
-- `workflow(...)` builds workflow definitions from `patch`, `prefetch`, `effect`, `command`, and `render` business steps.
+- `workflow(...)` builds manifest-backed workflow templates or complete workflow definitions from `patch`, `prefetch`, `effect`, `command`, and `render` business steps.
 - `definePatch(...)` creates structured patch extraction policies.
 - `defineRouting(...)` normalizes routing metadata.
 - `defineConnectorRef(...)`, `defineConnectorTool(...)`, and `createConnectorRegistry(...)` define schema-validated integration boundaries.

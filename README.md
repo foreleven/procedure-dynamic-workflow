@@ -22,7 +22,7 @@ packages/
                  Internal code is grouped by CLI loading, LLM provider wiring, runtime execution, and shared utilities.
 
 agents/
-  maintenance/  Example vehicle-maintenance booking procedure, workflow artifact, mock connectors, and agent cases.
+  maintenance/  Example vehicle-maintenance booking procedure, workflow template, mock connectors, and agent cases.
 
 pac-dynamic-workflow/
   SKILL.md      Authoring guide for compiling procedures into workflow artifacts.
@@ -31,9 +31,9 @@ pac-dynamic-workflow/
 
 ## Core Concepts
 
-`agent.yaml` stores stable metadata such as workflow id, version, routing examples, connector file names, and scenario cases. For directory-based CLI runs, each `workflows.<name>` entry maps to `workflows/<name>.workflow.ts`, and each `connectors` entry maps to `connectors/<name>.ts`.
+`agent.yaml` stores stable metadata such as workflow id, version, routing examples, connector file names, and scenario cases. For directory-based CLI runs, each `workflows.<name>` entry maps to `workflows/<name>.workflow.ts`, and each `connectors` entry maps to `connectors/<name>.ts`. The CLI attaches the YAML metadata to each manifest-backed workflow template before handing it to the runtime engine; when a legacy workflow file still exports metadata, the YAML value wins.
 
-`*.workflow.ts` is the distributable workflow artifact. It defines workflow-owned schemas, initial state, patch policy, invalidation rules, business steps, and render instruction.
+`*.workflow.ts` defines workflow-owned schemas, initial state, patch policy, invalidation rules, business steps, and render instruction. In an agent directory it exports a metadata-less workflow template; standalone workflow modules may still export complete workflow definitions when they include their own metadata.
 
 `connectors/*.ts` files define external tool contracts and demo implementations. Each connector file default-exports a loader function that returns connector tools; the engine builds the registry after loading all files listed in `agent.yaml`. Workflow code calls connectors through `context.call("connectors.xxx", input)`, with optional per-context caching via `context.call("connectors.xxx", input, { cache: true })`.
 
@@ -137,15 +137,6 @@ Run all scripted cases from `agent.yaml`:
 npm run chat -- agents/maintenance --all-cases --no-stream
 ```
 
-Run the generic chat CLI with explicit files:
-
-```bash
-npm run chat -- \
-  --workflow agents/maintenance/workflows/maintenance_booking.workflow.ts \
-  --connectors agents/maintenance/connectors/main.ts \
-  --user-id user_feng
-```
-
 Run the same CLI from an agent directory without passing a workflow path; the CLI reads `./agent.yaml`, imports `workflows/<name>.workflow.ts` for each `workflows.<name>` entry, and loads each `connectors/<name>.ts` file listed under `connectors`:
 
 ```bash
@@ -167,7 +158,7 @@ npm run chat -- agents/maintenance --case time_ack_then_draft_then_confirm --no-
 
 Add `--debug` to print full engine and LLM logs. Without `--debug`, the CLI only prints routing active workflows, workflow progress events, workflow step start/end loading lines, LLM phase durations, and the assistant reply.
 
-The `--workflow` module may export one workflow or an array named/defaulted as `workflows`. For multi-workflow modules, the CLI starts without a preselected active workflow and lets the structured route gate select the matching workflows for each new session.
+The `--workflow` module may export one complete workflow definition or an array named/defaulted as `workflows`. Manifest-backed workflow templates should be loaded through an agent directory or `agent.yaml` so the CLI can attach metadata. For multi-workflow modules, the CLI starts without a preselected active workflow and lets the structured route gate select the matching workflows for each new session.
 
 Render output streams by default when the configured LLM client supports it. Add `--no-stream` to print only the final reply.
 
@@ -176,7 +167,7 @@ Render output streams by default when the configured LLM client supports it. Add
 The maintenance agent compiles `agents/maintenance/procedure.md` into:
 
 - `agent.yaml`: metadata, connector file names, workflow names, and acceptance cases.
-- `workflows/maintenance_booking.workflow.ts`: state schema, patch instruction, prefetch/effect/command steps, and render instruction.
+- `workflows/maintenance_booking.workflow.ts`: metadata-less workflow template with state schema, patch instruction, prefetch/effect/command steps, and render instruction.
 - `connectors/main.ts`: customer, vehicle, dealer, slot, draft, and booking connector implementations.
 
 The example demonstrates:

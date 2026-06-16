@@ -50,7 +50,7 @@ export const NewsHotTopicsSearchInputSchema = z.object({
 export const FinancialInvestmentReportSearchInputSchema = z.object({
   query: OptionalStringSchema,
   symbols: z.array(z.string()).nullable().optional(),
-  // industries: z.array(z.string()).nullable().optional(),
+  industries: z.array(z.string()).nullable().optional(),
   num: OptionalIntegerSchema,
   start_datetime: OptionalStringSchema,
   end_datetime: OptionalStringSchema,

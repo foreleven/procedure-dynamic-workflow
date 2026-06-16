@@ -167,6 +167,35 @@ test("workflow program compiles effect dependencies and patch invalidation into 
   assert.deepEqual(definition.invalidation, { count: ["status"] });
 });
 
+test("workflow program can compile a manifest-backed template without metadata", () => {
+  const program = workflow({
+    stateSchema: z.object({
+      count: z.number(),
+      status: z.string().nullable(),
+    }),
+    state: {
+      count: 0,
+      status: null,
+    },
+  });
+
+  program.patch({ state: { count: z.number() } });
+  program.effect("set_count", ["count"], {
+    description: "Increment count for template coverage.",
+    run: (state) => ({ count: state.count + 1 }),
+  });
+
+  const template = program.render({
+    name: "render",
+    instruction: "Reply.",
+    progress: "Rendering",
+  });
+
+  assert.equal(template.__pacWorkflowTemplate, true);
+  assert.equal(template.nodes.length, 1);
+  assert.deepEqual(template.nodes[0]?.kind === "effect" ? template.nodes[0].dependsOn : undefined, ["count"]);
+});
+
 test("workflow program keeps derive as an effect alias during migration", () => {
   const program = createProgram("derive_alias");
 

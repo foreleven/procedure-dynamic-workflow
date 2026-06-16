@@ -1,7 +1,14 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { createConnectorRegistry, ConnectorRegistry, type AnyConnectorTool } from "@pac/workflow";
+import {
+  createConnectorRegistry,
+  ConnectorRegistry,
+  defineWorkflowDefinitionFromTemplate,
+  type AnyConnectorTool,
+  type WorkflowDefinitionMetadata,
+  type WorkflowDefinitionTemplate,
+} from "@pac/workflow";
 import { z } from "zod";
 import type { WorkflowDefinitionInput } from "../index.js";
 import {
@@ -9,6 +16,11 @@ import {
   parserSchema,
   zodTypeSchema,
 } from "../utils/schema-boundary.js";
+
+export interface WorkflowFileInput {
+  path: string;
+  metadata?: WorkflowDefinitionMetadata | undefined;
+}
 
 /**
  * Loads a workflow definition from a local ESM module.
@@ -27,12 +39,12 @@ export async function loadWorkflow(path: string): Promise<WorkflowDefinitionInpu
 
 /**
  * Loads workflow definitions from explicit per-workflow artifact paths.
- * Input: paths derived from an agent manifest's `workflows.<name>` entries.
+ * Input: paths or manifest-derived files with optional metadata.
  * Output: one validated workflow definition per file, preserving manifest order.
- * Boundary: each file must export exactly one workflow so agent manifests cannot hide extra workflows behind an aggregate module.
+ * Boundary: manifest metadata overrides full definitions and is required for metadata-less templates.
  */
-export async function loadWorkflowFiles(paths: readonly string[]): Promise<WorkflowDefinitionInput[]> {
-  return Promise.all(paths.map((path) => loadWorkflow(path)));
+export async function loadWorkflowFiles(files: readonly (string | WorkflowFileInput)[]): Promise<WorkflowDefinitionInput[]> {
+  return Promise.all(files.map((file) => loadWorkflowFile(file)));
 }
 
 /**
@@ -57,6 +69,30 @@ export async function loadWorkflows(path: string): Promise<WorkflowDefinitionInp
   }
 
   return [exported as WorkflowDefinitionInput];
+}
+
+async function loadWorkflowFile(file: string | WorkflowFileInput): Promise<WorkflowDefinitionInput> {
+  if (typeof file === "string") return loadWorkflow(file);
+
+  const mod = await importModule(file.path);
+  const exported = mod.default ?? mod.workflow;
+  const workflow = workflowExportSchema().safeParse(exported);
+  if (workflow.success) {
+    const definition = workflow.data as unknown as WorkflowDefinitionInput;
+    return file.metadata ? { ...definition, ...file.metadata } : definition;
+  }
+
+  if (file.metadata) {
+    const template = workflowTemplateExportSchema().safeParse(exported);
+    if (template.success) {
+      return defineWorkflowDefinitionFromTemplate(
+        file.metadata,
+        template.data as unknown as WorkflowDefinitionTemplate,
+      ) as WorkflowDefinitionInput;
+    }
+  }
+
+  throw new Error(`Workflow file must export exactly one workflow definition or manifest-backed template: ${file.path}`);
 }
 
 /**
@@ -131,6 +167,23 @@ function workflowExportSchema() {
       neighbors: z.array(z.string()),
       thresholds: z.record(z.string(), z.number()),
     }),
+    stateSchema: parserSchema(),
+    state: z.record(z.string(), z.unknown()),
+    nodes: z.array(workflowNodeExportSchema()),
+    patch: z.object({
+      schema: parserSchema(),
+      instruction: z.string(),
+      model: z.string().optional(),
+      progress: z.string().optional(),
+    }),
+    invalidation: z.record(z.string(), z.array(z.string())),
+    render: z.union([functionSchema(), renderPolicyExportSchema()]),
+  });
+}
+
+function workflowTemplateExportSchema() {
+  return z.object({
+    __pacWorkflowTemplate: z.literal(true),
     stateSchema: parserSchema(),
     state: z.record(z.string(), z.unknown()),
     nodes: z.array(workflowNodeExportSchema()),

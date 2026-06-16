@@ -1,10 +1,10 @@
 import { z } from "zod";
 import {
   JsonRecordSchema,
-  type WorkflowId,
 } from "../common.js";
 import type { ConnectorCatalog } from "../connectors.js";
 import type {
+  WorkflowDefinitionBody,
   RenderPolicy,
   WorkflowDefinition,
   WorkflowNode,
@@ -44,11 +44,39 @@ export function assertWorkflowDefinitionInvariants<
   const label = `Workflow ${definition.id}`;
   parseSchema(workflowMetadataSchema(label), definition);
   parseSchema(routingSchema(`${label} routing`), definition.routing);
-  assertDefaultState(definition.id, definition.stateSchema, definition.state);
-  parseSchema(patchPolicySchema(`${label} patch`), definition.patch);
-  parseSchema(invalidationSchema(`${label} invalidation`), definition.invalidation);
-  assertWorkflowNodeInvariants(definition.nodes, `${label} nodes`);
-  assertRenderInvariants(definition.render, `${label} render`);
+  assertWorkflowDefinitionBodyInvariants(definition, label);
+}
+
+/**
+ * Asserts invariants for manifest-loaded workflow templates before metadata exists.
+ * Input: workflow body produced by program-style DSL render.
+ * Output: throws when state, patch, node, invalidation, or render invariants fail.
+ * Boundary: identity and routing checks happen only after `agent.yaml` metadata is attached.
+ */
+export function assertWorkflowDefinitionTemplateInvariants<
+  TState extends object,
+  TPatch,
+  TConnectors extends ConnectorCatalog,
+>(
+  body: WorkflowDefinitionBody<TState, TPatch, TConnectors>,
+  label: string,
+): void {
+  assertWorkflowDefinitionBodyInvariants(body, label);
+}
+
+function assertWorkflowDefinitionBodyInvariants<
+  TState extends object,
+  TPatch,
+  TConnectors extends ConnectorCatalog,
+>(
+  body: WorkflowDefinitionBody<TState, TPatch, TConnectors>,
+  label: string,
+): void {
+  assertDefaultState(label, body.stateSchema, body.state);
+  parseSchema(patchPolicySchema(`${label} patch`), body.patch);
+  parseSchema(invalidationSchema(`${label} invalidation`), body.invalidation);
+  assertWorkflowNodeInvariants(body.nodes, `${label} nodes`);
+  assertRenderInvariants(body.render, `${label} render`);
 }
 
 function workflowMetadataSchema(label: string) {
@@ -146,26 +174,26 @@ function renderPolicySchema(label: string) {
 }
 
 function assertDefaultState(
-  workflowId: WorkflowId,
+  label: string,
   stateSchema: { parse: (input: unknown) => unknown },
   state: object,
 ): void {
   if (!JsonRecordSchema.safeParse(state).success) {
-    throw new Error(`Workflow ${workflowId} default state must be an object`);
+    throw new Error(`${label} default state must be an object`);
   }
-  assertNoReservedStateFields(workflowId, "default state", state);
+  assertNoReservedStateFields(label, "default state", state);
 
   let parsed: unknown;
   try {
     parsed = stateSchema.parse(state);
   } catch (error) {
-    throw new Error(`Workflow ${workflowId} default state does not satisfy stateSchema: ${errorMessage(error)}`);
+    throw new Error(`${label} default state does not satisfy stateSchema: ${errorMessage(error)}`);
   }
 
   if (!JsonRecordSchema.safeParse(parsed).success) {
-    throw new Error(`Workflow ${workflowId} default state must parse to an object`);
+    throw new Error(`${label} default state must parse to an object`);
   }
-  assertNoReservedStateFields(workflowId, "parsed default state", parsed);
+  assertNoReservedStateFields(label, "parsed default state", parsed);
 }
 
 function assertWorkflowNodeInvariants<
@@ -209,13 +237,13 @@ function assertRenderInvariants<
   parseSchema(renderPolicySchema(label), value as RenderPolicy);
 }
 
-function assertNoReservedStateFields(workflowId: WorkflowId, label: string, state: unknown): void {
+function assertNoReservedStateFields(workflowLabel: string, label: string, state: unknown): void {
   const parsed = JsonRecordSchema.safeParse(state);
   if (!parsed.success) return;
 
   for (const field of RESERVED_STATE_FIELDS) {
     if (Object.hasOwn(parsed.data, field)) {
-      throw new Error(`Workflow ${workflowId} ${label} must not define reserved ${field} field`);
+      throw new Error(`${workflowLabel} ${label} must not define reserved ${field} field`);
     }
   }
 }

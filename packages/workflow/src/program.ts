@@ -2,7 +2,7 @@ import type { z } from "zod";
 import type { PatchPolicy } from "./builders.js";
 import { definePatch } from "./builders.js";
 import type { ConnectorCatalog } from "./connectors.js";
-import type { MaybePromise, RoutingProfile, SessionContext, WorkflowId } from "./common.js";
+import type { MaybePromise, SessionContext } from "./common.js";
 import { sameRuntimeValue } from "./runtime/equality.js";
 import { settlePrefetch } from "./runtime/prefetch.js";
 import {
@@ -16,6 +16,8 @@ import {
 import type {
   WorkflowContext,
   WorkflowDefinition,
+  WorkflowDefinitionMetadata,
+  WorkflowDefinitionTemplate,
   WorkflowRuntimeState,
   WorkflowNode,
   WorkflowPatch,
@@ -25,7 +27,10 @@ import type {
   WorkflowToolMessage,
   WorkflowTurn,
 } from "./workflow.js";
-import { defineWorkflowDefinition } from "./workflow.js";
+import {
+  defineWorkflowDefinition,
+  defineWorkflowTemplate,
+} from "./workflow.js";
 
 export interface ProgramRuntime {
   session: SessionContext;
@@ -73,19 +78,25 @@ export interface ProgramProgressNodeMetadata {
   progress: string;
 }
 
-export interface ProgramWorkflowConfig<
+export interface ProgramWorkflowBaseConfig<
   TState extends object,
   TConnectors extends ConnectorCatalog = ConnectorCatalog,
 > {
-  id: WorkflowId;
-  version: string;
-  description: string;
-  routing: RoutingProfile;
   stateSchema: z.ZodType<TState>;
   state: WorkflowAuthorState<TState>;
   invalidation?: Partial<Record<keyof TState & string, Array<keyof TState & string>>>;
   connectors?: TConnectors;
 }
+
+export interface ProgramWorkflowConfig<
+  TState extends object,
+  TConnectors extends ConnectorCatalog = ConnectorCatalog,
+> extends ProgramWorkflowBaseConfig<TState, TConnectors>, WorkflowDefinitionMetadata {}
+
+export type ProgramWorkflowTemplateConfig<
+  TState extends object,
+  TConnectors extends ConnectorCatalog = ConnectorCatalog,
+> = ProgramWorkflowBaseConfig<TState, TConnectors>;
 
 export interface ProgramPatchConfig<TState extends object, TStatePatchShape extends z.ZodRawShape> {
   state: TStatePatchShape;
@@ -148,9 +159,10 @@ export interface ProgramRenderConfig {
   progress: string;
 }
 
-export interface WorkflowProgram<
+interface WorkflowProgramBase<
   TState extends object,
   TConnectors extends ConnectorCatalog = ConnectorCatalog,
+  TRenderOutput = WorkflowDefinition<TState, unknown, TConnectors>,
 > {
   patch<TStatePatchShape extends z.ZodRawShape>(
     config: ProgramPatchConfig<TState, TStatePatchShape>,
@@ -169,13 +181,23 @@ export interface WorkflowProgram<
     config: ProgramEffectConfig<TState, TConnectors>,
   ): void;
   command(name: string, config: ProgramCommandConfig<TState, TConnectors>): void;
-  render(config: ProgramRenderConfig): WorkflowDefinition<TState, unknown, TConnectors>;
+  render(config: ProgramRenderConfig): TRenderOutput;
 }
+
+export type WorkflowProgram<
+  TState extends object,
+  TConnectors extends ConnectorCatalog = ConnectorCatalog,
+> = WorkflowProgramBase<TState, TConnectors, WorkflowDefinition<TState, unknown, TConnectors>>;
+
+export type WorkflowTemplateProgram<
+  TState extends object,
+  TConnectors extends ConnectorCatalog = ConnectorCatalog,
+> = WorkflowProgramBase<TState, TConnectors, WorkflowDefinitionTemplate<TState, unknown, TConnectors>>;
 
 /**
  * Builds a workflow from business steps rather than hook registration.
- * Input: metadata and state schema/default.
- * Output: a runtime WorkflowDefinition once `render(...)` is called.
+ * Input: state schema/default plus optional standalone metadata.
+ * Output: a complete definition when metadata is supplied, otherwise a manifest-backed template.
  * Boundary: this builder only compiles declarations into nodes; the engine still owns scheduling and execution.
  */
 export function workflow<
@@ -183,11 +205,25 @@ export function workflow<
   TConnectors extends ConnectorCatalog = ConnectorCatalog,
 >(
   config: ProgramWorkflowConfig<TState, TConnectors>,
-): WorkflowProgram<TState, TConnectors> {
+): WorkflowProgram<TState, TConnectors>;
+export function workflow<
+  TState extends object,
+  TConnectors extends ConnectorCatalog = ConnectorCatalog,
+>(
+  config: ProgramWorkflowTemplateConfig<TState, TConnectors>,
+): WorkflowTemplateProgram<TState, TConnectors>;
+export function workflow<
+  TState extends object,
+  TConnectors extends ConnectorCatalog = ConnectorCatalog,
+>(
+  config: ProgramWorkflowConfig<TState, TConnectors> | ProgramWorkflowTemplateConfig<TState, TConnectors>,
+): WorkflowProgram<TState, TConnectors> | WorkflowTemplateProgram<TState, TConnectors> {
   assertProgramWorkflowInvariants(config);
   const nodes: Array<WorkflowNode<TState, TConnectors>> = [];
   let patchPolicy: PatchPolicy<unknown> | undefined;
   let invalidation = config.invalidation ?? {};
+  const metadata = workflowMetadata(config);
+  const label = metadata ? `Workflow ${metadata.id}` : "Workflow template";
 
   function effect(name: string, effectConfig: ProgramEffectConfig<TState, TConnectors>): void;
   function effect(
@@ -221,12 +257,16 @@ export function workflow<
     registerEffect(name, normalizeEffectConfig(dependenciesOrConfig, maybeConfig));
   }
 
-  return {
+  const program: WorkflowProgramBase<
+    TState,
+    TConnectors,
+    WorkflowDefinition<TState, unknown, TConnectors> | WorkflowDefinitionTemplate<TState, unknown, TConnectors>
+  > = {
     patch(patchConfig) {
       if (patchPolicy) {
-        throw new Error(`Workflow ${config.id} already declared patch`);
+        throw new Error(`${label} already declared patch`);
       }
-      assertPatchInvalidationInvariants(patchConfig.invalidates, `Workflow ${config.id} patch invalidates`);
+      assertPatchInvalidationInvariants(patchConfig.invalidates, `${label} patch invalidates`);
       patchPolicy = definePatch(patchConfig);
       invalidation = patchConfig.invalidates ?? invalidation;
     },
@@ -240,30 +280,36 @@ export function workflow<
     },
     render(renderConfig) {
       if (!patchPolicy) {
-        throw new Error(`Workflow ${config.id} must declare patch before render`);
+        throw new Error(`${label} must declare patch before render`);
       }
-      assertRenderConfigInvariants(renderConfig, `Workflow ${config.id} render`);
+      assertRenderConfigInvariants(renderConfig, `${label} render`);
 
-      return defineWorkflowDefinition({
-        id: config.id,
-        version: config.version,
-        description: config.description,
-        routing: config.routing,
+      const body = {
         stateSchema: config.stateSchema,
         state: config.state,
         nodes,
         patch: patchPolicy,
         invalidation,
         render: renderConfig,
-      });
+      };
+
+      return metadata
+        ? defineWorkflowDefinition({
+            ...metadata,
+            ...body,
+          })
+        : defineWorkflowTemplate(body);
     },
   };
+  return metadata
+    ? program as WorkflowProgram<TState, TConnectors>
+    : program as WorkflowTemplateProgram<TState, TConnectors>;
 
   function registerPrefetch(
     name: string,
     prefetchConfig: ProgramPrefetchConfig<TState, TConnectors>,
   ): void {
-    assertProgramNodeInvariants(name, prefetchConfig, `Workflow ${config.id} prefetch`, { requireProgress: true });
+    assertProgramNodeInvariants(name, prefetchConfig, `${label} prefetch`, { requireProgress: true });
     const cacheKeyName = `${name}:cacheKey`;
     registerNode({
       kind: "prefetch",
@@ -297,8 +343,8 @@ export function workflow<
     name: string,
     effectConfig: ProgramEffectConfig<TState, TConnectors>,
   ): void {
-    assertProgramNodeInvariants(name, effectConfig, `Workflow ${config.id} node`);
-    assertProgramEffectDependencies(effectConfig.dependsOn, `Workflow ${config.id} node ${name} dependsOn`);
+    assertProgramNodeInvariants(name, effectConfig, `${label} node`);
+    assertProgramEffectDependencies(effectConfig.dependsOn, `${label} node ${name} dependsOn`);
     registerNode({
       kind: "effect",
       name,
@@ -327,7 +373,7 @@ export function workflow<
     name: string,
     commandConfig: ProgramCommandConfig<TState, TConnectors>,
   ): void {
-    assertProgramNodeInvariants(name, commandConfig, `Workflow ${config.id} command`);
+    assertProgramNodeInvariants(name, commandConfig, `${label} command`);
     registerNode({
       kind: "effect",
       name,
@@ -352,12 +398,28 @@ export function workflow<
   }
 
   function registerNode(node: WorkflowNode<TState, TConnectors>): void {
-    assertProgramNodeStage(node, `Workflow ${config.id} node`);
+    assertProgramNodeStage(node, `${label} node`);
     if (nodes.some((existing) => existing.name === node.name)) {
       throw new Error(`Duplicate workflow node: ${node.name}`);
     }
     nodes.push(node);
   }
+}
+
+function workflowMetadata<
+  TState extends object,
+  TConnectors extends ConnectorCatalog,
+>(
+  config: ProgramWorkflowConfig<TState, TConnectors> | ProgramWorkflowTemplateConfig<TState, TConnectors>,
+): WorkflowDefinitionMetadata | undefined {
+  if (!("id" in config)) return undefined;
+
+  return {
+    id: config.id,
+    version: config.version,
+    description: config.description,
+    routing: config.routing,
+  };
 }
 
 function toProgramRuntime<

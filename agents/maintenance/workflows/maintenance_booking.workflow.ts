@@ -1,6 +1,5 @@
 import {
   ToolMessage,
-  loadWorkflowMetadata,
   type WorkflowContext,
   workflow,
   z,
@@ -96,9 +95,6 @@ const maintenanceInvalidation = {
   slot: ["bookingDraft"],
 } satisfies Partial<Record<keyof MaintenanceState & string, Array<keyof MaintenanceState & string>>>;
 
-const metadata = loadWorkflowMetadata(import.meta.url, "../agent.yaml");
-
-
 /**
  * Input Message -> Patch + prefetch -> effects -> state changed -> Render: llm output
  */
@@ -108,7 +104,6 @@ const { patch, prefetch, effect, command, render } = workflow<
   MaintenanceState,
   MaintenanceConnectorCatalog
 >({
-  ...metadata,
   stateSchema: MaintenanceStateSchema,
   state: maintenanceInitialState,
 });

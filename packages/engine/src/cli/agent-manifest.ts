@@ -8,6 +8,10 @@ import {
   dirname,
   resolve,
 } from "node:path";
+import {
+  loadWorkflowMetadata,
+  type WorkflowDefinitionMetadata,
+} from "@pac/workflow";
 import YAML from "yaml";
 import { z } from "zod";
 
@@ -45,6 +49,7 @@ export interface AgentWorkflowFile {
   name: string;
   id: string;
   path: string;
+  metadata: WorkflowDefinitionMetadata;
 }
 
 export type CliWorkflowSource =
@@ -109,7 +114,7 @@ const AgentManifestFileSchema = z
 /**
  * Resolves a CLI workflow argument without changing explicit module behavior.
  * Input: a workflow module path, an agent directory, or an agent.yaml path.
- * Output: explicit module path or manifest-derived workflow file paths plus optional agent case metadata.
+ * Output: explicit module path or manifest-derived workflow files plus optional agent case metadata.
  * Boundary: only directory/manifest discovery happens here; module export validation stays in module-loader.
  */
 export function resolveCliWorkflowSource(inputPath: string): CliWorkflowSource {
@@ -151,7 +156,7 @@ function agentSourceFromManifest(manifestPath: string): CliWorkflowSource {
 /**
  * Reads an agent manifest from disk.
  * Input: absolute or relative path to agent.yaml.
- * Output: normalized workflow artifact paths and case descriptors relative to the manifest directory.
+ * Output: normalized workflow file descriptors and case descriptors relative to the manifest directory.
  * Boundary: manifest fields are schema-validated; executable modules are imported later.
  */
 export function loadAgentManifest(manifestPath: string): AgentManifest {
@@ -186,11 +191,16 @@ function workflowFilesFromManifest(
   directory: string,
   manifest: z.infer<typeof AgentManifestFileSchema>,
 ): AgentWorkflowFile[] {
-  return Object.entries(manifest.workflows).map(([name, workflow]) => ({
-    name,
-    id: workflow.id,
-    path: resolve(directory, "workflows", `${name}.workflow.ts`),
-  }));
+  return Object.entries(manifest.workflows).map(([name, workflow]) => {
+    const path = resolve(directory, "workflows", `${name}.workflow.ts`);
+    const metadata = loadWorkflowMetadata(path, "../agent.yaml", name);
+    return {
+      name,
+      id: workflow.id,
+      path,
+      metadata,
+    };
+  });
 }
 
 function connectorFilesFromManifest(

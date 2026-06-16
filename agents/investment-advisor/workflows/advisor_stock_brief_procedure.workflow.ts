@@ -1,6 +1,5 @@
 import {
   ToolMessage,
-  defineRouting,
   type ConnectorId,
   type ConnectorInput,
   type WorkflowContext,
@@ -11,19 +10,64 @@ import type { InvestmentAdvisorConnectorCatalog } from "../connectors/main.js";
 
 const PROCEDURE = "advisor_stock_brief_procedure" as const;
 
-const AdvisorStatusSchema = z.enum(["collecting", "researching", "ready", "cancelled"]);
-const TargetKindSchema = z.enum(["stock", "market", "sector", "industry", "policy_macro", "methodology"]);
+const AdvisorStatusSchema = z.enum([
+  "collecting",
+  "researching",
+  "ready",
+  "cancelled",
+]);
+const TargetKindSchema = z.enum([
+  "stock",
+  "market",
+  "sector",
+  "industry",
+  "policy_macro",
+  "methodology",
+]);
 const SecurityMarketSchema = z.enum(["SH", "SZ", "BJ", "HK", "US"]);
-const HorizonSchema = z.enum(["today", "yesterday", "tomorrow", "short_term", "long_term", "historical", "financial_period"]);
-const ActionIntentSchema = z.enum(["buy", "sell", "open", "add", "exit", "hold", "take_profit", "stop_loss", "strategy"]);
-const BlockerSchema = z.enum(["missing_procedure", "missing_target", "missing_topic", "insufficient_compare_targets", "evidence_unavailable"]);
+const HorizonSchema = z.enum([
+  "today",
+  "yesterday",
+  "tomorrow",
+  "short_term",
+  "long_term",
+  "historical",
+  "financial_period",
+]);
+const ActionIntentSchema = z.enum([
+  "buy",
+  "sell",
+  "open",
+  "add",
+  "exit",
+  "hold",
+  "take_profit",
+  "stop_loss",
+  "strategy",
+]);
+const BlockerSchema = z.enum([
+  "missing_procedure",
+  "missing_target",
+  "missing_topic",
+  "insufficient_compare_targets",
+  "evidence_unavailable",
+]);
 
 const SecurityTargetSchema = z.object({
-  raw: z.string().describe("User-expressed stock, ETF, index, company, sector code, or name."),
+  raw: z
+    .string()
+    .describe(
+      "User-expressed stock, ETF, index, company, sector code, or name.",
+    ),
   name: z.string().nullable(),
   code: z.string().nullable(),
   market: SecurityMarketSchema.nullable(),
-  fullCode: z.string().nullable().describe("Full code with market suffix when directly expressed, for example 300782.SZ."),
+  fullCode: z
+    .string()
+    .nullable()
+    .describe(
+      "Full code with market suffix when directly expressed, for example 300782.SZ.",
+    ),
 });
 
 const DateRangeSchema = z.object({
@@ -61,18 +105,6 @@ type NormalizedSecurity = {
   capitalFlowCode: string | null;
 };
 
-const metadata = {
-  id: PROCEDURE,
-  version: "1.0.0",
-  description: "投资顾问股票摘要研究，处理裸股票名、代码、简单分析一下或怎么样。",
-  routing: defineRouting({
-    examples: ["分析下比亚迪","漫步者怎么样","300782 简单分析一下"],
-    entities: ["分析下","分析一下","怎么样"],
-    neighbors: ["trade_order","portfolio_account","risk_assessment"],
-    thresholds: { localAccept: 0.78 },
-  }),
-};
-
 const initialState = AdvisorStateSchema.parse({
   status: "collecting",
   procedure: PROCEDURE,
@@ -96,10 +128,14 @@ const invalidation = {
   financialPeriod: ["blocker"],
   comparisonFocus: ["blocker"],
   dateRange: ["blocker"],
-} satisfies Partial<Record<keyof AdvisorState & string, Array<keyof AdvisorState & string>>>;
+} satisfies Partial<
+  Record<keyof AdvisorState & string, Array<keyof AdvisorState & string>>
+>;
 
-const { patch, effect, render } = workflow<AdvisorState, InvestmentAdvisorConnectorCatalog>({
-  ...metadata,
+const { patch, effect, render } = workflow<
+  AdvisorState,
+  InvestmentAdvisorConnectorCatalog
+>({
   stateSchema: AdvisorStateSchema,
   state: initialState,
 });
@@ -107,7 +143,9 @@ const { patch, effect, render } = workflow<AdvisorState, InvestmentAdvisorConnec
 patch({
   progress: "正在理解股票简析问题",
   state: {
-    status: AdvisorStatusSchema.describe("Only set cancelled when the user explicitly stops this 股票简析 workflow; otherwise set researching when the latest message asks or changes this procedure's research request."),
+    status: AdvisorStatusSchema.describe(
+      "Only set cancelled when the user explicitly stops this 股票简析 workflow; otherwise set researching when the latest message asks or changes this procedure's research request.",
+    ),
     targetKind: TargetKindSchema,
     targets: z.array(SecurityTargetSchema),
     topic: z.string(),
@@ -135,7 +173,8 @@ patch({
 });
 
 effect("resolveResearchReadiness", ["status", "targets", "topic"], {
-  description: "股票简析 workflow 根据已抽取的研究对象和主题判断是否具备资料收集条件；不调用外部工具。",
+  description:
+    "股票简析 workflow 根据已抽取的研究对象和主题判断是否具备资料收集条件；不调用外部工具。",
   run: (state) => {
     if (state.status === "cancelled" || state.status === "ready") return {};
     const blocker = readinessBlocker(state);
@@ -146,35 +185,44 @@ effect("resolveResearchReadiness", ["status", "targets", "topic"], {
   },
 });
 
-effect("collectResearchEvidence", [
-  "status",
-  "targetKind",
-  "targets",
-  "topic",
-  "horizon",
-  "action",
-  "financialPeriod",
-  "comparisonFocus",
-  "dateRange",
-], {
-  description: "股票简析 workflow 调用本 procedure 需要的只读投研工具；工具结果只通过 ToolMessage 暴露给 render，不写长期 state。",
-  run: async (state, context, _runtime, step) => {
-    if (state.status !== "researching" || readinessBlocker(state) !== null) return {};
+effect(
+  "collectResearchEvidence",
+  [
+    "status",
+    "targetKind",
+    "targets",
+    "topic",
+    "horizon",
+    "action",
+    "financialPeriod",
+    "comparisonFocus",
+    "dateRange",
+  ],
+  {
+    description:
+      "股票简析 workflow 调用本 procedure 需要的只读投研工具；工具结果只通过 ToolMessage 暴露给 render，不写长期 state。",
+    run: async (state, context, _runtime, step) => {
+      if (state.status !== "researching" || readinessBlocker(state) !== null)
+        return {};
 
-    const loading = step.start("收集股票简析资料");
-    const messages = await collectEvidence(state, context);
-    loading.end({ count: messages.length });
+      const loading = step.start("收集股票简析资料");
+      const messages = await collectEvidence(state, context);
+      loading.end({ count: messages.length });
 
-    return {
-      status: "ready",
-      blocker: messages.length > 0 && messages.every((message) => message.isError) ? "evidence_unavailable" : null,
-      messages,
-    };
+      return {
+        status: "ready",
+        blocker:
+          messages.length > 0 && messages.every((message) => message.isError)
+            ? "evidence_unavailable"
+            : null,
+        messages,
+      };
+    },
   },
-});
+);
 
 export default render({
-  name: metadata.id + "_reply",
+  name: PROCEDURE + "_reply",
   progress: "正在生成股票简析回复",
   instruction: `
 本 workflow 的回复目标是给出简洁股票研究摘要。
@@ -199,7 +247,10 @@ export default render({
  * Output: tool facts for this workflow's render phase.
  * Boundary: this function must not execute trades or mutate external systems.
  */
-function collectEvidence(state: AdvisorState, context: AdvisorContext): Promise<ToolMessage[]> {
+function collectEvidence(
+  state: AdvisorState,
+  context: AdvisorContext,
+): Promise<ToolMessage[]> {
   const target = evidence.firstNormalizedTarget(state);
   return evidence.collectAll([
     ...evidence.stockMarketEvidence(context, target),
@@ -208,10 +259,13 @@ function collectEvidence(state: AdvisorState, context: AdvisorContext): Promise<
   ]);
 }
 
-function readinessBlocker(state: AdvisorState): z.infer<typeof BlockerSchema> | null {
+function readinessBlocker(
+  state: AdvisorState,
+): z.infer<typeof BlockerSchema> | null {
   if (false && state.targets.length < 2) return "insufficient_compare_targets";
   if (true && state.targets.length === 0) return "missing_target";
-  if (false && !state.topic && state.targets.length === 0) return "missing_topic";
+  if (false && !state.topic && state.targets.length === 0)
+    return "missing_topic";
   return null;
 }
 
@@ -222,14 +276,18 @@ const evidence = {
   firstNormalizedTarget(state: AdvisorState): NormalizedSecurity {
     const [target] = evidence.normalizedTargets(state);
     if (!target) {
-      throw new Error("Investment advisor workflow expected at least one target after readiness check.");
+      throw new Error(
+        "Investment advisor workflow expected at least one target after readiness check.",
+      );
     }
     return target;
   },
   requiredTopic(state: AdvisorState): string {
     const topic = state.topic ?? evidence.normalizedTargets(state)[0]?.display;
     if (!topic) {
-      throw new Error("Investment advisor workflow expected a topic after readiness check.");
+      throw new Error(
+        "Investment advisor workflow expected a topic after readiness check.",
+      );
     }
     return topic;
   },
@@ -237,123 +295,291 @@ const evidence = {
     return evidence.normalizedTargets(state)[0]?.code ?? null;
   },
   symbolsFor(targets: NormalizedSecurity[]): string[] | null {
-    const symbols = targets.map((target) => target.reportSymbol).filter((symbol): symbol is string => Boolean(symbol));
+    const symbols = targets
+      .map((target) => target.reportSymbol)
+      .filter((symbol): symbol is string => Boolean(symbol));
     return symbols.length > 0 ? symbols : null;
   },
   strategyQuery(state: AdvisorState, display: string): string {
     const action = state.action ? actionLabel(state.action) : "买卖策略";
     const horizon = state.horizon ? horizonLabel(state.horizon) : "";
-    return [display, action, horizon, "风险", "控制"].filter((part) => part.length > 0).join(" ");
+    return [display, action, horizon, "风险", "控制"]
+      .filter((part) => part.length > 0)
+      .join(" ");
   },
   marketTargetForState(state: AdvisorState): string {
-    const text = [state.topic ?? "", ...state.targets.map((target) => target.raw)].join(" ").toLowerCase();
+    const text = [
+      state.topic ?? "",
+      ...state.targets.map((target) => target.raw),
+    ]
+      .join(" ")
+      .toLowerCase();
     if (text.includes("港股") || text.includes("hk")) return "-1";
     if (text.includes("美股") || text.includes("us")) return "74";
     return "0";
   },
-  stockMarketEvidence(context: AdvisorContext, target: NormalizedSecurity): Array<Promise<ToolMessage>> {
+  stockMarketEvidence(
+    context: AdvisorContext,
+    target: NormalizedSecurity,
+  ): Array<Promise<ToolMessage>> {
     return [
       ...evidence.quoteEvidence(context, target),
       ...evidence.technicalEvidence(context, target),
       ...evidence.capitalFlowEvidence(context, target),
     ];
   },
-  quoteEvidence(context: AdvisorContext, target: NormalizedSecurity): Array<Promise<ToolMessage>> {
+  quoteEvidence(
+    context: AdvisorContext,
+    target: NormalizedSecurity,
+  ): Array<Promise<ToolMessage>> {
     if (!target.fullCode) return [];
-    return [evidence.call(context, "connectors.investmentAdvisor.getRealtimeQuotes", { codes: target.fullCode, src: null })];
-  },
-  technicalEvidence(context: AdvisorContext, target: NormalizedSecurity): Array<Promise<ToolMessage>> {
-    if (!target.fullCode) return [];
-    return [evidence.call(context, "connectors.investmentAdvisor.getTechnicalIndicatorSignals", { code: target.fullCode, interval: 60, start_date: null, src: null })];
-  },
-  capitalFlowEvidence(context: AdvisorContext, target: NormalizedSecurity): Array<Promise<ToolMessage>> {
-    if (!target.capitalFlowCode || !target.market) return [];
-    return [evidence.call(context, "connectors.investmentAdvisor.getCapitalFlowStats", { period: "day", code: target.capitalFlowCode, setCode: target.market, src: null })];
-  },
-  historicalEvidence(context: AdvisorContext, target: NormalizedSecurity, state: AdvisorState): Array<Promise<ToolMessage>> {
-    if (!target.code || !target.historicalSetCode) return [];
-    return [evidence.call(context, "connectors.investmentAdvisor.getHistoricalQuotesByDateRange", {
-      code: target.code,
-      setCode: target.historicalSetCode,
-      startDate: state.dateRange?.start.slice(0, 10) ?? null,
-      endDate: state.dateRange?.end.slice(0, 10) ?? null,
-      target: "0",
-      src: null,
-    })];
-  },
-  companyEvidence(context: AdvisorContext, target: NormalizedSecurity, kinds: Array<"profile" | "mainBusiness" | "industryRank">): Array<Promise<ToolMessage>> {
-    if (!target.code || !target.market) return [];
-    const input = { code: target.code, market: target.market, limit: 5, secuCode: target.code, secuMarket: target.market, src: null };
-    const calls: Array<Promise<ToolMessage>> = [];
-    if (kinds.includes("profile")) calls.push(evidence.call(context, "connectors.investmentAdvisor.getCompanyProfile", input));
-    if (kinds.includes("mainBusiness")) calls.push(evidence.call(context, "connectors.investmentAdvisor.getMainBusinessComposition", input));
-    if (kinds.includes("industryRank")) calls.push(evidence.call(context, "connectors.investmentAdvisor.getCompanyIndustryRankings", input));
-    return calls;
-  },
-  queryEvidence(context: AdvisorContext, state: AdvisorState, query: string): Array<Promise<ToolMessage>> {
     return [
-      evidence.callNews(context, query + " 股票 分析", 8),
-      evidence.callReports(context, query + " 股票 研究", evidence.symbolsFor(evidence.normalizedTargets(state)), null),
+      evidence.call(context, "connectors.investmentAdvisor.getRealtimeQuotes", {
+        codes: target.fullCode,
+        src: null,
+      }),
     ];
   },
-  callNews(context: AdvisorContext, query: string, count: number): Promise<ToolMessage> {
-    return evidence.call(context, "connectors.investmentAdvisor.searchNewsHotTopics", { query, count, src: null });
+  technicalEvidence(
+    context: AdvisorContext,
+    target: NormalizedSecurity,
+  ): Array<Promise<ToolMessage>> {
+    if (!target.fullCode) return [];
+    return [
+      evidence.call(
+        context,
+        "connectors.investmentAdvisor.getTechnicalIndicatorSignals",
+        { code: target.fullCode, interval: 60, start_date: null, src: null },
+      ),
+    ];
   },
-  callReports(context: AdvisorContext, query: string, symbols: string[] | null, industries: string[] | null): Promise<ToolMessage> {
-    return evidence.call(context, "connectors.investmentAdvisor.searchFinancialInvestmentReports", {
-      query,
-      symbols,
-      industries,
-      num: 10,
-      start_datetime: null,
-      end_datetime: null,
+  capitalFlowEvidence(
+    context: AdvisorContext,
+    target: NormalizedSecurity,
+  ): Array<Promise<ToolMessage>> {
+    if (!target.capitalFlowCode || !target.market) return [];
+    return [
+      evidence.call(
+        context,
+        "connectors.investmentAdvisor.getCapitalFlowStats",
+        {
+          period: "day",
+          code: target.capitalFlowCode,
+          setCode: target.market,
+          src: null,
+        },
+      ),
+    ];
+  },
+  historicalEvidence(
+    context: AdvisorContext,
+    target: NormalizedSecurity,
+    state: AdvisorState,
+  ): Array<Promise<ToolMessage>> {
+    if (!target.code || !target.historicalSetCode) return [];
+    return [
+      evidence.call(
+        context,
+        "connectors.investmentAdvisor.getHistoricalQuotesByDateRange",
+        {
+          code: target.code,
+          setCode: target.historicalSetCode,
+          startDate: state.dateRange?.start.slice(0, 10) ?? null,
+          endDate: state.dateRange?.end.slice(0, 10) ?? null,
+          target: "0",
+          src: null,
+        },
+      ),
+    ];
+  },
+  companyEvidence(
+    context: AdvisorContext,
+    target: NormalizedSecurity,
+    kinds: Array<"profile" | "mainBusiness" | "industryRank">,
+  ): Array<Promise<ToolMessage>> {
+    if (!target.code || !target.market) return [];
+    const input = {
+      code: target.code,
+      market: target.market,
+      limit: 5,
+      secuCode: target.code,
+      secuMarket: target.market,
       src: null,
-    });
+    };
+    const calls: Array<Promise<ToolMessage>> = [];
+    if (kinds.includes("profile"))
+      calls.push(
+        evidence.call(
+          context,
+          "connectors.investmentAdvisor.getCompanyProfile",
+          input,
+        ),
+      );
+    if (kinds.includes("mainBusiness"))
+      calls.push(
+        evidence.call(
+          context,
+          "connectors.investmentAdvisor.getMainBusinessComposition",
+          input,
+        ),
+      );
+    if (kinds.includes("industryRank"))
+      calls.push(
+        evidence.call(
+          context,
+          "connectors.investmentAdvisor.getCompanyIndustryRankings",
+          input,
+        ),
+      );
+    return calls;
   },
-  callHotConcepts(context: AdvisorContext, conceptName: string | null, limit: number): Promise<ToolMessage> {
-    return evidence.call(context, "connectors.investmentAdvisor.searchHotConcepts", {
-      concept_id: null,
-      concept_name: conceptName,
-      concept_explain: null,
-      index_code: null,
-      limit,
-      conceptId: null,
-      conceptName,
-      conceptExplain: null,
-      indexCode: null,
-      src: null,
-    });
+  queryEvidence(
+    context: AdvisorContext,
+    state: AdvisorState,
+    query: string,
+  ): Array<Promise<ToolMessage>> {
+    return [
+      evidence.callNews(context, query + " 股票 分析", 8),
+      evidence.callReports(
+        context,
+        query + " 股票 研究",
+        evidence.symbolsFor(evidence.normalizedTargets(state)),
+        null,
+      ),
+    ];
   },
-  callTopMovers(context: AdvisorContext, input: { setDomain: number | null; wantNum: number; target: string | null; sortType: number | null }): Promise<ToolMessage> {
-    return evidence.call(context, "connectors.investmentAdvisor.getTopPriceMovers", { ...input, src: null });
+  callNews(
+    context: AdvisorContext,
+    query: string,
+    count: number,
+  ): Promise<ToolMessage> {
+    return evidence.call(
+      context,
+      "connectors.investmentAdvisor.searchNewsHotTopics",
+      { query, count, src: null },
+    );
+  },
+  callReports(
+    context: AdvisorContext,
+    query: string,
+    symbols: string[] | null,
+    industries: string[] | null,
+  ): Promise<ToolMessage> {
+    return evidence.call(
+      context,
+      "connectors.investmentAdvisor.searchFinancialInvestmentReports",
+      {
+        query,
+        symbols,
+        industries,
+        num: 10,
+        start_datetime: null,
+        end_datetime: null,
+        src: null,
+      },
+    );
+  },
+  callHotConcepts(
+    context: AdvisorContext,
+    conceptName: string | null,
+    limit: number,
+  ): Promise<ToolMessage> {
+    return evidence.call(
+      context,
+      "connectors.investmentAdvisor.searchHotConcepts",
+      {
+        concept_id: null,
+        concept_name: conceptName,
+        concept_explain: null,
+        index_code: null,
+        limit,
+        conceptId: null,
+        conceptName,
+        conceptExplain: null,
+        indexCode: null,
+        src: null,
+      },
+    );
+  },
+  callTopMovers(
+    context: AdvisorContext,
+    input: {
+      setDomain: number | null;
+      wantNum: number;
+      target: string | null;
+      sortType: number | null;
+    },
+  ): Promise<ToolMessage> {
+    return evidence.call(
+      context,
+      "connectors.investmentAdvisor.getTopPriceMovers",
+      { ...input, src: null },
+    );
   },
   callNorthbound(context: AdvisorContext): Promise<ToolMessage> {
-    return evidence.call(context, "connectors.investmentAdvisor.getNorthboundStockList", { date: null, market: null, pageSize: 10, src: null });
+    return evidence.call(
+      context,
+      "connectors.investmentAdvisor.getNorthboundStockList",
+      { date: null, market: null, pageSize: 10, src: null },
+    );
   },
   callSouthbound(context: AdvisorContext): Promise<ToolMessage> {
-    return evidence.call(context, "connectors.investmentAdvisor.getSouthboundCapitalFlows", { date: null, market: "0", orderBy: "1", orderDirection: "1", page: 1, pageSize: 10, src: null });
+    return evidence.call(
+      context,
+      "connectors.investmentAdvisor.getSouthboundCapitalFlows",
+      {
+        date: null,
+        market: "0",
+        orderBy: "1",
+        orderDirection: "1",
+        page: 1,
+        pageSize: 10,
+        src: null,
+      },
+    );
   },
-  callSectorRelatedEtfs(context: AdvisorContext, code: string | null): Promise<ToolMessage> {
-    return evidence.call(context, "connectors.investmentAdvisor.getSectorRelatedEtfs", { code, src: null });
+  callSectorRelatedEtfs(
+    context: AdvisorContext,
+    code: string | null,
+  ): Promise<ToolMessage> {
+    return evidence.call(
+      context,
+      "connectors.investmentAdvisor.getSectorRelatedEtfs",
+      { code, src: null },
+    );
   },
   collectAll(calls: Array<Promise<ToolMessage>>): Promise<ToolMessage[]> {
     return Promise.all(calls);
   },
-  async call<TId extends AdvisorConnectorId>(context: AdvisorContext, id: TId, input: ConnectorInput<InvestmentAdvisorConnectorCatalog[TId]>): Promise<ToolMessage> {
+  async call<TId extends AdvisorConnectorId>(
+    context: AdvisorContext,
+    id: TId,
+    input: ConnectorInput<InvestmentAdvisorConnectorCatalog[TId]>,
+  ): Promise<ToolMessage> {
     try {
       const result = await context.call(id, input, { cache: true });
       return new ToolMessage({ name: id, call: input, result });
     } catch (error) {
-      return new ToolMessage({ name: id, call: input, result: { error: errorMessage(error) }, isError: true });
+      return new ToolMessage({
+        name: id,
+        call: input,
+        result: { error: errorMessage(error) },
+        isError: true,
+      });
     }
   },
 };
 
 function normalizeSecurityTarget(target: SecurityTarget): NormalizedSecurity {
   const parsedFullCode = parseFullCode(target.fullCode ?? target.raw);
-  const code = target.code ?? parsedFullCode?.code ?? bareNumericCode(target.raw);
-  const market = target.market ?? parsedFullCode?.market ?? inferAshareMarket(code);
-  const fullCode = target.fullCode ?? parsedFullCode?.fullCode ?? (code && market ? code + "." + market : null);
+  const code =
+    target.code ?? parsedFullCode?.code ?? bareNumericCode(target.raw);
+  const market =
+    target.market ?? parsedFullCode?.market ?? inferAshareMarket(code);
+  const fullCode =
+    target.fullCode ??
+    parsedFullCode?.fullCode ??
+    (code && market ? code + "." + market : null);
   const display = target.name ?? fullCode ?? code ?? target.raw;
 
   return {
@@ -367,13 +593,23 @@ function normalizeSecurityTarget(target: SecurityTarget): NormalizedSecurity {
   };
 }
 
-function parseFullCode(value: string): { code: string; market: z.infer<typeof SecurityMarketSchema>; fullCode: string } | null {
+function parseFullCode(
+  value: string,
+): {
+  code: string;
+  market: z.infer<typeof SecurityMarketSchema>;
+  fullCode: string;
+} | null {
   const match = /^(\d{5,6})\.(SH|SZ|BJ|HK|US)$/i.exec(value.trim());
   if (!match) return null;
   const code = match[1];
   const market = match[2]?.toUpperCase();
   if (!code || !SecurityMarketSchema.safeParse(market).success) return null;
-  return { code, market: market as z.infer<typeof SecurityMarketSchema>, fullCode: code + "." + market };
+  return {
+    code,
+    market: market as z.infer<typeof SecurityMarketSchema>,
+    fullCode: code + "." + market,
+  };
 }
 
 function bareNumericCode(value: string): string | null {
@@ -381,7 +617,9 @@ function bareNumericCode(value: string): string | null {
   return /^\d{5,6}$/.test(normalized) ? normalized : null;
 }
 
-function inferAshareMarket(code: string | null): z.infer<typeof SecurityMarketSchema> | null {
+function inferAshareMarket(
+  code: string | null,
+): z.infer<typeof SecurityMarketSchema> | null {
   if (!code) return null;
   if (/^(60|68|51|56|58)/.test(code)) return "SH";
   if (/^(00|30|15|16|18)/.test(code)) return "SZ";

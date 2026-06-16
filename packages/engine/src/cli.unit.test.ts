@@ -97,11 +97,14 @@ cases:
     assert.equal(source.kind, "agent");
     if (source.kind !== "agent") return;
 
-    assert.deepEqual(source.workflowFiles, [{
+    assert.deepEqual(source.workflowFiles.map(({ name, id, path }) => ({ name, id, path })), [{
       name: "flow_a",
       id: "flow_a",
       path: join(dir, "workflows", "flow_a.workflow.ts"),
     }]);
+    assert.equal(source.workflowFiles[0]?.metadata.version, "0.1.0");
+    assert.equal(source.workflowFiles[0]?.metadata.description, "Agent fixture.");
+    assert.deepEqual(source.workflowFiles[0]?.metadata.routing.examples, ["fixture"]);
     assert.deepEqual(source.connectorFiles, [{
       name: "main",
       path: join(dir, "connectors", "main.ts"),
@@ -164,6 +167,150 @@ export default {
     const workflows = await loadWorkflowFiles([modulePath]);
 
     assert.deepEqual(workflows.map((workflow) => workflow.id), ["flow_a"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("loadWorkflowFiles applies manifest metadata to complete workflow definitions", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pac-engine-loader-metadata-"));
+  const modulePath = join(dir, "flow.mjs");
+
+  await writeFile(
+    modulePath,
+    `
+const parser = {
+  parse(input) {
+    return input;
+  },
+};
+
+export default {
+  id: "module_flow",
+  version: "0.1.0",
+  description: "Module fixture workflow.",
+  routing: {
+    examples: ["module"],
+    entities: ["module"],
+    neighbors: [],
+    thresholds: {
+      localAccept: 0.1,
+      localUncertain: 0.05,
+      globalAccept: 0.1,
+    },
+  },
+  stateSchema: parser,
+  state: {},
+  nodes: [{
+    kind: "effect",
+    name: "noop",
+    stage: "afterPatch",
+    description: "No-op effect fixture.",
+    run: () => undefined,
+  }],
+  patch: {
+    schema: parser,
+    instruction: "Extract no fixture state.",
+  },
+  invalidation: {},
+  render: () => ({ text: "ok" }),
+};
+`,
+  );
+
+  try {
+    const workflows = await loadWorkflowFiles([{
+      path: modulePath,
+      metadata: {
+        id: "manifest_flow",
+        version: "1.0.0",
+        description: "Manifest fixture workflow.",
+        routing: {
+          examples: ["manifest"],
+          entities: ["manifest"],
+          neighbors: [],
+          thresholds: {
+            localAccept: 0.2,
+            localUncertain: 0.1,
+            globalAccept: 0.2,
+          },
+        },
+      },
+    }]);
+
+    const [workflow] = workflows;
+    assert.ok(workflow);
+    assert.equal(workflow.id, "manifest_flow");
+    assert.equal(workflow.version, "1.0.0");
+    assert.deepEqual(workflow.routing.examples, ["manifest"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("loadWorkflowFiles materializes manifest-backed workflow templates", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pac-engine-loader-template-"));
+  const modulePath = join(dir, "flow.mjs");
+
+  await writeFile(
+    modulePath,
+    `
+const parser = {
+  parse(input) {
+    return input;
+  },
+};
+
+export default {
+  __pacWorkflowTemplate: true,
+  stateSchema: parser,
+  state: {},
+  nodes: [{
+    kind: "effect",
+    name: "noop",
+    stage: "afterPatch",
+    description: "No-op effect fixture.",
+    run: () => undefined,
+  }],
+  patch: {
+    schema: parser,
+    instruction: "Extract no fixture state.",
+  },
+  invalidation: {},
+  render: {
+    name: "flow_a_reply",
+    instruction: "Reply.",
+    progress: "Rendering",
+  },
+};
+`,
+  );
+
+  try {
+    const workflows = await loadWorkflowFiles([{
+      path: modulePath,
+      metadata: {
+        id: "flow_a",
+        version: "0.1.0",
+        description: "Manifest fixture workflow.",
+        routing: {
+          examples: ["fixture"],
+          entities: ["fixture"],
+          neighbors: [],
+          thresholds: {
+            localAccept: 0.1,
+            localUncertain: 0.05,
+            globalAccept: 0.1,
+          },
+        },
+      },
+    }]);
+
+    const [workflow] = workflows;
+    assert.ok(workflow);
+    assert.equal(workflow.id, "flow_a");
+    assert.equal(workflow.version, "0.1.0");
+    assert.equal(typeof workflow.render === "function" ? undefined : workflow.render.name, "flow_a_reply");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

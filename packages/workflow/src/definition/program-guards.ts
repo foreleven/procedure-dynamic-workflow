@@ -3,6 +3,7 @@ import type { ConnectorCatalog } from "../connectors.js";
 import type {
   ProgramRenderConfig,
   ProgramWorkflowConfig,
+  ProgramWorkflowTemplateConfig,
 } from "../program.js";
 import type { WorkflowNode } from "../workflow.js";
 import {
@@ -12,16 +13,20 @@ import {
 } from "../utils/schema.js";
 
 /**
- * Asserts program-style workflow metadata invariants before node registration starts.
+ * Asserts program-style workflow config invariants before node registration starts.
  * Input: typed program workflow config.
  * Output: throws a stable definition-time error when runtime-only invariants fail.
  * Boundary: this does not duplicate TypeScript's shape checks.
  */
 export function assertProgramWorkflowInvariants<TState extends object>(
-  value: ProgramWorkflowConfig<TState>,
+  value: ProgramWorkflowConfig<TState> | ProgramWorkflowTemplateConfig<TState>,
 ): void {
-  parseSchema(z.object({ id: nonEmptyString("Workflow program id") }), value);
+  if (!("id" in value)) {
+    assertPatchInvalidationInvariants(value.invalidation, "Workflow template invalidation");
+    return;
+  }
 
+  parseSchema(z.object({ id: nonEmptyString("Workflow program id") }), value);
   const label = `Workflow ${value.id}`;
   parseSchema(
     z.object({

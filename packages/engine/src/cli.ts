@@ -73,7 +73,7 @@ async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   const workflowSource = resolveCliWorkflowSource(options.workflowPath);
   const workflows = workflowSource.kind === "agent"
-    ? await loadWorkflowFiles(workflowSource.workflowFiles.map((file) => file.path))
+    ? await loadWorkflowFiles(workflowSource.workflowFiles)
     : await loadWorkflows(workflowSource.workflowPath);
   if (workflowSource.kind === "agent") {
     assertAgentWorkflowIds(workflowSource.workflowFiles, workflows);

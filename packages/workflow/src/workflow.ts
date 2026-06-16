@@ -14,7 +14,10 @@ import type {
 import type { WorkflowContext } from "./runtime/context.js";
 import { PrefetchStore } from "./runtime/prefetch.js";
 import type { WorkflowMessage, WorkflowToolMessage } from "./runtime/messages.js";
-import { assertWorkflowDefinitionInvariants } from "./definition/workflow-guards.js";
+import {
+  assertWorkflowDefinitionInvariants,
+  assertWorkflowDefinitionTemplateInvariants,
+} from "./definition/workflow-guards.js";
 
 export { WorkflowContextStore } from "./runtime/context.js";
 export type { WorkflowContext, WorkflowContextCallOptions } from "./runtime/context.js";
@@ -161,17 +164,34 @@ export interface WorkflowDefinition<
   TState extends object = JsonRecord,
   TPatch = unknown,
   TConnectors extends ConnectorCatalog = ConnectorCatalog,
-> {
+> extends WorkflowDefinitionMetadata, WorkflowDefinitionBody<TState, TPatch, TConnectors> {}
+
+export interface WorkflowDefinitionMetadata {
   id: WorkflowId;
   version: string;
   description: string;
   routing: RoutingProfile;
+}
+
+export interface WorkflowDefinitionBody<
+  TState extends object = JsonRecord,
+  TPatch = unknown,
+  TConnectors extends ConnectorCatalog = ConnectorCatalog,
+> {
   stateSchema: z.ZodType<TState>;
   state: TState;
   nodes: Array<WorkflowNode<TState, TConnectors>>;
   patch: PatchPolicy<TPatch>;
   invalidation: Partial<Record<keyof TState & string, Array<keyof TState & string>>>;
   render: RenderPolicy | RenderFunction<TState, TConnectors>;
+}
+
+export interface WorkflowDefinitionTemplate<
+  TState extends object = JsonRecord,
+  TPatch = unknown,
+  TConnectors extends ConnectorCatalog = ConnectorCatalog,
+> extends WorkflowDefinitionBody<TState, TPatch, TConnectors> {
+  readonly __pacWorkflowTemplate: true;
 }
 
 export interface WorkflowInstance<TState extends object = JsonRecord> {
@@ -200,4 +220,49 @@ export function defineWorkflowDefinition<
 ): WorkflowDefinition<z.infer<TStateSchema>, TPatch, TConnectors> {
   assertWorkflowDefinitionInvariants(definition);
   return definition;
+}
+
+/**
+ * Defines a workflow body that receives stable identity and routing metadata from an agent manifest.
+ * Input: state schema/default, nodes, patch, invalidation, and render behavior.
+ * Output: a template that cannot enter the engine until manifest metadata is attached.
+ * Boundary: validates workflow-owned behavior here; metadata and routing are validated when materialized.
+ */
+export function defineWorkflowTemplate<
+  TStateSchema extends z.ZodType<object>,
+  TPatch,
+  TConnectors extends ConnectorCatalog = ConnectorCatalog,
+>(
+  body: WorkflowDefinitionBody<z.infer<TStateSchema>, TPatch, TConnectors> & {
+    stateSchema: TStateSchema;
+  },
+): WorkflowDefinitionTemplate<z.infer<TStateSchema>, TPatch, TConnectors> {
+  assertWorkflowDefinitionTemplateInvariants(body, "Workflow template");
+  return {
+    ...body,
+    __pacWorkflowTemplate: true,
+  };
+}
+
+/**
+ * Attaches manifest metadata to a workflow template before the engine sees it.
+ * Input: stable metadata from `agent.yaml` plus a workflow body exported by a workflow file.
+ * Output: a complete workflow definition with the same invariants as direct definitions.
+ * Boundary: this is the only supported conversion from manifest-loaded templates to runtime artifacts.
+ */
+export function defineWorkflowDefinitionFromTemplate<
+  TStateSchema extends z.ZodType<object>,
+  TPatch,
+  TConnectors extends ConnectorCatalog = ConnectorCatalog,
+>(
+  metadata: WorkflowDefinitionMetadata,
+  template: WorkflowDefinitionTemplate<z.infer<TStateSchema>, TPatch, TConnectors> & {
+    stateSchema: TStateSchema;
+  },
+): WorkflowDefinition<z.infer<TStateSchema>, TPatch, TConnectors> {
+  const { __pacWorkflowTemplate: _templateMarker, ...body } = template;
+  return defineWorkflowDefinition({
+    ...metadata,
+    ...body,
+  });
 }

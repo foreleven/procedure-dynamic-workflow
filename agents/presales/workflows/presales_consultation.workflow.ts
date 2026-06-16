@@ -1,6 +1,5 @@
 import {
   ToolMessage,
-  loadWorkflowMetadata,
   type WorkflowContext,
   workflow,
   z,
@@ -132,13 +131,10 @@ const presalesInvalidation = {
   termMonths: ["selectedProduct"],
 } satisfies Partial<Record<keyof PresalesState & string, Array<keyof PresalesState & string>>>;
 
-const metadata = loadWorkflowMetadata(import.meta.url, "../agent.yaml");
-
 const { patch, prefetch, effect, command, render } = workflow<
   PresalesState,
   PresalesConnectorCatalog
 >({
-  ...metadata,
   stateSchema: PresalesStateSchema,
   state: presalesInitialState,
 });

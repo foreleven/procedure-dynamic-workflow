@@ -11,30 +11,32 @@ Use this package to define workflow artifacts and connector contracts.
 ### Public Surface Index
 
 Runtime exports:
-- `AckOptionSchema`, `AckRequestSchema`, `ConnectorRegistry`, `DEFAULT_ROUTING_THRESHOLDS`, `JsonRecordSchema`, `PrefetchStore`, `SessionPatchSchema`, `ToolMessage`, `WorkflowContextStore`, `createConnectorRegistry`, `defineConnectorCatalog`, `defineConnectorRef`, `defineConnectorTool`, `definePatch`, `defineRouting`, `defineWorkflowDefinition`, `defineWorkflowHooks`, `effectAction`, `hydrateContextAction`, `loadWorkflowMetadata`, `prefetchAction`, `renderAction`, `resolveAckSelection`, `setContextAction`, `setStateAction`, `settlePrefetch`, `workflow`, `workflowActions`, and `z`.
+- `AckOptionSchema`, `AckRequestSchema`, `ConnectorRegistry`, `DEFAULT_ROUTING_THRESHOLDS`, `JsonRecordSchema`, `PrefetchStore`, `SessionPatchSchema`, `ToolMessage`, `WorkflowContextStore`, `createConnectorRegistry`, `defineConnectorCatalog`, `defineConnectorRef`, `defineConnectorTool`, `definePatch`, `defineRouting`, `defineWorkflowDefinition`, `defineWorkflowDefinitionFromTemplate`, `defineWorkflowHooks`, `defineWorkflowTemplate`, `effectAction`, `hydrateContextAction`, `loadWorkflowMetadata`, `prefetchAction`, `renderAction`, `resolveAckSelection`, `setContextAction`, `setStateAction`, `settlePrefetch`, `workflow`, `workflowActions`, and `z`.
 
 Public types:
-- `AckRequest`, `AckSelection`, `ConnectorCatalog`, `ConnectorInput`, `ConnectorOutput`, `PatchPolicy`, `RenderPolicy`, `RenderResponse`, `RoutingProfile`, `SessionContext`, `ToolMessageInput`, `WorkflowContext`, `WorkflowContextCallOptions`, `WorkflowDefinition`, `WorkflowMetadata`, `WorkflowNode`, `WorkflowPatch`, `WorkflowProgram`, `WorkflowRuntimeInput`, `WorkflowStatePatch`, `WorkflowStepController`, `WorkflowStepHandle`, and `WorkflowToolMessage`.
+- `AckRequest`, `AckSelection`, `ConnectorCatalog`, `ConnectorInput`, `ConnectorOutput`, `PatchPolicy`, `ProgramWorkflowBaseConfig`, `ProgramWorkflowConfig`, `ProgramWorkflowTemplateConfig`, `RenderPolicy`, `RenderResponse`, `RoutingProfile`, `SessionContext`, `ToolMessageInput`, `WorkflowContext`, `WorkflowContextCallOptions`, `WorkflowDefinition`, `WorkflowDefinitionBody`, `WorkflowDefinitionMetadata`, `WorkflowDefinitionTemplate`, `WorkflowMetadata`, `WorkflowNode`, `WorkflowPatch`, `WorkflowProgram`, `WorkflowRuntimeInput`, `WorkflowStatePatch`, `WorkflowStepController`, `WorkflowStepHandle`, `WorkflowTemplateProgram`, and `WorkflowToolMessage`.
 
 ### Workflow Definition
 
 #### `workflow(config)`
 
-Builds a workflow definition through a program-style DSL.
+Builds a workflow through a program-style DSL.
 
 Input:
-- `id`, `version`, `description`: stable workflow identity and metadata.
-- `routing`: a `RoutingProfile` from `defineRouting(...)`.
 - `stateSchema`: Zod schema for workflow state.
 - `state`: default workflow state.
 - `invalidation`: optional dependent-state reset rules.
+- Optional `id`, `version`, `description`, and `routing` for standalone modules that export complete workflow definitions.
 
 Output:
-- a `WorkflowProgram` with `patch(...)`, `prefetch(...)`, `effect(...)`, `command(...)`, and `render(...)`.
+- a `WorkflowProgram` or `WorkflowTemplateProgram` with `patch(...)`, `prefetch(...)`, `effect(...)`, `command(...)`, and `render(...)`.
+- If metadata is omitted, `render(...)` returns a `WorkflowDefinitionTemplate`; agent-directory CLI loading attaches `agent.yaml` metadata before runtime execution.
+- If metadata is supplied, `render(...)` returns a complete `WorkflowDefinition`.
+- In agent-directory loading, manifest metadata is the source of truth and overrides metadata from legacy complete definitions.
 - `derive(...)` remains available as a migration alias for `effect(...)`.
 
 Behavior:
-- asserts non-empty workflow metadata and invalidation invariants during definition;
+- asserts non-empty workflow metadata when supplied and invalidation invariants during definition;
 - rejects author `TState`/default state shapes that declare the runtime-owned `messages` field;
 - asserts non-empty node names and descriptions during registration, and validates required prefetch progress text;
 - `effect(name, dependsOn, config)` and `config.dependsOn` gate an effect by state-field dependency snapshots;
@@ -43,7 +45,7 @@ Behavior:
 - asserts render policy metadata before producing a workflow definition.
 
 Boundary:
-- this helper trusts TypeScript for typed config shape; `@pac/engine` owns scheduling and execution.
+- this helper trusts TypeScript for typed config shape; `@pac/engine` owns manifest metadata injection, scheduling, and execution.
 
 #### `new ToolMessage(input)`
 
@@ -104,6 +106,17 @@ Behavior:
 
 Boundary:
 - this helper checks typed definition invariants; unknown/dynamic artifact shape checks belong at loading boundaries.
+
+#### `defineWorkflowTemplate(body)`
+
+Returns a `WorkflowDefinitionTemplate` after checking workflow-owned state, patch, invalidation, node, and render invariants. Templates intentionally omit stable metadata and cannot be executed by the engine until materialized.
+
+#### `defineWorkflowDefinitionFromTemplate(metadata, template)`
+
+Attaches `WorkflowDefinitionMetadata` from an agent manifest to a `WorkflowDefinitionTemplate` and returns a complete `WorkflowDefinition`.
+
+Boundary:
+- manifest metadata is validated at the CLI/definition boundary before the workflow enters the engine.
 
 #### `defineWorkflowHooks(config)`
 
