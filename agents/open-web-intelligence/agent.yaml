@@ -1,0 +1,70 @@
+# CLI 从 agent 目录加载时使用的 connector 文件名。
+connectors:
+  - main
+
+workflows:
+  competitor-market-research:
+    # workflow 的稳定唯一标识。
+    id: competitor-market-research
+
+    # workflow artifact 版本。
+    version: 1.0.0
+
+    # workflow 的业务范围。
+    description: 公开互联网竞品/市场调研，覆盖竞品发现、竞品画像、市场趋势、定价定位、官网信号和深度公开资料报告。
+
+    routing:
+      examples:
+        - 帮我找一下 Linear 的竞品
+        - 调研一下 AI coding agent 市场最近有什么变化
+        - 对比 Cursor、Windsurf 和 Claude Code 的定价和定位
+        - 分析一下 https://example.com 这个官网的定位、功能和客户案例
+        - 帮我做一份跨境支付 SaaS 的市场趋势简报
+        - 我想要一份带来源证据链的完整竞品报告
+      entities:
+        - competitor
+        - market
+        - company
+        - product
+        - website
+        - pricing
+        - positioning
+        - trend
+        - evidence
+        - source
+      neighbors:
+        - investment_advice
+        - legal_opinion
+        - recruiting_background_check
+        - private_data_investigation
+        - sales_outreach
+      thresholds: { localAccept: 0.7 }
+
+cases:
+  - id: competitor_landscape_overview
+    description: 用户请求竞品清单时，系统应基于公开来源做候选发现，并区分直接竞品、间接竞品和待验证假设。
+    turns:
+      - message: 帮我找一下 Linear 的竞品，主要看项目管理和 issue tracking。
+        expect:
+          responseSatisfies: 系统应说明默认研究口径，使用公开网页资料初筛竞品，并区分直接竞品、间接竞品、替代方案和仍需验证的假设；不能把搜索排名直接当作竞品结论。
+
+  - id: pricing_positioning_compare
+    description: 用户指定多个竞品做定价定位对比时，系统应围绕指定名单检索，不擅自替换名单。
+    turns:
+      - message: 对比 Cursor、Windsurf 和 Claude Code 的定价、目标用户和核心卖点。
+        expect:
+          responseSatisfies: 系统应围绕用户指定的三个对象做对比，标注公开来源和不确定性；价格不可见或需要登录/销售联系的部分不能编造。
+
+  - id: website_crawl_requires_confirmation
+    description: 用户要求系统化官网分析时，系统必须先确认抓取范围，不能直接无边界抓取网站。
+    turns:
+      - message: 系统分析一下 https://example.com 官网，看看定位、功能页、客户案例和博客策略。
+        expect:
+          responseSatisfies: 系统应在抓取前确认站点范围、页面类型、数量上限和排除范围，说明只处理公开页面；不能直接表示已经完成全站抓取。
+
+  - id: deep_research_requires_confirmation
+    description: 用户要求深度报告时，系统必须先确认研究范围和输出结构，再启动深度研究。
+    turns:
+      - message: 帮我做一份 AI 客服 SaaS 的深度市场研究报告，要有证据链。
+        expect:
+          responseSatisfies: 系统应确认研究对象、地区、时间范围和输出结构，说明深度研究基于公开互联网资料且需要后续核验；不能直接声称完成正式尽调。

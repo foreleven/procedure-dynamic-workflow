@@ -1,28 +1,23 @@
 import {
   type JsonRecord,
-  type MessagePatch,
+  type RenderResponse,
   type WorkflowId,
   type WorkflowInstance,
   type WorkflowMessage,
   type WorkflowRuntimeState,
-  type WorkflowToolMessage,
 } from "@pac/workflow";
-import { cloneDefault, normalizeMessagePatch } from "./patching.js";
-import { errorMessage } from "./utils/errors.js";
-import { safeJsonStringify } from "./utils/json.js";
+import { applySessionPatch, cloneDefault } from "./patching.js";
 import { WorkflowInstanceStore } from "./runtime/instances.js";
 import { createEngineSession } from "./session.js";
 import {
-  appendWorkflowMessage,
   copyWorkflowMessages,
-  messagesForPatch,
   withRuntimeMessages,
 } from "./utils/messages.js";
 import { TurnChangeTracker } from "./utils/turn.js";
-import { ResponseRenderer } from "./runtime/response-renderer.js";
+import { ResponseRenderer, type MergedResponseParticipant } from "./runtime/response-renderer.js";
 import { WorkflowNodeRunner } from "./runtime/node-runner.js";
-import { applyWorkflowInvalidation, applyWorkflowMessagePatch } from "./runtime/mutations.js";
 import { RuntimeTracer } from "./runtime/tracer.js";
+import { WorkflowTurnRunner, type WorkflowTurnRunResult } from "./runtime/workflow-turn-runner.js";
 import { LlmWorkflowRouter } from "./routing/llm-workflow-router.js";
 import { RoutingPlanApplier } from "./routing/routing-plan-applier.js";
 import type { WorkflowRouter, WorkflowRoutingResult } from "./routing/router.js";
@@ -46,8 +41,8 @@ export class WorkflowEngine {
   private readonly instances: WorkflowInstanceStore;
   private readonly nodeRunner: WorkflowNodeRunner;
   private readonly renderer: ResponseRenderer;
+  private readonly workflowRunner: WorkflowTurnRunner;
   private readonly tracer: RuntimeTracer;
-  private readonly deps: WorkflowEngineOptions["deps"];
   private readonly router: WorkflowRouter;
   private readonly routingPlanApplier = new RoutingPlanApplier();
   private readonly recentMessageLimit: number;
@@ -66,11 +61,11 @@ export class WorkflowEngine {
       this.registry.set(workflow.id, workflow);
     }
 
-    this.deps = options.deps;
     this.instances = new WorkflowInstanceStore(this.registry, options.deps.connectors);
     this.tracer = new RuntimeTracer(options.logger);
     this.nodeRunner = new WorkflowNodeRunner(options.deps, this.tracer, options.maxProgramRounds ?? 6);
     this.renderer = new ResponseRenderer(options.deps, this.tracer, options.onResponseDelta, options.render);
+    this.workflowRunner = new WorkflowTurnRunner(options.deps, this.nodeRunner, this.renderer, this.tracer);
     this.router = options.routing?.router ?? new LlmWorkflowRouter({
       llm: options.deps.llm,
       gate: options.routing?.gate,
@@ -115,84 +110,75 @@ export class WorkflowEngine {
     const turnBaseMessages = [...sessionMessagesBeforeTurn, userWorkflowMessage(message)];
     const activeInstances = this.instances.forIds(session, session.activeWorkflowIds);
     const recentMessages = recentWorkflowMessages(session.messages, this.recentMessageLimit);
-    const speculativePatchPromise = this.extractSpeculativeActivePatches(activeInstances, turnBaseMessages);
 
-    const routed = await this.selectTargetWorkflows(message, session, activeInstances, recentMessages, traces);
-    const targets = routed.selection;
+    const targets = await this.selectTargetWorkflows(message, session, activeInstances, recentMessages, traces);
     const preStates = new Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>(
       targets.instances.map((instance) => [
         instance.id,
-        withRuntimeMessages(cloneDefault(instance.state), sessionMessagesBeforeTurn),
+        withRuntimeMessages(cloneDefault(instance.state), instance.state.messages),
       ]),
     );
-    this.attachWorkflowMessagesForTurn(targets.instances, turnBaseMessages, message, traces, turnChanges);
-
-    await Promise.all(
-      targets.instances.map((instance) =>
-        this.nodeRunner.runStageOnce(instance, session, message, traces, turnChanges, preStates, "beforePatch"),
-      ),
-    );
-
-    await Promise.all(
-      targets.instances.map((instance) =>
-        this.nodeRunner.runStageOnce(instance, session, message, traces, turnChanges, preStates, "withPatch"),
-      ),
-    );
-    const patches = await this.extractTargetPatches(
-      targets.instances,
-      routed.result,
-      speculativePatchPromise,
-      traces,
-    );
-
-    this.applyPatches(targets.instances, patches, session, traces, turnChanges);
-
-    const runnable = this.instances.forActiveTargets(session, targets.ids);
-    await Promise.all(
-      runnable.map((instance) =>
-        this.nodeRunner.runStageUntilStable(instance, session, message, traces, turnChanges, preStates, "afterPatch"),
-      ),
-    );
+    const runnable = targets.instances;
 
     if (runnable.length === 0) {
       const response = {
         text: "我还不能确定要执行哪个 workflow。",
       };
       this.commitSessionMessages(session, [...turnBaseMessages, assistantWorkflowMessage(response.text)]);
-      this.syncActiveWorkflowMessages(session);
       this.tracer.done("engine", "turn", turnStartedAt, { responseTextChars: response.text.length });
-      return {
+      const result = {
         response,
         responses: [],
         session,
         traces,
       };
+      return result;
     }
 
-    const mergedMessages = mergeWorkflowMessages(turnBaseMessages, runnable);
-    setWorkflowMessages(runnable, mergedMessages);
-    const rendered = await this.renderer.renderResponses(
-      runnable,
-      mergedMessages,
+    const shouldMergeFinalResponse = await this.shouldMergeWorkflowResponses(runnable, session, message);
+    const workflowResults = await Promise.all(
+      runnable.map((instance) =>
+        this.workflowRunner.run({
+          instance,
+          session,
+          message,
+          traces,
+          turnChanges,
+          preStates,
+          streamResponseDeltas: !shouldMergeFinalResponse,
+        }),
+      ),
+    );
+
+    const responses = workflowResults.map(({ workflowId, response }) => ({ workflowId, response }));
+    const finalResponse = await this.finalResponseForWorkflowResults(
+      workflowResults,
       session,
       message,
       traces,
-      turnChanges,
-      preStates,
+      shouldMergeFinalResponse,
     );
-    const responses = rendered.responses;
-    this.commitSessionMessages(session, [...mergedMessages, ...rendered.messages]);
-    this.syncActiveWorkflowMessages(session);
+
+    this.commitSessionMessages(
+      session,
+      this.sessionMessagesForCompletedWorkflows(
+        session,
+        turnBaseMessages,
+        workflowResults,
+        finalResponse,
+      ),
+    );
     session.routingMemory.lastMatchedWorkflowIds = runnable.map((instance) => instance.id);
 
-    this.tracer.done("engine", "turn", turnStartedAt, { responseTextChars: responses[0]?.response.text.length ?? 0 });
+    this.tracer.done("engine", "turn", turnStartedAt, { responseTextChars: finalResponse.text.length });
 
-    return {
-      response: responses[0]?.response ?? { text: "" },
+    const result = {
+      response: finalResponse,
       responses,
       session,
       traces,
     };
+    return result;
   }
 
   getWorkflowSnapshot<TState extends object>(
@@ -222,7 +208,7 @@ export class WorkflowEngine {
     activeInstances: WorkflowInstance<JsonRecord>[],
     recentMessages: readonly WorkflowMessage[],
     traces: EngineTraceEvent[],
-  ): Promise<RoutedTargetSelection> {
+  ): Promise<TargetSelection> {
     const gatePhase = activeInstances.length > 0 ? "routing.gate.existing_session" : "routing.gate.new_session";
     const startedAt = this.tracer.start("engine", "routing", {
       mode: activeInstances.length > 0 ? "existing_session" : "new_session",
@@ -261,178 +247,74 @@ export class WorkflowEngine {
     this.tracer.event("engine", phase, detail);
     this.tracer.done("engine", "routing", startedAt, detail);
 
-    return { selection, result };
+    return selection;
   }
 
-  private async extractPatch(
-    instance: WorkflowInstance<JsonRecord>,
-    traces: EngineTraceEvent[],
-    state: WorkflowRuntimeState<JsonRecord> = instance.state,
-    mode: "live" | "speculative" = "live",
-  ): Promise<MessagePatch> {
-    const name = `${instance.id}_patch`;
-    if (mode === "live" && instance.artifact.patch.progress) {
-      this.tracer.progress(traces, instance.id, {
-        node: name,
-        stage: "patch",
-        progress: instance.artifact.patch.progress,
-        description: "Extract structured workflow state from the latest user message.",
-      });
-    }
-    const startedAt = this.tracer.start(instance.id, "llm.patch", {
-      name,
-      model: instance.artifact.patch.model ?? "default",
-    });
-
-    try {
-      const now = (new Date()).toISOString();
-      const patch = await this.deps.llm.structured({
-        name,
-        ...(instance.artifact.patch.model ? { model: instance.artifact.patch.model } : {}),
-        instruction: patchInstructionForRuntime(instance.artifact.patch.instruction, now, state),
-        schema: instance.artifact.patch.schema,
-        messages: messagesForPatch(state),
-      });
-
-      const normalized = normalizeMessagePatch(patch);
-      this.tracer.done(instance.id, "llm.patch", startedAt, normalized);
-      return normalized;
-    } catch (error) {
-      this.tracer.done(instance.id, "llm.patch", startedAt, { error: errorMessage(error) });
-      throw error;
-    }
-  }
-
-  private extractSpeculativeActivePatches(
-    activeInstances: readonly WorkflowInstance<JsonRecord>[],
-    turnBaseMessages: readonly WorkflowMessage[],
-  ): Promise<SpeculativePatchResult[]> | undefined {
-    if (activeInstances.length === 0) return undefined;
-    return Promise.all(
-      activeInstances.map(async (instance): Promise<SpeculativePatchResult> => {
-        const transientState = withRuntimeMessages(cloneDefault(instance.state), turnBaseMessages);
-        try {
-          return {
-            workflowId: instance.id,
-            patch: await this.extractPatch(instance, [], transientState, "speculative"),
-          };
-        } catch (error) {
-          return {
-            workflowId: instance.id,
-            error,
-          };
-        }
-      }),
-    );
-  }
-
-  private async extractTargetPatches(
-    instances: WorkflowInstance<JsonRecord>[],
-    routingResult: WorkflowRoutingResult,
-    speculativePatchPromise: Promise<SpeculativePatchResult[]> | undefined,
-    traces: EngineTraceEvent[],
-  ): Promise<MessagePatch[]> {
-    const speculativeByWorkflow = new Map<WorkflowId, SpeculativePatchResult>();
-    if (
-      speculativePatchPromise &&
-      (routingResult.action === "continue" || routingResult.action === "parallel")
-    ) {
-      for (const result of await speculativePatchPromise) {
-        speculativeByWorkflow.set(result.workflowId, result);
-      }
-    } else if (speculativePatchPromise) {
-      void speculativePatchPromise;
-      traces.push({
-        workflowId: "engine",
-        phase: "routing.speculative_patch.discard",
-        detail: { action: routingResult.action },
-      });
-    }
-
-    return Promise.all(
-      instances.map((instance) => {
-        const speculative = speculativeByWorkflow.get(instance.id);
-        if (speculative) {
-          if ("error" in speculative) {
-            throw speculative.error;
-          }
-          return speculative.patch;
-        }
-        return this.extractPatch(instance, traces);
-      }),
-    );
-  }
-
-  private applyPatches(
-    instances: WorkflowInstance<JsonRecord>[],
-    patches: MessagePatch[],
+  private async finalResponseForWorkflowResults(
+    workflowResults: readonly WorkflowTurnRunResult[],
     session: EngineSession,
+    message: string,
     traces: EngineTraceEvent[],
-    turnChanges: TurnChangeTracker,
-  ): void {
-    for (const [index, instance] of instances.entries()) {
-      const patch = patches[index] ?? {};
-      const dirtyFields = applyWorkflowMessagePatch(instance, session, patch, traces);
-      const changes = turnChanges.forWorkflow(instance.id);
-      changes.recordMessagePatchState(Object.keys(patch.statePatch ?? {}));
-      const patchMessage = patchToolMessage(instance.id, patch);
-      if (patchMessage) {
-        appendWorkflowMessage(instance.state, patchMessage);
-        traces.push({
-          workflowId: instance.id,
-          phase: "messages.patch",
-          detail: { contentChars: safeJsonStringify(patchMessage.result).length },
-        });
-        changes.recordState(["messages"]);
-      }
-      const invalidated = applyWorkflowInvalidation(instance, dirtyFields, traces);
-      changes.recordState(dirtyFields);
-      changes.recordInvalidatedState(invalidated);
+    shouldMergeFinalResponse: boolean,
+  ): Promise<RenderResponse> {
+    const primaryResponse = workflowResults[0]?.response ?? { text: "" };
+    if (
+      workflowResults.length <= 1 ||
+      !shouldMergeFinalResponse
+    ) {
+      return primaryResponse;
     }
+
+    const participants: MergedResponseParticipant[] = workflowResults.map((result) => ({
+      workflowId: result.workflowId,
+      description: result.description,
+      response: result.response,
+    }));
+    const workflowIds = participants.map(({ workflowId }) => workflowId);
+    const startedAt = this.tracer.start("engine", "response.merge", { workflowIds });
+    const response = await this.renderer.mergeRenderedResponses(participants, session, message);
+    const detail = { workflowIds, textChars: response.text.length };
+    traces.push({
+      workflowId: "engine",
+      phase: "response.merge",
+      detail,
+    });
+    this.tracer.done("engine", "response.merge", startedAt, detail);
+    return response;
   }
 
-  private attachWorkflowMessagesForTurn(
+  private async shouldMergeWorkflowResponses(
     instances: readonly WorkflowInstance<JsonRecord>[],
-    messages: readonly WorkflowMessage[],
-    latestUserMessage: string,
-    traces: EngineTraceEvent[],
-    turnChanges: TurnChangeTracker,
-  ): void {
-    for (const instance of instances) {
-      instance.state.messages = copyWorkflowMessages(messages);
-      traces.push({
-        workflowId: instance.id,
-        phase: "messages.user",
-        detail: { contentChars: latestUserMessage.length },
-      });
-      turnChanges.forWorkflow(instance.id).recordState(["messages"]);
+    session: EngineSession,
+    message: string,
+  ): Promise<boolean> {
+    if (instances.length <= 1) return false;
+    if (instances.some((instance) => typeof instance.artifact.render === "function")) return false;
+    const decision = await this.renderer.mergeDecision(session, message, instances);
+    return decision === "merge";
+  }
+
+  private sessionMessagesForCompletedWorkflows(
+    session: EngineSession,
+    turnBaseMessages: readonly WorkflowMessage[],
+    workflowResults: readonly WorkflowTurnRunResult[],
+    finalResponse: RenderResponse,
+  ): WorkflowMessage[] {
+    const runtimeMessages = workflowResults.flatMap((result) => result.deltaMessages);
+    const assistantMessages = [assistantWorkflowMessage(finalResponse.text)];
+
+    for (const result of workflowResults) {
+      applySessionPatch(session, result.sessionPatch);
     }
+
+    return [...turnBaseMessages, ...runtimeMessages, ...assistantMessages];
   }
 
   private commitSessionMessages(session: EngineSession, messages: readonly WorkflowMessage[]): void {
     session.messages = copyWorkflowMessages(messages);
   }
 
-  private syncActiveWorkflowMessages(session: EngineSession): void {
-    setWorkflowMessages(this.instances.forIds(session, session.activeWorkflowIds), session.messages);
-  }
-
 }
-
-interface RoutedTargetSelection {
-  selection: TargetSelection;
-  result: WorkflowRoutingResult;
-}
-
-type SpeculativePatchResult =
-  | {
-      workflowId: WorkflowId;
-      patch: MessagePatch;
-    }
-  | {
-      workflowId: WorkflowId;
-      error: unknown;
-    };
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
@@ -456,80 +338,6 @@ function userWorkflowMessage(content: string): WorkflowMessage {
 
 function assistantWorkflowMessage(content: string): WorkflowMessage {
   return { role: "assistant", content };
-}
-
-function patchToolMessage(workflowId: WorkflowId, patch: MessagePatch): WorkflowToolMessage | undefined {
-  const result: JsonRecord = {};
-  if (patch.sessionPatch !== undefined) result.sessionPatch = patch.sessionPatch;
-  if (patch.statePatch !== undefined) result.statePatch = patch.statePatch;
-  if (Object.keys(result).length === 0) return undefined;
-
-  return {
-    role: "tool",
-    name: `${workflowId}.patch`,
-    call: { stage: "patch", workflowId },
-    result,
-  };
-}
-
-function mergeWorkflowMessages(
-  baseMessages: readonly WorkflowMessage[],
-  instances: readonly WorkflowInstance<JsonRecord>[],
-): WorkflowMessage[] {
-  const merged = copyWorkflowMessages(baseMessages);
-  for (const instance of instances) {
-    merged.push(...instance.state.messages.slice(baseMessages.length));
-  }
-  return merged;
-}
-
-function setWorkflowMessages(
-  instances: readonly WorkflowInstance<JsonRecord>[],
-  messages: readonly WorkflowMessage[],
-): void {
-  for (const instance of instances) {
-    instance.state.messages = copyWorkflowMessages(messages);
-  }
-}
-
-function patchInstructionForRuntime(instruction: string, now: string, state: JsonRecord): string {
-  return [
-    "PAC Patch system prompt:",
-    "You are the Patch phase of a PAC workflow runtime. Your core job is to advance workflow state.",
-    "",
-    "Patch responsibilities:",
-    "- Read the full conversation history, runtime tool facts, and current workflow state.",
-    "- Treat the latest user message as the only source of new user-provided facts for this turn.",
-    "- Use prior assistant messages, runtime tool facts, and current state only to resolve references, selections, confirmations, or corrections.",
-    "- Produce the minimal structured state/session delta needed to move the workflow forward after the latest user turn.",
-    "- If the latest user turn does not advance state, return a valid empty/no-op patch according to the schema.",
-    "- Preserve previously collected facts unless the latest user message explicitly changes, rejects, or corrects them.",
-    "",
-    "Patch prohibitions:",
-    "- Do not compose a user-facing reply; Render owns wording and user-visible content.",
-    "- Do not call connectors, simulate connector calls, invent records, invent available options, or invent external facts.",
-    "- Do not emit XML, DSML, JSON text, markdown, narration, or tool-call markup outside the required structured-output tool.",
-    "- Do not copy current-state fields into the patch only because they already exist; output a delta, not a snapshot.",
-    "",
-    "Workflow-authored Patch instructions:",
-    instruction.trim(),
-    "",
-    "PAC Patch runtime context:",
-    `- Current time is ${now}.`,
-    "- Use the current time only to resolve relative dates and times from the message log.",
-    "",
-    "Current workflow state before patch:",
-    safeJsonStringify(stateForPatch(state), 2),
-  ].join("\n");
-}
-
-function stateForPatch(state: JsonRecord): JsonRecord {
-  const snapshot: JsonRecord = {};
-  for (const [key, value] of Object.entries(state)) {
-    if (key === "messages") continue;
-    snapshot[key] = value;
-  }
-  return snapshot;
 }
 
 function isProtocolFastPathResult(result: WorkflowRoutingResult): boolean {

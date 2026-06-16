@@ -1,4 +1,4 @@
 interface:
   display_name: "Procedure Writer"
-  short_description: "Write business-facing PAC procedures"
-  default_prompt: "Use $pac-procedure-writer to write a business-facing PAC procedure.md from this scenario."
+  short_description: "Write connector-aware PAC procedures"
+  default_prompt: "Use $pac-procedure-writer to write a business-facing procedure file under procedures/ from this scenario and the existing connectors."

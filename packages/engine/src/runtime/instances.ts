@@ -53,23 +53,10 @@ export class WorkflowInstanceStore {
     return {
       id: instance.id,
       version: instance.version,
-      state: cloneSnapshotValue(withRuntimeMessages(instance.state, session.messages)) as WorkflowSnapshot<TState>["state"],
+      state: cloneSnapshotValue(withRuntimeMessages(instance.state)) as WorkflowSnapshot<TState>["state"],
       context: cloneSnapshotValue(instance.context.toJSON()),
       prefetch: cloneSnapshotValue(instance.prefetch.toJSON()),
     };
-  }
-
-  /**
-   * Resolves active workflow instances that are still part of the current target set.
-   * Input: session and target workflow ids selected earlier in the turn.
-   * Output: runtime instances in active workflow order.
-   * Boundary: this does not attach new workflows; routing owns target selection.
-   */
-  forActiveTargets(session: EngineSession, targetIds: Set<WorkflowId>): WorkflowInstance<JsonRecord>[] {
-    return this.forIds(
-      session,
-      session.activeWorkflowIds.filter((id) => targetIds.has(id)),
-    );
   }
 
   /**

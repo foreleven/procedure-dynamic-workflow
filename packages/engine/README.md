@@ -41,9 +41,9 @@ console.log(result.response.text);
 ## Public Surface
 
 - `WorkflowEngine` routes messages through a structured workflow-level route gate, extracts structured patches, runs workflow nodes, and renders responses.
-- One engine can register multiple workflows; selected workflows run in the same turn and are returned through `EngineTurnResult.responses`.
-- `EngineSession.messages` is the authoritative conversation log. Selected workflows receive shallow copies during a turn, append workflow tool facts locally, and the engine merges those facts before committing rendered assistant replies back to the session.
-- Multiple LLM render policies are merged into one natural assistant response by default; the merged render prompt uses the session message log plus selected workflows' newly merged runtime tool facts, with the latest user turn included once. `WorkflowEngineOptions.render.mergeStrategy` can return `separate` to keep per-workflow render calls.
+- One engine can register multiple workflows; selected workflow instances run independent full pipelines in the same turn and return per-workflow responses through `EngineTurnResult.responses`.
+- `EngineSession.messages` is the engine-level transcript. Each workflow instance keeps workflow-local `messages` for its own patch/render context; the engine commits the final user-visible output back to the session.
+- Multiple independently rendered LLM workflow responses are merged into one natural engine response by default. `WorkflowEngineOptions.render.mergeStrategy` can return `separate` to keep the first workflow response as the primary engine output.
 - `WorkflowRouter`, `RouteGate`, `WorkflowCandidateProvider`, `AllWorkflowCandidateProvider`, and `FlashLlmRouteGate` describe the routing extension points used by `WorkflowEngineOptions.routing`.
 - `createLlmClient(...)` creates an OpenAI-compatible LLM client through `@earendil-works/pi-ai`.
 - `LlmClient`, `LlmClientOptions`, and LLM request/event types describe model adapter boundaries.

@@ -280,7 +280,7 @@ Input:
 - `deps.connectors`: a connector registry.
 - `deps.now`: optional clock override.
 - `routing`: optional workflow router, route gate, candidate provider, gate model, confidence, and profile/message limits.
-- `render.mergeStrategy`: optional strategy for choosing whether multiple LLM render policies should merge into one response; defaults to merge and can return `separate`.
+- `render.mergeStrategy`: optional strategy for choosing whether multiple independently rendered LLM workflow responses should merge into one engine response; defaults to merge and can return `separate`.
 - `maxProgramRounds`: maximum stabilizing rounds for after-patch nodes.
 - `logger`: optional engine/LLM log sink.
 - `onResponseDelta`: optional stream delta callback.
@@ -298,20 +298,20 @@ Behavior:
 - routes existing sessions through protocol fast path or a structured route gate that can continue, switch, run parallel workflows, clarify, or select no workflow;
 - keeps short replies that resolve an active workflow acknowledgement on the active workflow without calling the route gate;
 - supports custom `WorkflowRouter`, `RouteGate`, and `WorkflowCandidateProvider` implementations through `WorkflowEngineOptions.routing`;
-- keeps the session `messages` log authoritative, gives selected workflow instances a shallow copy for the current turn, and converts workflow tool messages into plain runtime fact text for patch/render prompts;
-- extracts structured patches through `deps.llm.structured(...)`;
+- keeps `EngineSession.messages` as the engine-level transcript while each workflow instance keeps its own workflow-local `messages` history;
+- runs each selected workflow instance through its own `beforePatch -> withPatch -> patch -> afterPatch -> render` pipeline and returns that workflow's response to the engine;
+- extracts structured patches through `deps.llm.structured(...)` after the workflow instance has run its own pre-patch nodes;
 - reserves the workflow state field `messages` for runtime-provided history snapshots and ignores attempts to write it through state patches;
 - compares JSON-native state and prefetch values structurally so object key ordering alone does not create dirty fields;
-- runs prefetch and effect nodes by stage, with per-workflow after-patch stabilization running concurrently across active workflows;
+- runs selected workflow instance pipelines concurrently, with each instance stabilizing its own after-patch nodes;
 - validates raw prefetch node results before merging them into the runtime prefetch store;
 - invalidates dependent fields after state changes, resetting them to default values or deleting fields that are absent from the workflow default state;
 - preserves dependent fields explicitly extracted from the latest user message when later same-turn workflow nodes write source fields that would otherwise invalidate them;
-- renders responses through either a workflow render function or an LLM render policy;
-- merges multiple LLM render policies into one provider call and commits the merged assistant reply to the session message log by default;
-- builds merged render provider messages from the session message log after selected workflows' new runtime tool facts are merged, with the latest user turn included once; patch and routing gate LLM request messages are never appended to session or workflow messages;
-- keeps function-based renders separate because they do not expose mergeable render instructions;
-- validates workflow render responses and LLM render stream events before committing assistant messages to the session log;
-- when `onResponseDelta` is configured, emits merged render deltas with `workflowIds` and a synthetic joined `workflowId`, or separate render deltas in workflow response order when merge is disabled.
+- renders each selected workflow through either its workflow render function or LLM render policy;
+- lets the engine merge already-rendered LLM workflow responses into one final engine response by default;
+- keeps function-based workflow responses separate because they do not expose mergeable render instructions;
+- validates workflow render responses and LLM render stream events before committing the engine-level assistant output to the session log;
+- when `onResponseDelta` is configured, emits per-workflow render deltas for separate output, or engine merge deltas with `workflowIds` and a synthetic joined `workflowId` for merged output.
 
 #### `engine.createSession(input)`
 
@@ -337,8 +337,8 @@ Behavior:
 - rejects duplicate or unknown active workflow ids on the mutable session.
 
 Output:
-- `response`: primary render response;
-- `responses`: per-workflow render responses; merged render returns the same response text for each participating workflow id;
+- `response`: final engine response selected or merged from completed workflow responses;
+- `responses`: per-workflow responses returned by each workflow instance;
 - `session`: mutated session reference;
 - `traces`: runtime trace events for routing, patching, nodes, invalidation, messages, and rendering.
 

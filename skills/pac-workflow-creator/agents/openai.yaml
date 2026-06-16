@@ -1,4 +1,4 @@
 interface:
   display_name: "Workflow Creator"
-  short_description: "Compile procedure files into single-file PAC workflows"
-  default_prompt: "Use $pac-workflow-creator with this procedure file to produce one self-contained PAC workflow TypeScript artifact."
+  short_description: "Compile procedures into PAC workflow modules"
+  default_prompt: "Use $pac-workflow-creator with this procedure file to produce a PAC workflow module with business-first state design."

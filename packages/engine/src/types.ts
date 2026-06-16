@@ -78,8 +78,9 @@ export interface WorkflowEngineOptions {
   maxProgramRounds?: number;
   logger?: (line: string) => void;
   /**
-   * Streams render deltas. For merged render, `workflowId` is a synthetic joined
-   * id and `workflowIds` is the authoritative participant list.
+   * Streams the user-visible response path. Separate output streams workflow
+   * deltas; merged output streams engine merge deltas with authoritative
+   * `workflowIds`.
    */
   onResponseDelta?: (event: { workflowId: WorkflowId; workflowIds?: readonly WorkflowId[]; delta: string }) => void;
 }
@@ -113,9 +114,9 @@ export type WorkflowRenderMergeStrategy = (
 
 export interface WorkflowRenderOptions {
   /**
-   * Chooses whether multiple LLM render policies should be merged into one
-   * assistant response. Defaults to `merge`; function-based renders stay
-   * separate because they do not expose instructions for the engine to merge.
+   * Chooses whether multiple independently rendered LLM workflow responses
+   * should be merged into one engine response. Defaults to `merge`;
+   * function-based renders stay separate.
    */
   mergeStrategy?: WorkflowRenderMergeStrategy | undefined;
 }

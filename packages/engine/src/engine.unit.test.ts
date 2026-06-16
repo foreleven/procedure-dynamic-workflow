@@ -636,12 +636,20 @@ test("WorkflowEngine validates LLM stream events", async () => {
   );
 });
 
-test("WorkflowEngine merges active LLM workflow renders by default", async () => {
+test("WorkflowEngine merges completed LLM workflow responses by default", async () => {
   const deltas: string[] = [];
   const llm = createNamedStreamingLlm({
     patch: { statePatch: { selected: "multi" } },
     streams: {
-      merged_render: {
+      stream_a_render: {
+        deltas: ["alpha response"],
+        finalText: "alpha response",
+      },
+      stream_b_render: {
+        deltas: ["beta response"],
+        finalText: "beta response",
+      },
+      merged_response: {
         deltas: ["merged", " reply"],
         finalText: "merged reply",
       },
@@ -684,43 +692,50 @@ test("WorkflowEngine merges active LLM workflow renders by default", async () =>
 
   assert.deepEqual(result.responses.map((response) => response.workflowId), ["stream_a", "stream_b"]);
   assert.equal(result.response.text, "merged reply");
-  assert.deepEqual(result.responses.map((response) => response.response.text), ["merged reply", "merged reply"]);
-  assert.deepEqual(deltas, [
+  assert.deepEqual(result.responses.map((response) => response.response.text), ["alpha response", "beta response"]);
+  assert.deepEqual(deltas.filter((delta) => delta.startsWith("stream_a+stream_b|")), [
     "stream_a+stream_b|stream_a+stream_b:merged",
     "stream_a+stream_b|stream_a+stream_b: reply",
   ]);
-  assert.deepEqual(llm.streamCalls, ["merged_render"]);
-  const mergeRequest = llm.streamRequests[0];
+  assert.ok(!deltas.some((delta) => delta.startsWith("stream_a|")));
+  assert.ok(!deltas.some((delta) => delta.startsWith("stream_b|")));
+  assert.deepEqual(llm.streamCalls, ["stream_a_render", "stream_b_render", "merged_response"]);
+  const streamARequest = llm.streamRequests.find((request) => request.name === "stream_a_render");
+  const streamBRequest = llm.streamRequests.find((request) => request.name === "stream_b_render");
+  const mergeRequest = llm.streamRequests.find((request) => request.name === "merged_response");
   assert.ok(mergeRequest);
-  assert.match(mergeRequest.instruction, /Stream the final response/);
-  assert.match(String(llm.streamRequests[0]?.instruction), /Workflow 1: stream_a/);
-  assert.match(String(llm.streamRequests[0]?.instruction), /Workflow 2: stream_b/);
-  assert.deepEqual(mergeRequest.messages.map((message) => message.role), ["user", "assistant", "assistant"]);
-  const [mergedUserMessage] = mergeRequest.messages;
-  assert.equal(mergedUserMessage?.role, "user");
-  if (mergedUserMessage?.role !== "user") {
-    throw new Error("Expected merged render request to start with one latest user message");
-  }
-  assert.equal(mergedUserMessage.content, "message for active workflows");
-  assert.match(assistantText(mergeRequest.messages[1]), /Runtime tool fact: connectors\.alpha/);
-  assert.match(assistantText(mergeRequest.messages[1]), /"portfolio": "growth"/);
-  assert.match(assistantText(mergeRequest.messages[2]), /Runtime tool fact: connectors\.beta/);
-  assert.match(assistantText(mergeRequest.messages[2]), /"risk": "moderate"/);
-  assert.deepEqual(streamA?.state.messages.map((message) => message.role), ["user", "tool", "tool", "assistant"]);
-  assert.deepEqual(streamB?.state.messages.map((message) => message.role), ["user", "tool", "tool", "assistant"]);
-  assert.deepEqual(session.messages, streamA?.state.messages);
-  assert.deepEqual(streamA?.state.messages, streamB?.state.messages);
+  assert.ok(streamARequest);
+  assert.ok(streamBRequest);
+  const streamAFact = streamARequest.messages.find((item) =>
+    item.role === "assistant" && assistantText(item).includes("Runtime tool fact: connectors.alpha")
+  );
+  const streamBFact = streamBRequest.messages.find((item) =>
+    item.role === "assistant" && assistantText(item).includes("Runtime tool fact: connectors.beta")
+  );
+  assert.match(assistantText(streamAFact), /"portfolio": "growth"/);
+  assert.match(assistantText(streamBFact), /"risk": "moderate"/);
+  assert.match(mergeRequest.instruction, /Several workflow instances independently completed/);
+  assert.match(mergeRequest.instruction, /alpha response/);
+  assert.match(mergeRequest.instruction, /beta response/);
+  assert.deepEqual(streamA?.state.messages.map((message) => message.role), ["user", "tool", "assistant"]);
+  assert.deepEqual(streamB?.state.messages.map((message) => message.role), ["user", "tool", "assistant"]);
+  assert.notDeepEqual(session.messages, streamA?.state.messages);
+  assert.notDeepEqual(streamA?.state.messages, streamB?.state.messages);
   assert.equal(streamA?.state.messages.filter((message) => message.role === "assistant").length, 1);
   assert.equal(streamB?.state.messages.filter((message) => message.role === "assistant").length, 1);
   assert.deepEqual(streamA?.state.messages.at(-1), {
     role: "assistant",
-    content: "merged reply",
+    content: "alpha response",
   });
   assert.deepEqual(streamB?.state.messages.at(-1), {
     role: "assistant",
+    content: "beta response",
+  });
+  assert.deepEqual(session.messages.at(-1), {
+    role: "assistant",
     content: "merged reply",
   });
-  assert.ok(result.traces.some((trace) => trace.phase === "render.merge" && trace.workflowId === "engine"));
+  assert.ok(result.traces.some((trace) => trace.phase === "response.merge" && trace.workflowId === "engine"));
 });
 
 test("WorkflowEngine can render active LLM workflows separately through merge strategy", async () => {
@@ -765,7 +780,7 @@ test("WorkflowEngine can render active LLM workflows separately through merge st
 
   assert.deepEqual(result.responses.map((response) => response.workflowId), ["stream_a", "stream_b"]);
   assert.equal(result.response.text, "a1a2");
-  assert.deepEqual(deltas, ["stream_a:a1", "stream_a:a2", "stream_b:b1", "stream_b:b2"]);
+  assert.deepEqual(deltas, ["stream_b:b1", "stream_b:b2", "stream_a:a1", "stream_a:a2"]);
   assert.deepEqual(llm.streamCalls, ["stream_a_render", "stream_b_render"]);
 });
 
@@ -853,7 +868,7 @@ test("WorkflowEngine can switch away from active workflows through the route gat
   assert.equal(activeInstance?.state.selected, null);
   assert.equal(competingInstance?.state.selected, "active");
   assert.ok(result.traces.some((trace) => trace.phase === "routing.switch"));
-  assert.equal(patchCallCount(llm), 2);
+  assert.equal(patchCallCount(llm), 1);
 });
 
 test("WorkflowEngine can append a parallel workflow through the route gate", async () => {
@@ -1404,7 +1419,7 @@ function createToolStreamingWorkflow(config: {
   const program = workflow({
     id: config.id,
     version: "0.1.0",
-    description: `${config.id} merged tool render workflow fixture.`,
+    description: `${config.id} tool render workflow fixture.`,
     routing: defineRouting({
       examples: [config.route],
       entities: [config.route],
@@ -1420,7 +1435,7 @@ function createToolStreamingWorkflow(config: {
 
   program.patch({ state: {} });
   program.effect("load_tool_fact", {
-    description: "Appends one current-turn tool fact so merged render can compose across workflows.",
+    description: "Appends one current-turn tool fact so the workflow-local renderer can use connector facts.",
     run: (state) => {
       if (state.loaded) return {};
       return {

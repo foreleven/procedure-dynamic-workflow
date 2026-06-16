@@ -3,30 +3,23 @@ import {
   type RenderPolicy,
   type RenderResponse,
   type WorkflowId,
-  type WorkflowAssistantMessage,
   type WorkflowInstance,
-  type WorkflowMessage,
   type WorkflowRuntimeState,
   type WorkflowStepController,
 } from "@pac/workflow";
 import type { EngineSession, EngineTraceEvent, WorkflowEngineOptions } from "../types.js";
 import { RuntimeTracer } from "./tracer.js";
-import { messagesForRender, messagesForWorkflowMessages } from "../utils/messages.js";
+import { messagesForRender } from "../utils/messages.js";
 import { safeJsonStringify } from "../utils/json.js";
 import { normalizeRenderResponse, normalizeStreamTextEvent, renderText } from "../utils/rendering.js";
 import { preStateFor } from "../utils/state.js";
 import { TurnChangeTracker } from "../utils/turn.js";
 
-export interface RenderResponsesResult {
-  responses: Array<{ workflowId: WorkflowId; response: RenderResponse }>;
-  messages: WorkflowAssistantMessage[];
-}
-
 /**
- * Renders workflow responses and returns assistant messages for session-level commit.
+ * Renders workflow-local responses and merges completed engine responses.
  * Input: runtime dependencies, runtime tracer, and optional stream delta callback.
- * Output: per-workflow render responses plus assistant messages in commit order.
- * Boundary: WorkflowEngine owns turn scheduling; this class owns only response rendering and render traces.
+ * Output: normalized render responses and engine-level merged response text.
+ * Boundary: WorkflowEngine owns turn scheduling and transcript commit.
  */
 export class ResponseRenderer {
   constructor(
@@ -37,86 +30,19 @@ export class ResponseRenderer {
   ) {}
 
   /**
-   * Renders all runnable workflows in the order required by streaming behavior.
-   * Input: runnable instances plus current turn/session state.
-   * Output: rendered responses paired with workflow ids.
-   * Boundary: streaming mode renders sequentially so deltas stay ordered; non-streaming mode renders concurrently.
+   * Evaluates whether the engine should merge independently rendered workflow responses.
+   * Input: selected instances before render, limited to render policies that expose mergeable metadata.
+   * Output: merge or separate, preserving the historical default for mergeable LLM render policies.
+   * Boundary: function-based renders remain separate because the engine cannot infer mergeable render contracts.
    */
-  async renderResponses(
-    instances: WorkflowInstance<JsonRecord>[],
-    mergedMessages: readonly WorkflowMessage[],
+  async mergeDecision(
     session: EngineSession,
     message: string,
-    traces: EngineTraceEvent[],
-    turnChanges: TurnChangeTracker,
-    preStates: Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>,
-  ): Promise<RenderResponsesResult> {
-    const merged = await this.renderMergedResponses(instances, mergedMessages, session, message, traces, turnChanges);
-    if (merged) return merged;
-
-    if (this.onResponseDelta) {
-      const responses: Array<{ workflowId: WorkflowId; response: RenderResponse }> = [];
-      for (const instance of instances) {
-        responses.push(await this.renderAndRecordResponse(instance, session, message, traces, turnChanges, preStates));
-      }
-      return {
-        responses,
-        messages: responses.map(({ response }) => assistantMessage(response.text)),
-      };
-    }
-
-    const responses = await Promise.all(
-      instances.map(async (instance) =>
-        this.renderAndRecordResponse(instance, session, message, traces, turnChanges, preStates),
-      ),
-    );
-    return {
-      responses,
-      messages: responses.map(({ response }) => assistantMessage(response.text)),
-    };
-  }
-
-  /**
-   * Renders one workflow response and traces the assistant message selected for session commit.
-   * Input: one runtime workflow instance plus the current session, message, traces, and turn-change stores.
-   * Output: the workflow id paired with its rendered response.
-   * Boundary: this method does not mutate message history; WorkflowEngine commits messages after render.
-   */
-  private async renderAndRecordResponse(
-    instance: WorkflowInstance<JsonRecord>,
-    session: EngineSession,
-    message: string,
-    traces: EngineTraceEvent[],
-    turnChanges: TurnChangeTracker,
-    preStates: Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>,
-  ): Promise<{ workflowId: WorkflowId; response: RenderResponse }> {
-    const startedAt = this.tracer.start(instance.id, "render");
-    const response = await this.renderInstance(instance, session, message, turnChanges, preStates, traces);
-    this.tracer.done(instance.id, "render", startedAt, { textChars: response.text.length });
-    this.traceAssistantMessage(instance, response, traces, turnChanges);
-    return {
-      workflowId: instance.id,
-      response,
-    };
-  }
-
-  /**
-   * Renders multiple LLM render policies through one provider call when the
-   * merge strategy allows it. Function renders stay separate because their
-   * semantics are workflow-owned code rather than mergeable instructions.
-   */
-  private async renderMergedResponses(
-    instances: WorkflowInstance<JsonRecord>[],
-    mergedMessages: readonly WorkflowMessage[],
-    session: EngineSession,
-    message: string,
-    traces: EngineTraceEvent[],
-    turnChanges: TurnChangeTracker,
-  ): Promise<RenderResponsesResult | undefined> {
-    const participants = mergeableRenderParticipants(instances);
-    if (!participants) return undefined;
-
-    const decision = await this.renderOptions?.mergeStrategy?.({
+    instances: readonly WorkflowInstance<JsonRecord>[],
+  ): Promise<"merge" | "separate"> {
+    const participants = mergeableRenderParticipants([...instances]);
+    if (!participants) return "separate";
+    return await this.renderOptions?.mergeStrategy?.({
       session,
       message,
       workflows: participants.map(({ instance, render }) => ({
@@ -124,57 +50,48 @@ export class ResponseRenderer {
         renderName: render.name,
       })),
     }) ?? "merge";
-    if (decision === "separate") return undefined;
-
-    const workflowIds = participants.map(({ instance }) => instance.id);
-    const startedAt = this.tracer.start("engine", "render.merge", { workflowIds });
-    for (const { instance, render } of participants) {
-      this.tracer.progress(traces, instance.id, {
-        node: render.name,
-        stage: "render",
-        progress: render.progress,
-        description: "Merge this workflow render contract into one assistant reply.",
-      });
-    }
-
-    const response = await this.renderMergedInstance(participants, mergedMessages);
-    const detail = { workflowIds, textChars: response.text.length };
-    traces.push({
-      workflowId: "engine",
-      phase: "render.merge",
-      detail,
-    });
-    this.tracer.done("engine", "render.merge", startedAt, detail);
-
-    for (const { instance } of participants) {
-      this.traceAssistantMessage(instance, response, traces, turnChanges);
-    }
-
-    return {
-      responses: participants.map(({ instance }) => ({
-        workflowId: instance.id,
-        response,
-      })),
-      messages: [assistantMessage(response.text)],
-    };
   }
 
-  private async renderMergedInstance(
-    participants: MergeRenderParticipant[],
-    mergedMessages: readonly WorkflowMessage[],
+  /**
+   * Renders a single workflow instance response after that instance has completed its own patch and nodes.
+   * Input: one runnable workflow instance and the current workflow-local turn state.
+   * Output: the workflow id paired with its normalized response.
+   * Boundary: this does not commit messages; the workflow runner and engine decide local/global message storage.
+   */
+  async renderWorkflowResponse(
+    instance: WorkflowInstance<JsonRecord>,
+    session: EngineSession,
+    message: string,
+    traces: EngineTraceEvent[],
+    turnChanges: TurnChangeTracker,
+    preStates: Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>,
+    streamDeltas = true,
+  ): Promise<{ workflowId: WorkflowId; response: RenderResponse }> {
+    return this.renderAndRecordResponse(instance, session, message, traces, turnChanges, preStates, streamDeltas);
+  }
+
+  /**
+   * Merges already-rendered workflow responses into one user-visible engine response.
+   * Input: independent workflow render responses from the same user turn.
+   * Output: one normalized response suitable for `EngineTurnResult.response`.
+   * Boundary: this is engine-level presentation only; workflow state and workflow-local responses are not changed.
+   */
+  async mergeRenderedResponses(
+    participants: readonly MergedResponseParticipant[],
+    session: EngineSession,
+    message: string,
   ): Promise<RenderResponse> {
-    const workflowIds = participants.map(({ instance }) => instance.id);
-    if (workflowIds.length === 0) {
-      return { text: "" };
-    }
-    const mergedWorkflowId = mergedRenderWorkflowId(workflowIds);
+    const workflowIds = participants.map(({ workflowId }) => workflowId);
+    if (participants.length === 0) return { text: "" };
+    if (participants.length === 1) return participants[0]?.response ?? { text: "" };
 
     const request = {
-      name: "merged_render",
-      instruction: mergedRenderInstructionForRuntime(participants),
-      messages: messagesForWorkflowMessages(mergedMessages),
+      name: "merged_response",
+      instruction: mergedResponseInstruction(participants, session, message),
+      messages: [],
     };
 
+    const mergedWorkflowId = mergedRenderWorkflowId(workflowIds);
     if (this.deps.llm.streamText) {
       let text = "";
       for await (const event of this.deps.llm.streamText(request)) {
@@ -192,8 +109,32 @@ export class ResponseRenderer {
     }
 
     const text = renderText(mergedWorkflowId, await this.deps.llm.text(request), "llm.text");
-
     return { text: text.trim() };
+  }
+
+  /**
+   * Renders one workflow response and traces the assistant message selected for session commit.
+   * Input: one runtime workflow instance plus the current session, message, traces, and turn-change stores.
+   * Output: the workflow id paired with its rendered response.
+   * Boundary: this method does not mutate message history; WorkflowEngine commits messages after render.
+   */
+  private async renderAndRecordResponse(
+    instance: WorkflowInstance<JsonRecord>,
+    session: EngineSession,
+    message: string,
+    traces: EngineTraceEvent[],
+    turnChanges: TurnChangeTracker,
+    preStates: Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>,
+    streamDeltas = true,
+  ): Promise<{ workflowId: WorkflowId; response: RenderResponse }> {
+    const startedAt = this.tracer.start(instance.id, "render");
+    const response = await this.renderInstance(instance, session, message, turnChanges, preStates, traces, streamDeltas);
+    this.tracer.done(instance.id, "render", startedAt, { textChars: response.text.length });
+    this.traceAssistantMessage(instance, response, traces, turnChanges);
+    return {
+      workflowId: instance.id,
+      response,
+    };
   }
 
   private traceAssistantMessage(
@@ -223,6 +164,7 @@ export class ResponseRenderer {
     turnChanges: TurnChangeTracker,
     preStates: Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>,
     traces: EngineTraceEvent[],
+    streamDeltas: boolean,
   ): Promise<RenderResponse> {
     const render = instance.artifact.render;
     if (typeof render === "function") {
@@ -260,7 +202,9 @@ export class ResponseRenderer {
         const normalizedEvent = normalizeStreamTextEvent(instance.id, event);
         if (normalizedEvent.type === "text_delta") {
           text += normalizedEvent.delta;
-          this.onResponseDelta?.({ workflowId: instance.id, delta: normalizedEvent.delta });
+          if (streamDeltas) {
+            this.onResponseDelta?.({ workflowId: instance.id, delta: normalizedEvent.delta });
+          }
           continue;
         }
 
@@ -278,10 +222,6 @@ export class ResponseRenderer {
 
 function mergedRenderWorkflowId(workflowIds: readonly WorkflowId[]): WorkflowId {
   return workflowIds.join("+");
-}
-
-function assistantMessage(content: string): WorkflowAssistantMessage {
-  return { role: "assistant", content };
 }
 
 const noopStepController: WorkflowStepController = {
@@ -354,51 +294,43 @@ function mergeableRenderParticipants(instances: WorkflowInstance<JsonRecord>[]):
   return participants;
 }
 
-/**
- * Builds one render prompt for several workflow render policies.
- * Input: selected workflow instances after patch/nodes have run.
- * Output: a provider-facing instruction that preserves each workflow-owned
- * render contract while asking the model to produce one natural reply.
- * Boundary: this does not merge workflow state; it only exposes each state and
- * instruction to the LLM render call.
- */
-function mergedRenderInstructionForRuntime(participants: MergeRenderParticipant[]): string {
+export interface MergedResponseParticipant {
+  workflowId: WorkflowId;
+  description: string;
+  response: RenderResponse;
+}
+
+function mergedResponseInstruction(
+  participants: readonly MergedResponseParticipant[],
+  session: EngineSession,
+  message: string,
+): string {
   return [
-    "PAC Render system prompt:",
-    "You are the Render phase of a PAC workflow runtime. Several workflows matched the same user turn.",
+    "PAC Engine response merge prompt:",
+    "Several workflow instances independently completed the same user turn and produced final workflow responses.",
     "",
-    "Merged render responsibilities:",
+    "Merge responsibilities:",
     "- Compose exactly one natural assistant message for the user.",
-    "- Cover every selected workflow's user-facing obligation without creating separate workflow sections unless sections are genuinely useful.",
-    "- Reconcile overlap between workflows and avoid repeated introductions, repeated caveats, or contradictory framing.",
-    "- Keep the response natural, concise, and appropriate for the user's language.",
+    "- Preserve every workflow response's user-facing obligation.",
+    "- Remove duplicated greetings, repeated caveats, and contradictory framing.",
+    "- Keep the response concise and appropriate for the user's language.",
     "",
-    "Render prohibitions:",
-    "- Do not advance or modify state; Patch and workflow nodes own state progression.",
-    "- Do not call connectors, simulate connector calls, invent tool results, or invent unavailable options.",
-    "- Do not invent or over-specify precise facts such as dates, prices, index points, percentages, volume, turnover, valuation, target prices, support/resistance levels, population, market size, rankings, ids, eligibility, or availability.",
-    "- Only present a precise number or dated fact when it is visible in current state, runtime tool facts, or conversation history; otherwise use qualitative wording and state the data boundary.",
-    "- When a precise number comes from a third-party report, news item, or analyst view, label it as a third-party estimate/view instead of presenting it as authoritative fact or advice.",
-    "- Do not expose internal state fields, workflow ids, workflow labels, JSON, XML, DSML, or tool-call markup.",
+    "Merge prohibitions:",
+    "- Do not modify workflow state or claim additional workflow actions happened.",
+    "- Do not call connectors, simulate connector calls, or invent unavailable facts.",
+    "- Do not expose workflow ids, internal state fields, JSON, XML, DSML, or tool-call markup.",
     "",
-    "Merged workflow render contracts:",
-    ...participants.map(({ instance, render }, index) => [
+    `Latest user message: ${message}`,
+    `Session id: ${session.sessionId}`,
+    "",
+    "Workflow responses:",
+    ...participants.map(({ workflowId, description, response }, index) => [
       "",
-      `Workflow ${index + 1}: ${instance.id}`,
-      `Description: ${instance.artifact.description}`,
-      `Render name: ${render.name}`,
-      "Workflow-authored Render instruction:",
-      render.instruction.trim(),
-      "Current workflow state:",
-      safeJsonStringify(stateForRender(instance.state), 2),
+      `Workflow ${index + 1}: ${workflowId}`,
+      `Description: ${description}`,
+      "Response:",
+      response.text,
     ].join("\n")),
-    "",
-    "PAC merged render runtime contract:",
-    "- The workflow states above are authoritative after the latest user turn, patch extraction, invalidation, and workflow nodes.",
-    "- Provider-facing messages use the session message log after selected workflows' new runtime tool facts are merged, so the latest user turn appears once.",
-    "- Patch and routing gate LLM request messages are internal runtime calls and are never part of session or workflow messages.",
-    "- Use runtime tool facts from any selected workflow as supporting facts, not as callable tools.",
-    "- Render must only produce the next user-visible assistant message.",
   ].join("\n");
 }
 

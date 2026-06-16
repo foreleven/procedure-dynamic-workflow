@@ -180,15 +180,16 @@ user message
 
 ## 已有 Session 流程
 
-已有 session 不应默认粘死 active workflow。每轮都要让 route gate 判断是否继续、切换、并行或澄清，但为了性能，gate 要和当前 active workflow patch 并行。
+已有 session 不应默认粘死 active workflow。每轮都要让 route gate 判断是否继续、切换、并行或澄清。Gate 只决定 target workflow 集合；patch 必须留在 workflow instance 自己的完整执行链路中。
 
 ```text
 user message
   -> protocol fast path?
       yes -> continue active workflows, skip gate
-      no  -> route gate || speculative active patch
+      no  -> route gate
   -> validate routing decision
-  -> commit selected path
+  -> run each target workflow instance independently
+  -> engine merges/selects completed workflow responses
 ```
 
 已有 session gate prompt 输入：
@@ -208,42 +209,23 @@ user message
 - 新任务是否应该和当前 workflow 并行；
 - 是否需要澄清。
 
-## Speculative Patch 并行
+## Workflow Instance 独立执行
 
-已有 session 中，active workflow 的 patch 可以和 route gate 并行，但只能 speculative 执行。
+Routing 决策完成后，进入 target 的每个 workflow instance 独立执行完整链路。Patch 不再 speculative 执行，因为 patch 必须看见该 workflow 本轮 `beforePatch` / `withPatch` 产生的 workflow-local facts。
 
-允许：
-
-- clone active workflow state；
-- 在 clone 上 append 本轮 user message；
-- 用 clone 发起 patch LLM；
-- 等 gate 决策后，只有 active workflow 仍在 target 内时才提交 patch。
-
-禁止：
-
-- gate 决策前修改 live `instance.state.messages`；
-- gate 决策前 apply patch；
-- gate 决策前运行 invalidation；
-- gate 决策前运行 nodes；
-- gate 决策前写 session facts/preferences/goals/constraints。
-
-伪代码：
+单个 instance 的顺序：
 
 ```ts
-const gatePromise = router.route(input);
-const activePatchPromise = extractActivePatchSpeculatively(input);
-
-const decision = await gatePromise;
-
-if (decision.action === "continue" || decision.action === "parallel") {
-  const activePatches = await activePatchPromise;
-  applyPatchesForStillActiveTargets(activePatches, decision.targetWorkflowIds);
-} else {
-  discard(activePatchPromise);
-}
-
-extractAndApplyPatchForNewTargets(decision);
+instance.state.messages = [...instance.state.messages, latestUserMessage];
+runBeforePatch(instance);
+runWithPatch(instance);
+applyPatch(instance, extractPatch(instance));
+runAfterPatchUntilStable(instance);
+const response = render(instance);
+return { workflowId: instance.id, response };
 ```
+
+Engine 层只负责调度这些 instance promise，并在全部 response 到达后选择或合并最终输出。
 
 ## Protocol Fast Path
 
@@ -377,7 +359,7 @@ interface WorkflowRoutingOptions {
 - `routing.parallel`
 - `routing.clarify`
 - `routing.none`
-- `routing.speculative_patch.discard`
+- `response.merge`
 
 Trace 不记录完整 prompt、完整 memory 或私有消息内容。
 
@@ -386,12 +368,12 @@ Trace 不记录完整 prompt、完整 memory 或私有消息内容。
 单元测试：
 
 - 新 session 一定调用 gate 并 attach gate 返回的 workflow。
-- 已有 session 无 protocol fast path 时，gate 与 active patch speculative 并行。
+- 已有 session 无 protocol fast path 时，先 gate，再运行 target workflow instance。
 - pending ack 短回复 skip gate。
 - 无 pending ack 的短消息仍调用 gate。
-- `continue` 提交 active speculative patch。
-- `switch` 丢弃 active speculative patch 并 patch 新 target。
-- `parallel` 提交 active patch 并 patch 新增 target。
+- `continue` 执行当前 active workflow instances。
+- `switch` 只执行新 target workflow instances。
+- `parallel` 执行当前 active 与新增 workflow instances。
 - unknown workflow id / malformed output fail closed。
 - fallback chat workflow 只在无业务 workflow 匹配时被选中。
 - `switch` 时 previous active 未进入 target 的 workflow 进入 suspended。
@@ -402,7 +384,7 @@ Trace 不记录完整 prompt、完整 memory 或私有消息内容。
 1. 新增 routing OOP 子目录与接口。
 2. 增加 `LlmWorkflowRouter`、`FlashLlmRouteGate`、`AllWorkflowCandidateProvider`。
 3. 将 `selectTargetWorkflows(...)` 改为 async，并委托 router。
-4. 增加 existing session 的 speculative patch helper。
+4. 让 target workflow instance 独立执行完整 patch / nodes / render 链路。
 5. 增加 protocol fast path。
 6. 增加 fake gate 单元测试。
 7. 若 routing options 暴露为 public API，同步文档。
