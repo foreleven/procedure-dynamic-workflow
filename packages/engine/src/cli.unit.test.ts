@@ -150,6 +150,7 @@ export default {
     kind: "effect",
     name: "noop",
     stage: "afterPatch",
+    dependsOn: ["ready"],
     description: "No-op effect fixture.",
     run: () => undefined,
   }],
@@ -167,6 +168,8 @@ export default {
     const workflows = await loadWorkflowFiles([modulePath]);
 
     assert.deepEqual(workflows.map((workflow) => workflow.id), ["flow_a"]);
+    const node = workflows[0]?.nodes[0];
+    assert.deepEqual(node?.kind === "effect" ? node.dependsOn : undefined, ["ready"]);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -205,6 +208,7 @@ export default {
     kind: "effect",
     name: "noop",
     stage: "afterPatch",
+    dependsOn: ["ready"],
     description: "No-op effect fixture.",
     run: () => undefined,
   }],
@@ -269,6 +273,7 @@ export default {
     kind: "effect",
     name: "noop",
     stage: "afterPatch",
+    dependsOn: ["ready"],
     description: "No-op effect fixture.",
     run: () => undefined,
   }],
@@ -311,6 +316,8 @@ export default {
     assert.equal(workflow.id, "flow_a");
     assert.equal(workflow.version, "0.1.0");
     assert.equal(typeof workflow.render === "function" ? undefined : workflow.render.name, "flow_a_reply");
+    const node = workflow.nodes[0];
+    assert.deepEqual(node?.kind === "effect" ? node.dependsOn : undefined, ["ready"]);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

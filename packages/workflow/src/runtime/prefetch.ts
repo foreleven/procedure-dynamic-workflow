@@ -6,6 +6,10 @@ import {
   parseSchema,
 } from "../utils/schema.js";
 
+export interface PrefetchStoreCheckpoint {
+  readonly values: readonly (readonly [string, unknown])[];
+}
+
 export class PrefetchStore {
   readonly values = new Map<string, unknown>();
 
@@ -32,6 +36,31 @@ export class PrefetchStore {
 
   toJSON(): Record<string, unknown> {
     return Object.fromEntries(this.values.entries());
+  }
+
+  /**
+   * Captures prefetch values for engine turn rollback.
+   * Input: current in-memory prefetch entries.
+   * Output: a shallow checkpoint that preserves runtime object identities.
+   * Boundary: this is not a persistence format; it is only for same-process runtime restoration.
+   */
+  checkpoint(): PrefetchStoreCheckpoint {
+    return {
+      values: [...this.values.entries()],
+    };
+  }
+
+  /**
+   * Restores a checkpoint created by this store type.
+   * Input: checkpoint from `checkpoint()`.
+   * Output: this store reset to the captured entries.
+   * Boundary: values are restored by reference to support non-serializable runtime cache values.
+   */
+  restore(checkpoint: PrefetchStoreCheckpoint): void {
+    this.values.clear();
+    for (const [key, value] of checkpoint.values) {
+      this.values.set(key, value);
+    }
   }
 }
 

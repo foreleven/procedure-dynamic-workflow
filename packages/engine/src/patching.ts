@@ -1,3 +1,11 @@
+/**
+ * Runtime patch normalization and application helpers.
+ *
+ * This file is the engine boundary for sparse session/state deltas returned by
+ * structured patch extraction and workflow nodes. It filters runtime-reserved
+ * fields, preserves explicit null business values, and reports semantic dirty
+ * fields without owning invalidation policy.
+ */
 import type { JsonRecord, MessagePatch, SessionPatch } from "@pac/workflow";
 import { sameRuntimeValue } from "./utils/json.js";
 import type { EngineSession } from "./types.js";
@@ -17,6 +25,12 @@ export function normalizeMessagePatch(value: unknown): MessagePatch {
   return patch;
 }
 
+/**
+ * Applies workflow-level session deltas after structured patch normalization.
+ * Input: live engine session and a normalized session patch.
+ * Output: facts/preferences merged and list fields appended without duplicates.
+ * Boundary: session patching cannot remove prior session memory; workflow state invalidation owns local resets.
+ */
 export function applySessionPatch(session: EngineSession, patch: SessionPatch | undefined): void {
   if (!patch) return;
 
@@ -26,6 +40,12 @@ export function applySessionPatch(session: EngineSession, patch: SessionPatch | 
   session.constraints = unique([...session.constraints, ...(patch.constraints ?? [])]);
 }
 
+/**
+ * Applies a sparse object patch to mutable workflow state.
+ * Input: live state object and a patch object whose undefined values were filtered at the boundary.
+ * Output: state fields whose semantic value changed.
+ * Boundary: reserved runtime-owned fields such as `messages` are ignored even when a schema allows them.
+ */
 export function applyObjectPatch(target: JsonRecord, patch: object): string[] {
   const dirtyFields: string[] = [];
 
@@ -80,7 +100,7 @@ function normalizeRecordPatch(value: unknown): JsonRecord | undefined {
 
   for (const [key, fieldValue] of Object.entries(value)) {
     if (isReservedStateField(key)) continue;
-    if (fieldValue !== null && fieldValue !== undefined) {
+    if (fieldValue !== undefined) {
       patch[key] = fieldValue;
     }
   }

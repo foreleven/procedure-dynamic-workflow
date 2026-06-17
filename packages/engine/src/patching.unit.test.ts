@@ -8,7 +8,7 @@ import {
 } from "./patching.js";
 import type { EngineSession } from "./types.js";
 
-test("normalizeMessagePatch drops nullish state fields and invalid session sections", () => {
+test("normalizeMessagePatch preserves null state fields and drops undefined/reserved fields", () => {
   const patch = normalizeMessagePatch({
     sessionPatch: {
       facts: { locale: "zh-CN" },
@@ -32,6 +32,7 @@ test("normalizeMessagePatch drops nullish state fields and invalid session secti
     },
     statePatch: {
       vehicleId: "vehicle_1",
+      dealerId: null,
     },
   });
 });
@@ -55,6 +56,7 @@ test("applySessionPatch merges records and de-duplicates list fields", () => {
 test("applyObjectPatch returns only fields with semantic changes", () => {
   const target = {
     count: 1,
+    dealerId: "dealer_1",
     messages: [{ role: "user", content: "keep history" }],
     nested: { ready: true },
     reordered: { first: "a", second: "b" },
@@ -63,14 +65,16 @@ test("applyObjectPatch returns only fields with semantic changes", () => {
   const dirtyFields = applyObjectPatch(target, {
     count: 1,
     messages: [{ role: "assistant", content: "replace history" }],
+    dealerId: null,
     nested: { ready: true },
     reordered: { second: "b", first: "a" },
     status: "confirmed",
   });
 
-  assert.deepEqual(dirtyFields, ["status"]);
+  assert.deepEqual(dirtyFields, ["dealerId", "status"]);
   assert.deepEqual(target, {
     count: 1,
+    dealerId: null,
     messages: [{ role: "user", content: "keep history" }],
     nested: { ready: true },
     reordered: { first: "a", second: "b" },

@@ -1,3 +1,11 @@
+/**
+ * Workflow-local turn lifecycle.
+ *
+ * This runner owns the order inside one selected workflow instance:
+ * beforePatch -> withPatch -> structured patch -> invalidation -> afterPatch -> render.
+ * It mutates only the supplied workflow instance and a workflow-local session view;
+ * engine-level routing state and transcript commit remain outside this file.
+ */
 import {
   type JsonRecord,
   type MessagePatch,
@@ -8,6 +16,7 @@ import {
   type WorkflowMessage,
   type WorkflowRuntimeState,
   type WorkflowToolMessage,
+  type WorkflowUserMessage,
 } from "@pac/workflow";
 import { normalizeMessagePatch } from "../patching.js";
 import { errorMessage } from "../utils/errors.js";
@@ -17,8 +26,9 @@ import {
   copyWorkflowMessages,
   messagesForPatch,
 } from "../utils/messages.js";
+import { cloneEngineSessionForWorkflowRuntime } from "../session.js";
 import { applyWorkflowInvalidation, applyWorkflowMessagePatch } from "./mutations.js";
-import type { EngineSession, EngineTraceEvent, WorkflowEngineOptions } from "../types.js";
+import type { EngineEventSink, EngineSession, EngineTraceEvent, WorkflowEngineOptions } from "../types.js";
 import { TurnChangeTracker } from "../utils/turn.js";
 import { RuntimeTracer } from "./tracer.js";
 import { WorkflowNodeRunner } from "./node-runner.js";
@@ -27,8 +37,9 @@ import { ResponseRenderer } from "./response-renderer.js";
 export interface WorkflowTurnRunInput {
   instance: WorkflowInstance<JsonRecord>;
   session: EngineSession;
-  message: string;
+  message: WorkflowUserMessage;
   traces: EngineTraceEvent[];
+  events: EngineEventSink;
   turnChanges: TurnChangeTracker;
   preStates: Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>;
   streamResponseDeltas: boolean;
@@ -63,23 +74,25 @@ export class WorkflowTurnRunner {
    * Boundary: engine-level session transcript commit happens outside this method.
    */
   async run(input: WorkflowTurnRunInput): Promise<WorkflowTurnRunResult> {
-    const { instance, session, message, traces, turnChanges, preStates, streamResponseDeltas } = input;
+    const { instance, session, message, traces, events, turnChanges, preStates, streamResponseDeltas } = input;
     const workflowMessagesBeforeTurn = copyWorkflowMessages(instance.state.messages);
-    const workflowTurnMessages = [...workflowMessagesBeforeTurn, userWorkflowMessage(message)];
-    const workflowSession = cloneSessionForWorkflow(session, workflowTurnMessages);
+    const workflowTurnMessages = [...workflowMessagesBeforeTurn, message];
+    const messageText = message.content;
+    const workflowSession = cloneEngineSessionForWorkflowRuntime(session, workflowTurnMessages);
     instance.state.messages = copyWorkflowMessages(workflowTurnMessages);
-    traces.push({
+    this.tracer.trace(traces, {
       workflowId: instance.id,
       phase: "messages.user",
-      detail: { contentChars: message.length },
-    });
+      detail: { contentChars: messageText.length },
+    }, events);
     turnChanges.forWorkflow(instance.id).recordState(["messages"]);
 
     await this.nodeRunner.runStageOnce(
       instance,
       workflowSession,
-      message,
+      messageText,
       traces,
+      events,
       turnChanges,
       preStates,
       "beforePatch",
@@ -87,21 +100,23 @@ export class WorkflowTurnRunner {
     await this.nodeRunner.runStageOnce(
       instance,
       workflowSession,
-      message,
+      messageText,
       traces,
+      events,
       turnChanges,
       preStates,
       "withPatch",
     );
 
-    const patch = await this.extractPatch(instance, traces);
-    this.applyPatch(instance, workflowSession, patch, traces, turnChanges);
+    const patch = await this.extractPatch(instance, traces, events);
+    this.applyPatch(instance, workflowSession, patch, traces, events, turnChanges);
 
     await this.nodeRunner.runStageUntilStable(
       instance,
       workflowSession,
-      message,
+      messageText,
       traces,
+      events,
       turnChanges,
       preStates,
       "afterPatch",
@@ -110,8 +125,9 @@ export class WorkflowTurnRunner {
     const { response } = await this.renderer.renderWorkflowResponse(
       instance,
       workflowSession,
-      message,
+      messageText,
       traces,
+      events,
       turnChanges,
       preStates,
       streamResponseDeltas,
@@ -131,6 +147,7 @@ export class WorkflowTurnRunner {
   private async extractPatch(
     instance: WorkflowInstance<JsonRecord>,
     traces: EngineTraceEvent[],
+    events: EngineEventSink,
   ): Promise<MessagePatch> {
     const name = `${instance.id}_patch`;
     if (instance.artifact.patch.progress) {
@@ -139,7 +156,7 @@ export class WorkflowTurnRunner {
         stage: "patch",
         progress: instance.artifact.patch.progress,
         description: "Extract structured workflow state from the latest user message.",
-      });
+      }, events);
     }
     const startedAt = this.tracer.start(instance.id, "llm.patch", {
       name,
@@ -147,7 +164,7 @@ export class WorkflowTurnRunner {
     });
 
     try {
-      const now = (new Date()).toISOString();
+      const now = (this.deps.now?.() ?? new Date()).toISOString();
       const patch = await this.deps.llm.structured({
         name,
         ...(instance.artifact.patch.model ? { model: instance.artifact.patch.model } : {}),
@@ -170,64 +187,30 @@ export class WorkflowTurnRunner {
     session: EngineSession,
     patch: MessagePatch,
     traces: EngineTraceEvent[],
+    events: EngineEventSink,
     turnChanges: TurnChangeTracker,
   ): void {
-    const dirtyFields = applyWorkflowMessagePatch(instance, session, patch, traces);
+    const dirtyFields = applyWorkflowMessagePatch(instance, session, patch, traces, events);
     const changes = turnChanges.forWorkflow(instance.id);
     changes.recordMessagePatchState(Object.keys(patch.statePatch ?? {}));
     const patchMessage = patchToolMessage(instance.id, patch);
     if (patchMessage) {
       appendWorkflowMessage(instance.state, patchMessage);
-      traces.push({
+      this.tracer.trace(traces, {
         workflowId: instance.id,
         phase: "messages.patch",
         detail: { contentChars: safeJsonStringify(patchMessage.result).length },
-      });
+      }, events);
       changes.recordState(["messages"]);
     }
-    const invalidated = applyWorkflowInvalidation(instance, dirtyFields, traces);
+    const invalidated = applyWorkflowInvalidation(instance, dirtyFields, traces, events);
     changes.recordState(dirtyFields);
     changes.recordInvalidatedState(invalidated);
   }
 }
 
-function userWorkflowMessage(content: string): WorkflowMessage {
-  return { role: "user", content };
-}
-
 function assistantWorkflowMessage(content: string): WorkflowMessage {
   return { role: "assistant", content };
-}
-
-function cloneSessionForWorkflow(session: EngineSession, messages: readonly WorkflowMessage[]): EngineSession {
-  const snapshot: EngineSession = {
-    sessionId: session.sessionId,
-    userId: session.userId,
-    activeWorkflowIds: [...session.activeWorkflowIds],
-    messages: copyWorkflowMessages(messages),
-    facts: cloneJsonRecord(session.facts),
-    preferences: cloneJsonRecord(session.preferences),
-    goals: [...session.goals],
-    constraints: [...session.constraints],
-    sharedCache: session.sharedCache,
-    routingMemory: {
-      lastMatchedWorkflowIds: [...session.routingMemory.lastMatchedWorkflowIds],
-      ...(session.routingMemory.lastRoutingAction === undefined
-        ? {}
-        : { lastRoutingAction: session.routingMemory.lastRoutingAction }),
-      ...(session.routingMemory.suspendedWorkflowIds === undefined
-        ? {}
-        : { suspendedWorkflowIds: [...session.routingMemory.suspendedWorkflowIds] }),
-    },
-  };
-  if (session.conversationSummary !== undefined) {
-    snapshot.conversationSummary = session.conversationSummary;
-  }
-  return snapshot;
-}
-
-function cloneJsonRecord(record: JsonRecord): JsonRecord {
-  return { ...record };
 }
 
 function patchToolMessage(workflowId: WorkflowId, patch: MessagePatch): WorkflowToolMessage | undefined {

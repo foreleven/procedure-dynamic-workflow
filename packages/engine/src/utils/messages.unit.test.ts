@@ -6,7 +6,7 @@ import { appendWorkflowMessages, messagesForRender, withRuntimeMessages } from "
 test("messagesForRender converts workflow tool messages to runtime fact text", () => {
   const state = withRuntimeMessages({
     messages: [
-      { role: "user", content: "book a slot" },
+      { role: "user", content: "book a slot", timestamp: 1 },
       new ToolMessage({
         id: "lookup-1",
         name: "connectors.lookup",

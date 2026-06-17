@@ -14,7 +14,7 @@ Runtime exports:
 - `AckOptionSchema`, `AckRequestSchema`, `ConnectorRegistry`, `DEFAULT_ROUTING_THRESHOLDS`, `JsonRecordSchema`, `PrefetchStore`, `SessionPatchSchema`, `ToolMessage`, `WorkflowContextStore`, `createConnectorRegistry`, `defineConnectorCatalog`, `defineConnectorRef`, `defineConnectorTool`, `definePatch`, `defineRouting`, `defineWorkflowDefinition`, `defineWorkflowDefinitionFromTemplate`, `defineWorkflowHooks`, `defineWorkflowTemplate`, `effectAction`, `hydrateContextAction`, `loadWorkflowMetadata`, `prefetchAction`, `renderAction`, `resolveAckSelection`, `setContextAction`, `setStateAction`, `settlePrefetch`, `workflow`, `workflowActions`, and `z`.
 
 Public types:
-- `AckRequest`, `AckSelection`, `ConnectorCatalog`, `ConnectorInput`, `ConnectorOutput`, `PatchPolicy`, `ProgramWorkflowBaseConfig`, `ProgramWorkflowConfig`, `ProgramWorkflowTemplateConfig`, `RenderPolicy`, `RenderResponse`, `RoutingProfile`, `SessionContext`, `ToolMessageInput`, `WorkflowContext`, `WorkflowContextCallOptions`, `WorkflowDefinition`, `WorkflowDefinitionBody`, `WorkflowDefinitionMetadata`, `WorkflowDefinitionTemplate`, `WorkflowMetadata`, `WorkflowNode`, `WorkflowPatch`, `WorkflowProgram`, `WorkflowRuntimeInput`, `WorkflowStatePatch`, `WorkflowStepController`, `WorkflowStepHandle`, `WorkflowTemplateProgram`, and `WorkflowToolMessage`.
+- `AckRequest`, `AckSelection`, `ConnectorCatalog`, `ConnectorInput`, `ConnectorOutput`, `PatchPolicy`, `PrefetchStoreCheckpoint`, `ProgramWorkflowBaseConfig`, `ProgramWorkflowConfig`, `ProgramWorkflowTemplateConfig`, `RenderPolicy`, `RenderResponse`, `RoutingProfile`, `SessionContext`, `ToolMessageInput`, `WorkflowAssistantMessage`, `WorkflowContext`, `WorkflowContextCallOptions`, `WorkflowContextStoreCheckpoint`, `WorkflowDefinition`, `WorkflowDefinitionBody`, `WorkflowDefinitionMetadata`, `WorkflowDefinitionTemplate`, `WorkflowMessage`, `WorkflowMetadata`, `WorkflowNode`, `WorkflowPatch`, `WorkflowProgram`, `WorkflowRuntimeInput`, `WorkflowStatePatch`, `WorkflowStepController`, `WorkflowStepHandle`, `WorkflowTemplateProgram`, `WorkflowToolMessage`, and `WorkflowUserMessage`.
 
 ### Workflow Definition
 
@@ -214,6 +214,7 @@ Behavior:
 - `set(...)`, `merge(...)`, and `settlePrefetch(...)` ignore `undefined` values;
 - `merge(...)` and `settlePrefetch(...)` reject malformed task/value collections;
 - `settlePrefetch(...)` resolves independent tasks concurrently and drops rejected task results so one failed prefetch does not fail the whole prefetch step.
+- `checkpoint()` and `restore(checkpoint)` support same-process engine turn rollback while preserving runtime value identities.
 
 #### `WorkflowContextStore`
 
@@ -232,6 +233,7 @@ Boundary:
 - rejected connector calls are removed from the cache so later attempts can retry;
 - JSON-native values are compared structurally for change tracking, so object key ordering alone does not advance the revision;
 - non-serializable replacements are treated as changed instead of crashing change tracking;
+- `checkpoint()` and `restore(checkpoint)` support same-process engine turn rollback while preserving runtime value and connector promise identities;
 - workflows should keep business state in schema-validated workflow state instead.
 
 ### Workflow Actions
@@ -266,7 +268,7 @@ Runtime exports:
 - `AllWorkflowCandidateProvider`, `FlashLlmRouteGate`, `RouteGate`, `WorkflowCandidateProvider`, `WorkflowEngine`, `WorkflowRouter`, and `createLlmClient`.
 
 Public types:
-- `CreateSessionInput`, `EngineDeps`, `EngineSession`, `EngineTraceEvent`, `EngineTurnResult`, `LlmClient`, `LlmClientOptions`, `LlmStructuredRequest`, `LlmTextRequest`, `LlmTextStreamEvent`, `LlmUsage`, `RoutingAction`, `WorkflowDefinitionInput`, `WorkflowEngineOptions`, `WorkflowRenderMergeDecision`, `WorkflowRenderMergeStrategy`, `WorkflowRenderMergeStrategyInput`, `WorkflowRenderOptions`, `WorkflowRoutingInput`, `WorkflowRoutingOptions`, `WorkflowRoutingResult`, and `WorkflowSnapshot`.
+- `AssistantMessageEvent`, `CreateSessionInput`, `EngineDeps`, `EngineInvokeResult`, `EngineSession`, `EngineStreamEvent`, `EngineStreamPayload`, `EngineTraceEvent`, `EngineTraceStreamEvent`, `EngineTurnDoneEvent`, `EngineUserMessageInput`, `LlmClient`, `LlmClientOptions`, `LlmStructuredRequest`, `LlmTextRequest`, `LlmTextStreamEvent`, `LlmUsage`, `RoutingAction`, `WorkflowDefinitionInput`, `WorkflowEngineOptions`, `WorkflowRenderMergeDecision`, `WorkflowRenderMergeStrategy`, `WorkflowRenderMergeStrategyInput`, `WorkflowRenderOptions`, `WorkflowRoutingInput`, `WorkflowRoutingOptions`, `WorkflowRoutingResult`, `WorkflowSnapshot`, and `WorkflowStepEvent`.
 
 ### Engine
 
@@ -278,16 +280,16 @@ Input:
 - `workflows`: workflow definitions to register.
 - `deps.llm`: an `LlmClient`.
 - `deps.connectors`: a connector registry.
-- `deps.now`: optional clock override.
+- `deps.now`: optional clock override for engine-created user-message timestamps, route-gate provider message timestamps, and patch runtime current-time prompts.
 - `routing`: optional workflow router, route gate, candidate provider, gate model, confidence, and profile/message limits.
-- `render.mergeStrategy`: optional strategy for choosing whether multiple independently rendered LLM workflow responses should merge into one engine response; defaults to merge and can return `separate`.
+- `render.mergeStrategy`: optional strategy for choosing whether multiple independently rendered LLM workflow responses should merge into one engine response; defaults to merge, receives a session snapshot, and can return `separate`.
 - `maxProgramRounds`: maximum stabilizing rounds for after-patch nodes.
 - `logger`: optional engine/LLM log sink.
-- `onResponseDelta`: optional stream delta callback.
 
 Behavior:
 - trusts typed engine options and workflow definitions produced by `@pac/workflow`;
 - keeps unknown workflow artifact shape checks at dynamic loading boundaries;
+- revalidates workflow metadata, routing thresholds, node metadata, patch policy, and render policy before registering runtime artifacts;
 - rejects invalid engine invariants such as non-positive `maxProgramRounds`;
 - validates and stores cloneable state-schema parsed workflow default state during construction;
 - rejects raw or parsed workflow default states that define reserved runtime fields such as `messages`;
@@ -298,8 +300,10 @@ Behavior:
 - routes existing sessions through protocol fast path or a structured route gate that can continue, switch, run parallel workflows, clarify, or select no workflow;
 - keeps short replies that resolve an active workflow acknowledgement on the active workflow without calling the route gate;
 - supports custom `WorkflowRouter`, `RouteGate`, and `WorkflowCandidateProvider` implementations through `WorkflowEngineOptions.routing`;
+- passes custom routers and `render.mergeStrategy` session snapshots instead of the live engine session, and validates router output before applying any session lifecycle changes;
 - keeps `EngineSession.messages` as the engine-level transcript while each workflow instance keeps its own workflow-local `messages` history;
-- runs each selected workflow instance through its own `beforePatch -> withPatch -> patch -> afterPatch -> render` pipeline and returns that workflow's response to the engine;
+- runs each selected workflow instance through its own `beforePatch -> withPatch -> patch -> afterPatch -> render` pipeline before the engine chooses merged or separate assistant messages;
+- commits session routing state, workflow runtime state, dependency-gated effect memory, and final messages only when the turn completes successfully; failed turns roll those in-memory runtime mutations back before the error reaches the caller;
 - extracts structured patches through `deps.llm.structured(...)` after the workflow instance has run its own pre-patch nodes;
 - reserves the workflow state field `messages` for runtime-provided history snapshots and ignores attempts to write it through state patches;
 - compares JSON-native state and prefetch values structurally so object key ordering alone does not create dirty fields;
@@ -310,8 +314,9 @@ Behavior:
 - renders each selected workflow through either its workflow render function or LLM render policy;
 - lets the engine merge already-rendered LLM workflow responses into one final engine response by default;
 - keeps function-based workflow responses separate because they do not expose mergeable render instructions;
+- emits separate workflow assistant messages in workflow completion order; `engine.invoke(...).messages[0]` is the first workflow output that completed for that turn;
 - validates workflow render responses and LLM render stream events before committing the engine-level assistant output to the session log;
-- when `onResponseDelta` is configured, emits per-workflow render deltas for separate output, or engine merge deltas with `workflowIds` and a synthetic joined `workflowId` for merged output.
+- `engine.stream(...)` emits assistant text deltas, workflow progress/step lifecycle events, trace events, assistant output messages, and turn completion through one async iterable.
 
 #### `engine.createSession(input)`
 
@@ -321,26 +326,46 @@ Input:
 - `sessionId`
 - `userId`
 - optional active workflow ids
-- optional existing `messages` history, preserving stable ids and metadata
+- optional existing `messages` history, preserving stable ids and metadata; existing user messages should include a finite `timestamp`
 - optional facts, preferences, goals, and constraints
 
 Behavior:
 - trusts typed session input before creating runtime state;
 - rejects duplicate or unknown active workflow ids.
 
-#### `engine.onMessage(message, session)`
+#### `engine.invoke(message, session)`
 
-Runs one user turn.
+Runs one user turn and returns an `EngineInvokeResult`.
+
+Input:
+- `message`: either a non-empty string or a `WorkflowUserMessage`. String inputs are normalized at the engine boundary into user messages with a timestamp from `deps.now` or the current clock; caller-supplied user-message `id`, `timestamp`, and metadata are preserved.
+- `session`: mutable `EngineSession`.
 
 Behavior:
+- consumes the same event/message path as `engine.stream(...)`;
 - validates the message before mutating runtime state;
 - rejects duplicate or unknown active workflow ids on the mutable session.
 
 Output:
-- `response`: final engine response selected or merged from completed workflow responses;
-- `responses`: per-workflow responses returned by each workflow instance;
-- `session`: mutated session reference;
-- `traces`: runtime trace events for routing, patching, nodes, invalidation, messages, and rendering.
+- `messages`: committed assistant messages emitted by the engine for this turn;
+- `events`: runtime events emitted while executing the turn, including trace and completion events.
+
+#### `engine.stream(message, session)`
+
+Runs one user turn and returns an `AsyncIterable<EngineStreamPayload>`.
+
+Input:
+- same `message` and `session` contract as `engine.invoke(...)`.
+
+Behavior:
+- shares the same execution path and validation as `engine.invoke(...)`;
+- exposes an `AsyncIterable<EngineStreamPayload>` where each payload is either `{ message }` or `{ event }`;
+- emits `{ event: AssistantMessageEvent }` for assistant text deltas;
+- emits `{ event: WorkflowStepEvent }` for workflow progress, step start, and step end events;
+- emits `{ event: EngineTraceStreamEvent }` for runtime diagnostics that `engine.invoke(...)` returns in `events`;
+- emits `{ message }` for assistant output messages as they become available;
+- emits `{ event: EngineTurnDoneEvent }` after the turn completes and successful output messages have been committed to the session.
+- if the stream later fails before `EngineTurnDoneEvent`, any earlier separate output messages from that turn are provisional and the engine rolls back the turn's session/workflow runtime mutations.
 
 #### `engine.getWorkflowSnapshot(session, workflowId)`
 
@@ -375,9 +400,16 @@ Important public types include:
 - `LlmStructuredRequest`
 - `LlmTextStreamEvent`
 - `LlmUsage`
+- `AssistantMessageEvent`
+- `EngineInvokeResult`
 - `EngineSession`
+- `EngineStreamEvent`
+- `EngineStreamPayload`
 - `EngineTraceEvent`
-- `EngineTurnResult`
+- `EngineTraceStreamEvent`
+- `EngineTurnDoneEvent`
+- `EngineUserMessageInput`
+- `WorkflowStepEvent`
 - `CreateSessionInput`
 - `EngineDeps`
 - `WorkflowEngineOptions`
@@ -385,7 +417,7 @@ Important public types include:
 - `WorkflowSnapshot`
 
 The package root intentionally does not export internal runtime implementation types such as
-`RuntimeWorkflow` or `TargetSelection`.
+`RuntimeWorkflow`.
 
 ## Non-Default Surfaces
 

@@ -17,6 +17,7 @@ export interface LlmWorkflowRouterOptions {
   minGateConfidence?: number | undefined;
   maxWorkflowProfiles?: number | undefined;
   recentMessageLimit?: number | undefined;
+  now?: (() => Date) | undefined;
 }
 
 /**
@@ -32,7 +33,10 @@ export class LlmWorkflowRouter implements WorkflowRouter {
   private readonly minGateConfidence: number;
 
   constructor(options: LlmWorkflowRouterOptions) {
-    this.gate = options.gate ?? new FlashLlmRouteGate(options.llm, { model: options.gateModel });
+    this.gate = options.gate ?? new FlashLlmRouteGate(options.llm, {
+      model: options.gateModel,
+      now: options.now,
+    });
     this.candidateProvider = options.candidateProvider
       ?? new AllWorkflowCandidateProvider({ maxWorkflowProfiles: options.maxWorkflowProfiles });
     this.minGateConfidence = options.minGateConfidence ?? 0.72;

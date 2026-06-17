@@ -11,8 +11,8 @@ import {
   z,
 } from "@pac/workflow";
 import { WorkflowEngine } from "./engine.js";
-import type { LlmClient, LlmTextRequest } from "./llm/client.js";
-import type { WorkflowDefinitionInput } from "./types.js";
+import type { LlmClient, LlmStructuredRequest, LlmTextRequest } from "./llm/client.js";
+import { EngineInvokeResult, EngineStreamPayload, EngineTraceEvent, WorkflowDefinitionInput } from "./types.js";
 
 interface TestState {
   selected: string | null;
@@ -31,6 +31,11 @@ interface SameTurnInvalidationState {
 }
 
 interface EffectDependencyState {
+  selected: string | null;
+  runs: number;
+}
+
+interface RollbackState {
   selected: string | null;
   runs: number;
 }
@@ -56,10 +61,10 @@ test("WorkflowEngine returns fallback response when the route gate does not matc
   });
   const session = engine.createSession({ sessionId: "session_1", userId: "user_1" });
 
-  const result = await engine.onMessage("unrelated request", session);
+  const result = await engine.invoke("unrelated request", session);
 
-  assert.equal(result.response.text, "我还不能确定要执行哪个 workflow。");
-  assert.deepEqual(result.responses, []);
+  assert.equal(primaryText(result), "我还不能确定要执行哪个 workflow。");
+  assert.deepEqual(assistantWorkflowIds(result), []);
   assert.deepEqual(session.activeWorkflowIds, []);
 });
 
@@ -87,14 +92,14 @@ test("WorkflowEngine fails closed when the route gate output is malformed", asyn
   });
   const session = engine.createSession({ sessionId: "session_malformed_route", userId: "user_malformed_route" });
 
-  const result = await engine.onMessage("please route me", session);
+  const result = await engine.invoke("please route me", session);
 
-  assert.equal(result.response.text, "我还不能确定要执行哪个 workflow。");
-  assert.deepEqual(result.responses, []);
+  assert.equal(primaryText(result), "我还不能确定要执行哪个 workflow。");
+  assert.deepEqual(assistantWorkflowIds(result), []);
   assert.deepEqual(session.activeWorkflowIds, []);
   assert.equal(routeCallCount(llm), 1);
   assert.equal(patchCallCount(llm), 0);
-  assert.ok(result.traces.some((trace) => trace.phase === "routing.none"));
+  assert.ok(traceEvents(result).some((trace) => trace.phase === "routing.none"));
 });
 
 test("WorkflowEngine fails closed when the route gate returns an unknown workflow id", async () => {
@@ -121,14 +126,84 @@ test("WorkflowEngine fails closed when the route gate returns an unknown workflo
   });
   const session = engine.createSession({ sessionId: "session_unknown_route", userId: "user_unknown_route" });
 
-  const result = await engine.onMessage("please route me", session);
+  const result = await engine.invoke("please route me", session);
 
-  assert.equal(result.response.text, "我还不能确定要执行哪个 workflow。");
-  assert.deepEqual(result.responses, []);
+  assert.equal(primaryText(result), "我还不能确定要执行哪个 workflow。");
+  assert.deepEqual(assistantWorkflowIds(result), []);
   assert.deepEqual(session.activeWorkflowIds, []);
   assert.equal(routeCallCount(llm), 1);
   assert.equal(patchCallCount(llm), 0);
-  assert.ok(result.traces.some((trace) => trace.phase === "routing.none"));
+  assert.ok(traceEvents(result).some((trace) => trace.phase === "routing.none"));
+});
+
+test("WorkflowEngine fail-closes malformed custom router output without mutating session", async () => {
+  const engine = new WorkflowEngine({
+    workflows: [createTestWorkflow()],
+    deps: {
+      llm: createPatchLlm({ statePatch: { selected: "should-not-run" } }),
+      connectors: createConnectorRegistry(),
+    },
+    routing: {
+      router: {
+        async route(input) {
+          input.session.facts.leaked = { nested: true };
+          input.session.activeWorkflowIds.push("missing_flow");
+          return {
+            action: "switch",
+            targetWorkflowIds: ["missing_flow"],
+            suspendedWorkflowIds: [],
+          };
+        },
+      },
+    },
+  });
+  const session = engine.createSession({
+    sessionId: "session_custom_router_unknown",
+    userId: "user_custom_router_unknown",
+  });
+
+  const result = await engine.invoke("custom route me", session);
+
+  assert.equal(primaryText(result), "我还不能确定要执行哪个 workflow。");
+  assert.deepEqual(session.activeWorkflowIds, []);
+  assert.deepEqual(session.facts, {});
+  assert.equal(engine.getWorkflowSnapshot<TestState>(session, "test_flow"), undefined);
+  assert.ok(traceEvents(result).some((trace) =>
+    trace.phase === "routing.none" &&
+    isNestedTraceReason(trace.detail, "unknown_workflow_ids"),
+  ));
+});
+
+test("WorkflowEngine treats continue routing as all active workflows", async () => {
+  const engine = new WorkflowEngine({
+    workflows: [createTestWorkflow(), createCompetingWorkflow()],
+    deps: {
+      llm: createPatchLlm({ statePatch: { selected: "active" } }),
+      connectors: createConnectorRegistry(),
+    },
+    routing: {
+      router: {
+        async route() {
+          return {
+            action: "continue",
+            targetWorkflowIds: ["test_flow"],
+            suspendedWorkflowIds: [],
+          };
+        },
+      },
+    },
+  });
+  const session = engine.createSession({
+    sessionId: "session_continue_all_active",
+    userId: "user_continue_all_active",
+    activeWorkflowIds: ["test_flow", "competing_flow"],
+  });
+
+  const result = await engine.invoke("continue one active workflow", session);
+
+  assert.deepEqual([...assistantWorkflowIds(result)].sort(), ["competing_flow", "test_flow"]);
+  assert.deepEqual(session.activeWorkflowIds, ["test_flow", "competing_flow"]);
+  assert.deepEqual(session.routingMemory.lastMatchedWorkflowIds, ["test_flow", "competing_flow"]);
 });
 
 test("WorkflowEngine routes, patches, invalidates, runs nodes, and renders function output", async () => {
@@ -150,10 +225,10 @@ test("WorkflowEngine routes, patches, invalidates, runs nodes, and renders funct
   });
   const session = engine.createSession({ sessionId: "session_2", userId: "user_2" });
 
-  const result = await engine.onMessage("please route me", session);
+  const result = await engine.invoke("please route me", session);
   const instance = engine.getWorkflowSnapshot<TestState>(session, "test_flow");
 
-  assert.equal(result.response.text, "selected=picked; dependent=default-dependent; derived=picked:loaded:true");
+  assert.equal(primaryText(result), "selected=picked; dependent=default-dependent; derived=picked:loaded:true");
   assert.deepEqual(session.activeWorkflowIds, ["test_flow"]);
   assert.deepEqual(session.facts, { source: "unit-test" });
   assert.deepEqual(session.goals, ["exercise engine"]);
@@ -164,11 +239,11 @@ test("WorkflowEngine routes, patches, invalidates, runs nodes, and renders funct
   assert.equal(instance?.state.messages.at(0)?.role, "user");
   assert.deepEqual(instance?.state.messages.at(-1), {
     role: "assistant",
-    content: result.response.text,
+    content: primaryText(result),
   });
   assert.equal(patchCallCount(llm), 1);
-  assert.ok(result.traces.some((trace) => trace.phase === "routing.gate.new_session" && trace.workflowId === "engine"));
-  assert.ok(result.traces.some((trace) => trace.phase === "invalidate"));
+  assert.ok(traceEvents(result).some((trace) => trace.phase === "routing.gate.new_session" && trace.workflowId === "engine"));
+  assert.ok(traceEvents(result).some((trace) => trace.phase === "invalidate"));
 });
 
 test("WorkflowEngine routes to every gate-matched workflow", async () => {
@@ -182,12 +257,12 @@ test("WorkflowEngine routes to every gate-matched workflow", async () => {
   });
   const session = engine.createSession({ sessionId: "session_multi_route", userId: "user_multi_route" });
 
-  const result = await engine.onMessage("please route me to competitor", session);
+  const result = await engine.invoke("please route me to competitor", session);
 
-  assert.deepEqual(result.responses.map((response) => response.workflowId), ["test_flow", "competing_flow"]);
+  assert.deepEqual(assistantWorkflowIds(result), ["test_flow", "competing_flow"]);
   assert.deepEqual(session.activeWorkflowIds, ["test_flow", "competing_flow"]);
   assert.equal(patchCallCount(llm), 2);
-  assert.ok(result.traces.some((trace) => trace.phase === "routing.gate.new_session" && trace.workflowId === "engine"));
+  assert.ok(traceEvents(result).some((trace) => trace.phase === "routing.gate.new_session" && trace.workflowId === "engine"));
 });
 
 test("WorkflowEngine suppresses weak gate matches when an accepted workflow exists", async () => {
@@ -201,12 +276,12 @@ test("WorkflowEngine suppresses weak gate matches when an accepted workflow exis
   });
   const session = engine.createSession({ sessionId: "session_route_thresholds", userId: "user_route_thresholds" });
 
-  const result = await engine.onMessage("please route me", session);
+  const result = await engine.invoke("please route me", session);
 
-  assert.deepEqual(result.responses.map((response) => response.workflowId), ["test_flow"]);
+  assert.deepEqual(assistantWorkflowIds(result), []);
   assert.deepEqual(session.activeWorkflowIds, ["test_flow"]);
   assert.equal(patchCallCount(llm), 1);
-  assert.ok(!result.responses.some((response) => response.workflowId === "weak_route_flow"));
+  assert.ok(!assistantWorkflowIds(result).includes("weak_route_flow"));
 });
 
 test("WorkflowEngine exposes workflow snapshots without leaking mutable runtime instances", async () => {
@@ -219,7 +294,7 @@ test("WorkflowEngine exposes workflow snapshots without leaking mutable runtime 
   });
   const session = engine.createSession({ sessionId: "session_snapshot", userId: "user_snapshot" });
 
-  await engine.onMessage("please route me", session);
+  await engine.invoke("please route me", session);
   const snapshot = engine.getWorkflowSnapshot<TestState>(session, "test_flow");
   assert.ok(snapshot);
   assert.equal("workflowInstances" in session, false);
@@ -253,7 +328,7 @@ test("WorkflowEngine keeps session messages authoritative and preserves existing
     messages: [priorMessage],
   });
 
-  await engine.onMessage("please route me", session);
+  await engine.invoke("please route me", session);
   const snapshot = engine.getWorkflowSnapshot<TestState>(session, "test_flow");
 
   assert.deepEqual(session.messages[0], priorMessage);
@@ -278,6 +353,68 @@ test("WorkflowEngine keeps session messages authoritative and preserves existing
   });
 });
 
+test("WorkflowEngine preserves caller supplied user message metadata", async () => {
+  const fixedNow = new Date("2026-03-04T05:06:07.008Z");
+  const suppliedTimestamp = fixedNow.getTime() - 1000;
+  const llm = createPatchLlm({ statePatch: { selected: "picked" } });
+  const engine = new WorkflowEngine({
+    workflows: [createTestWorkflow()],
+    deps: {
+      llm,
+      connectors: createConnectorRegistry(),
+      now: () => fixedNow,
+    },
+  });
+  const session = engine.createSession({
+    sessionId: "session_user_message_metadata",
+    userId: "user_message_metadata",
+  });
+
+  await engine.invoke({
+    role: "user",
+    id: "user-message-1",
+    content: "please route me",
+    timestamp: suppliedTimestamp,
+  }, session);
+
+  assert.deepEqual(session.messages[0], {
+    role: "user",
+    id: "user-message-1",
+    content: "please route me",
+    timestamp: suppliedTimestamp,
+  });
+  const patchRequest = structuredRequestNamed(llm.structuredCalls, "test_flow_patch");
+  assert.equal(patchRequest?.messages[0]?.timestamp, suppliedTimestamp);
+});
+
+test("WorkflowEngine isolates workflow-local message objects from session history", async () => {
+  const engine = new WorkflowEngine({
+    workflows: [createMessageMutationWorkflow()],
+    deps: {
+      llm: createPatchLlm({ statePatch: {} }),
+      connectors: createConnectorRegistry(),
+    },
+  });
+  const session = engine.createSession({
+    sessionId: "session_message_object_isolation",
+    userId: "user_message_object_isolation",
+    activeWorkflowIds: ["message_mutation_flow"],
+    messages: [{
+      role: "assistant",
+      id: "prior-message",
+      content: "Original history",
+    }],
+  });
+
+  await engine.invoke("mutate local history", session);
+
+  assert.deepEqual(session.messages[0], {
+    role: "assistant",
+    id: "prior-message",
+    content: "Original history",
+  });
+});
+
 test("WorkflowEngine invalidation deletes fields that are absent from the default state", async () => {
   const engine = new WorkflowEngine({
     workflows: [createOptionalInvalidationWorkflow()],
@@ -292,12 +429,12 @@ test("WorkflowEngine invalidation deletes fields that are absent from the defaul
     activeWorkflowIds: ["optional_invalidation_flow"],
   });
 
-  const result = await engine.onMessage("run optional invalidation", session);
+  const result = await engine.invoke("run optional invalidation", session);
   const instance = engine.getWorkflowSnapshot<OptionalInvalidationState>(session, "optional_invalidation_flow");
 
-  assert.equal(result.response.text, "hasOptional=false; value=missing");
+  assert.equal(primaryText(result), "hasOptional=false; value=missing");
   assert.equal("optionalDerived" in (instance?.state ?? {}), false);
-  assert.ok(result.traces.some((trace) => trace.phase === "invalidate"));
+  assert.ok(traceEvents(result).some((trace) => trace.phase === "invalidate"));
 });
 
 test("WorkflowEngine preserves message-patched dependents from later same-turn derivation invalidation", async () => {
@@ -314,16 +451,17 @@ test("WorkflowEngine preserves message-patched dependents from later same-turn d
     activeWorkflowIds: ["same_turn_invalidation_flow"],
   });
 
-  const result = await engine.onMessage("set dependent and derive source", session);
+  const result = await engine.invoke("set dependent and derive source", session);
   const instance = engine.getWorkflowSnapshot<SameTurnInvalidationState>(session, "same_turn_invalidation_flow");
 
-  assert.equal(result.response.text, "source=derived-source; dependent=explicit-dependent");
+  assert.equal(primaryText(result), "source=derived-source; dependent=explicit-dependent");
   assert.equal(instance?.state.source, "derived-source");
   assert.equal(instance?.state.dependent, "explicit-dependent");
-  assert.ok(!result.traces.some((trace) => trace.phase === "invalidate"));
+  assert.ok(!traceEvents(result).some((trace) => trace.phase === "invalidate"));
 });
 
 test("WorkflowEngine ignores state patch writes to reserved runtime messages", async () => {
+  const fixedNow = new Date("2026-04-05T06:07:08.009Z");
   const engine = new WorkflowEngine({
     workflows: [createReservedMessagesPatchWorkflow()],
     deps: {
@@ -334,16 +472,17 @@ test("WorkflowEngine ignores state patch writes to reserved runtime messages", a
         },
       }),
       connectors: createConnectorRegistry(),
+      now: () => fixedNow,
     },
   });
   const session = engine.createSession({ sessionId: "session_reserved_messages", userId: "user_reserved_messages" });
 
-  const result = await engine.onMessage("please route me", session);
+  const result = await engine.invoke("please route me", session);
   const instance = engine.getWorkflowSnapshot<TestState>(session, "reserved_messages_patch_flow");
 
-  assert.equal(result.response.text, "selected=picked; messages=3");
+  assert.equal(primaryText(result), "selected=picked; messages=3");
   assert.deepEqual(instance?.state.messages, [
-    { role: "user", content: "please route me" },
+    { role: "user", content: "please route me", timestamp: fixedNow.getTime() },
     { role: "tool", name: "load_baseline", call: { stage: "beforePatch" }, result: { baseline: "loaded" } },
     {
       role: "tool",
@@ -377,9 +516,115 @@ test("WorkflowEngine validates function render responses", async () => {
   });
 
   await assert.rejects(
-    engine.onMessage("bad function render", session),
+    engine.invoke("bad function render", session),
     /Workflow bad_function_render_flow render\.text must be a string/,
   );
+});
+
+test("WorkflowEngine discards function render runtime mutations", async () => {
+  const engine = new WorkflowEngine({
+    workflows: [createRenderMutationWorkflow()],
+    deps: {
+      llm: createPatchLlm({ statePatch: {} }),
+      connectors: createConnectorRegistry(),
+    },
+  });
+  const session = engine.createSession({
+    sessionId: "session_render_mutation",
+    userId: "user_render_mutation",
+    activeWorkflowIds: ["render_mutation_flow"],
+  });
+
+  const result = await engine.invoke("render should not mutate", session);
+  const snapshot = engine.getWorkflowSnapshot<{ done: boolean; renderTouched?: boolean | undefined }>(
+    session,
+    "render_mutation_flow",
+  );
+
+  assert.equal(primaryText(result), "render mutation ignored");
+  assert.equal(snapshot?.state.done, true);
+  assert.equal(snapshot?.state.renderTouched, undefined);
+  assert.equal(snapshot?.context.nodeTouched, true);
+  assert.equal(snapshot?.context.renderTouched, undefined);
+  assert.equal(snapshot?.prefetch.nodeTouched, true);
+  assert.equal(snapshot?.prefetch.renderTouched, undefined);
+  assert.equal(session.sharedCache.has("renderTouched"), false);
+});
+
+test("WorkflowEngine rolls back routed workflow lifecycle when a turn fails", async () => {
+  const engine = new WorkflowEngine({
+    workflows: [createRollbackWorkflow()],
+    deps: {
+      llm: createPatchLlm({ statePatch: { selected: "beta" } }),
+      connectors: createConnectorRegistry(),
+    },
+  });
+  const session = engine.createSession({
+    sessionId: "session_rollback_new",
+    userId: "user_rollback_new",
+  });
+  session.sharedCache.set("kept", "yes");
+
+  await assert.rejects(
+    engine.invoke("please rollback fail", session),
+    /rollback render failed/,
+  );
+
+  assert.deepEqual(session.activeWorkflowIds, []);
+  assert.deepEqual(session.messages, []);
+  assert.deepEqual([...session.sharedCache.entries()], [["kept", "yes"]]);
+  assert.deepEqual(session.routingMemory, { lastMatchedWorkflowIds: [] });
+  assert.equal(engine.getWorkflowSnapshot<RollbackState>(session, "rollback_flow"), undefined);
+});
+
+test("WorkflowEngine rolls back active workflow runtime and dependency memory when a turn fails", async () => {
+  const llm = createSequentialPatchLlm([
+    { statePatch: { selected: "alpha" } },
+    { statePatch: { selected: "beta" } },
+    { statePatch: { selected: "beta" } },
+  ]);
+  const engine = new WorkflowEngine({
+    workflows: [createRollbackWorkflow({ id: "rollback_active_flow" })],
+    deps: {
+      llm,
+      connectors: createConnectorRegistry(),
+    },
+  });
+  const session = engine.createSession({
+    sessionId: "session_rollback_active",
+    userId: "user_rollback_active",
+    activeWorkflowIds: ["rollback_active_flow"],
+  });
+
+  const first = await engine.invoke("select alpha", session);
+  const beforeFailure = engine.getWorkflowSnapshot<RollbackState>(session, "rollback_active_flow");
+  assert.ok(beforeFailure);
+  assert.equal(primaryText(first), "selected=alpha; runs=1");
+  assert.deepEqual(beforeFailure.context, { lastSelected: "alpha" });
+  assert.deepEqual(beforeFailure.prefetch, { lastMessage: "select alpha" });
+  assert.deepEqual([...session.sharedCache.entries()], [["lastSelected", "alpha"]]);
+  const routingMemoryBeforeFailure = { ...session.routingMemory };
+
+  await assert.rejects(
+    engine.invoke("fail with beta", session),
+    /rollback render failed/,
+  );
+
+  const afterFailure = engine.getWorkflowSnapshot<RollbackState>(session, "rollback_active_flow");
+  assert.deepEqual(afterFailure, beforeFailure);
+  assert.deepEqual(session.messages, beforeFailure.state.messages);
+  assert.deepEqual([...session.sharedCache.entries()], [["lastSelected", "alpha"]]);
+  assert.deepEqual(session.routingMemory, routingMemoryBeforeFailure);
+
+  const recovered = await engine.invoke("recover beta", session);
+  const afterRecovery = engine.getWorkflowSnapshot<RollbackState>(session, "rollback_active_flow");
+
+  assert.equal(primaryText(recovered), "selected=beta; runs=2");
+  assert.equal(afterRecovery?.state.selected, "beta");
+  assert.equal(afterRecovery?.state.runs, 2);
+  assert.deepEqual(afterRecovery?.context, { lastSelected: "beta" });
+  assert.deepEqual(afterRecovery?.prefetch, { lastMessage: "recover beta" });
+  assert.deepEqual([...session.sharedCache.entries()], [["lastSelected", "beta"]]);
 });
 
 test("WorkflowEngine validates raw prefetch node results", async () => {
@@ -405,7 +650,7 @@ test("WorkflowEngine validates raw prefetch node results", async () => {
   });
 
   await assert.rejects(
-    engineWithArrayPrefetch.onMessage(
+    engineWithArrayPrefetch.invoke(
       "bad prefetch",
       engineWithArrayPrefetch.createSession({
         sessionId: "session_bad_prefetch_array",
@@ -437,7 +682,7 @@ test("WorkflowEngine validates raw prefetch node results", async () => {
   });
 
   await assert.rejects(
-    engineWithBlankPrefetchKey.onMessage(
+    engineWithBlankPrefetchKey.invoke(
       "bad prefetch",
       engineWithBlankPrefetchKey.createSession({
         sessionId: "session_bad_prefetch_key",
@@ -450,7 +695,6 @@ test("WorkflowEngine validates raw prefetch node results", async () => {
 });
 
 test("WorkflowEngine streams render policy deltas and stores final assistant response", async () => {
-  const deltas: string[] = [];
   const llm = createStreamingLlm({
     patch: { statePatch: { selected: "streamed" } },
     deltas: ["hello", " ", "world"],
@@ -462,17 +706,19 @@ test("WorkflowEngine streams render policy deltas and stores final assistant res
       llm,
       connectors: createConnectorRegistry(),
     },
-    onResponseDelta: ({ workflowId, delta }) => {
-      deltas.push(`${workflowId}:${delta}`);
-    },
   });
   const session = engine.createSession({ sessionId: "session_3", userId: "user_3" });
 
-  const result = await engine.onMessage("please stream", session);
+  const { result, payloads } = await collectStream(engine.stream("please stream", session));
   const instance = engine.getWorkflowSnapshot<TestState>(session, "stream_flow");
 
-  assert.equal(result.response.text, "hello world");
-  assert.deepEqual(deltas, ["stream_flow:hello", "stream_flow: ", "stream_flow:world"]);
+  assert.equal(primaryText(result), "hello world");
+  assert.deepEqual(assistantDeltaSignatures(payloads), [
+    "stream_flow|:hello",
+    "stream_flow|: ",
+    "stream_flow|:world",
+  ]);
+  assert.deepEqual(assistantMessageContents(payloads), ["hello world"]);
   assert.deepEqual(instance?.state.messages.at(-1), {
     role: "assistant",
     content: "hello world",
@@ -486,6 +732,38 @@ test("WorkflowEngine streams render policy deltas and stores final assistant res
   assert.ok(patchFact);
   assert.match(assistantText(patchFact), /"selected": "streamed"/);
   assert.equal(llm.textCalls.length, 0);
+});
+
+test("WorkflowEngine stream return stops iteration while turn execution completes", async () => {
+  const llm = createStreamingLlm({
+    patch: { statePatch: { selected: "streamed" } },
+    deltas: ["hello", " ", "world"],
+    finalText: "hello world",
+  });
+  const engine = new WorkflowEngine({
+    workflows: [createStreamingWorkflow()],
+    deps: {
+      llm,
+      connectors: createConnectorRegistry(),
+    },
+  });
+  const session = engine.createSession({ sessionId: "session_stream_return", userId: "user_stream_return" });
+  const stream = engine.stream("please stream", session);
+  const iterator = stream[Symbol.asyncIterator]();
+
+  const first = await iterator.next();
+  assert.equal(first.done, false);
+  await iterator.return?.();
+
+  const afterReturn = await iterator.next();
+
+  assert.deepEqual(afterReturn, { done: true, value: undefined });
+  await eventually(() => {
+    assert.deepEqual(session.messages.at(-1), {
+      role: "assistant",
+      content: "hello world",
+    });
+  });
 });
 
 test("WorkflowEngine passes derived ToolMessage history to render as runtime fact text", async () => {
@@ -507,9 +785,9 @@ test("WorkflowEngine passes derived ToolMessage history to render as runtime fac
     activeWorkflowIds: ["tool_render_flow"],
   });
 
-  const result = await engine.onMessage("show available slot", session);
+  const result = await engine.invoke("show available slot", session);
 
-  assert.equal(result.response.text, "rendered from tool history");
+  assert.equal(primaryText(result), "rendered from tool history");
   assert.equal(llm.streamCalls.length, 1);
   const renderRequest = llm.streamCalls[0] as LlmTextRequest | undefined;
   assert.ok(renderRequest);
@@ -549,25 +827,38 @@ test("WorkflowEngine runs dependency-gated effects once per dependency snapshot 
     activeWorkflowIds: ["effect_dependency_flow"],
   });
 
-  const first = await engine.onMessage("select alpha", session);
-  const second = await engine.onMessage("repeat without change", session);
-  const third = await engine.onMessage("select alpha again", session);
-  const fourth = await engine.onMessage("select beta", session);
+  const firstStream = await collectStream(engine.stream("select alpha", session));
+  const first = firstStream.result;
+  const second = await engine.invoke("repeat without change", session);
+  const third = await engine.invoke("select alpha again", session);
+  const fourth = await engine.invoke("select beta", session);
   const instance = engine.getWorkflowSnapshot<EffectDependencyState>(session, "effect_dependency_flow");
 
   assert.equal(instance?.state.selected, "beta");
   assert.equal(instance?.state.runs, 2);
-  assert.equal(first.response.text, "selected=alpha; runs=1");
-  assert.equal(second.response.text, "selected=alpha; runs=1");
-  assert.equal(third.response.text, "selected=alpha; runs=1");
-  assert.equal(fourth.response.text, "selected=beta; runs=2");
-  assert.equal(first.traces.filter((trace) => trace.phase === "node.step.start").length, 2);
-  assert.equal(first.traces.filter((trace) => trace.phase === "node.step.end").length, 2);
-  assert.ok(second.traces.some((trace) =>
+  assert.equal(primaryText(first), "selected=alpha; runs=1");
+  assert.equal(primaryText(second), "selected=alpha; runs=1");
+  assert.equal(primaryText(third), "selected=alpha; runs=1");
+  assert.equal(primaryText(fourth), "selected=beta; runs=2");
+  assert.equal(traceEvents(first).filter((trace) => trace.phase === "node.step.start").length, 2);
+  assert.equal(traceEvents(first).filter((trace) => trace.phase === "node.step.end").length, 2);
+  assert.ok(firstStream.payloads.some((payload) =>
+    "event" in payload &&
+    payload.event.type === "engine.trace" &&
+    payload.event.trace.phase === "node.step.start",
+  ));
+  assert.deepEqual(workflowStepEventTypes(firstStream.payloads), [
+    "workflow.step.progress",
+    "workflow.step.start",
+    "workflow.step.start",
+    "workflow.step.end",
+    "workflow.step.end",
+  ]);
+  assert.ok(traceEvents(second).some((trace) =>
     trace.phase === "node.afterPatch.load_selected.skip" &&
     isTraceReason(trace.detail, "dependencies"),
   ));
-  assert.equal(second.traces.filter((trace) => trace.phase === "node.step.start").length, 0);
+  assert.equal(traceEvents(second).filter((trace) => trace.phase === "node.step.start").length, 0);
 });
 
 test("WorkflowEngine validates LLM render text output", async () => {
@@ -596,7 +887,7 @@ test("WorkflowEngine validates LLM render text output", async () => {
   });
 
   await assert.rejects(
-    engine.onMessage("bad llm text", session),
+    engine.invoke("bad llm text", session),
     /Workflow bad_llm_text_flow llm\.text must be a string/,
   );
 });
@@ -622,7 +913,6 @@ test("WorkflowEngine validates LLM stream events", async () => {
       llm,
       connectors: createConnectorRegistry(),
     },
-    onResponseDelta: () => undefined,
   });
   const session = engine.createSession({
     sessionId: "session_bad_stream_event",
@@ -631,13 +921,52 @@ test("WorkflowEngine validates LLM stream events", async () => {
   });
 
   await assert.rejects(
-    engine.onMessage("bad stream event", session),
+    engine.invoke("bad stream event", session),
     /Workflow bad_stream_event_flow streamText text_delta\.delta must be a string/,
   );
 });
 
+test("WorkflowEngine uses deps.now for routing, patch prompt, and engine-created user messages", async () => {
+  const fixedNow = new Date("2026-02-03T04:05:06.789Z");
+  const llm = createNamedStreamingLlm({
+    patch: { statePatch: { selected: "clocked" } },
+    streams: {
+      clock_flow_render: {
+        deltas: [],
+        finalText: "clocked response",
+      },
+    },
+  });
+  const engine = new WorkflowEngine({
+    workflows: [createStreamingWorkflow({
+      id: "clock_flow",
+      renderName: "clock_flow_render",
+      route: "clock",
+    })],
+    deps: {
+      llm,
+      connectors: createConnectorRegistry(),
+      now: () => fixedNow,
+    },
+  });
+  const session = engine.createSession({
+    sessionId: "session_clock",
+    userId: "user_clock",
+  });
+
+  await engine.invoke("please clock", session);
+
+  const routeRequest = structuredRequestNamed(llm.structuredCalls, "workflow_route");
+  const patchRequest = structuredRequestNamed(llm.structuredCalls, "clock_flow_patch");
+  const renderRequest = llm.streamRequests.find((request) => request.name === "clock_flow_render");
+
+  assert.equal(routeRequest?.messages[0]?.timestamp, fixedNow.getTime());
+  assert.match(patchRequest?.instruction ?? "", /Current time is 2026-02-03T04:05:06\.789Z/);
+  assert.equal(patchRequest?.messages[0]?.timestamp, fixedNow.getTime());
+  assert.equal(renderRequest?.messages[0]?.timestamp, fixedNow.getTime());
+});
+
 test("WorkflowEngine merges completed LLM workflow responses by default", async () => {
-  const deltas: string[] = [];
   const llm = createNamedStreamingLlm({
     patch: { statePatch: { selected: "multi" } },
     streams: {
@@ -676,9 +1005,6 @@ test("WorkflowEngine merges completed LLM workflow responses by default", async 
       llm,
       connectors: createConnectorRegistry(),
     },
-    onResponseDelta: ({ workflowId, workflowIds, delta }) => {
-      deltas.push(`${workflowId}|${workflowIds?.join("+") ?? ""}:${delta}`);
-    },
   });
   const session = engine.createSession({
     sessionId: "session_streams",
@@ -686,13 +1012,14 @@ test("WorkflowEngine merges completed LLM workflow responses by default", async 
     activeWorkflowIds: ["stream_a", "stream_b"],
   });
 
-  const result = await engine.onMessage("message for active workflows", session);
+  const { result, payloads } = await collectStream(engine.stream("message for active workflows", session));
   const streamA = engine.getWorkflowSnapshot<{ loaded: boolean }>(session, "stream_a");
   const streamB = engine.getWorkflowSnapshot<{ loaded: boolean }>(session, "stream_b");
 
-  assert.deepEqual(result.responses.map((response) => response.workflowId), ["stream_a", "stream_b"]);
-  assert.equal(result.response.text, "merged reply");
-  assert.deepEqual(result.responses.map((response) => response.response.text), ["alpha response", "beta response"]);
+  assert.deepEqual(assistantWorkflowIds(result), []);
+  assert.equal(primaryText(result), "merged reply");
+  assert.deepEqual(assistantTexts(result), ["merged reply"]);
+  const deltas = assistantDeltaSignatures(payloads);
   assert.deepEqual(deltas.filter((delta) => delta.startsWith("stream_a+stream_b|")), [
     "stream_a+stream_b|stream_a+stream_b:merged",
     "stream_a+stream_b|stream_a+stream_b: reply",
@@ -735,11 +1062,11 @@ test("WorkflowEngine merges completed LLM workflow responses by default", async 
     role: "assistant",
     content: "merged reply",
   });
-  assert.ok(result.traces.some((trace) => trace.phase === "response.merge" && trace.workflowId === "engine"));
+  assert.deepEqual(assistantMessageContents(payloads), ["merged reply"]);
+  assert.ok(traceEvents(result).some((trace) => trace.phase === "response.merge" && trace.workflowId === "engine"));
 });
 
 test("WorkflowEngine can render active LLM workflows separately through merge strategy", async () => {
-  const deltas: string[] = [];
   const llm = createNamedStreamingLlm({
     patch: { statePatch: { selected: "multi" } },
     streams: {
@@ -766,9 +1093,6 @@ test("WorkflowEngine can render active LLM workflows separately through merge st
     render: {
       mergeStrategy: () => "separate",
     },
-    onResponseDelta: ({ workflowId, delta }) => {
-      deltas.push(`${workflowId}:${delta}`);
-    },
   });
   const session = engine.createSession({
     sessionId: "session_separate_streams",
@@ -776,12 +1100,161 @@ test("WorkflowEngine can render active LLM workflows separately through merge st
     activeWorkflowIds: ["stream_a", "stream_b"],
   });
 
-  const result = await engine.onMessage("message for active workflows", session);
+  const { result, payloads } = await collectStream(engine.stream("message for active workflows", session));
 
-  assert.deepEqual(result.responses.map((response) => response.workflowId), ["stream_a", "stream_b"]);
-  assert.equal(result.response.text, "a1a2");
-  assert.deepEqual(deltas, ["stream_b:b1", "stream_b:b2", "stream_a:a1", "stream_a:a2"]);
+  assert.deepEqual(assistantWorkflowIds(result), ["stream_b", "stream_a"]);
+  assert.equal(primaryText(result), "b1b2");
+  assert.deepEqual(assistantTexts(result), ["b1b2", "a1a2"]);
+  assert.deepEqual(assistantDeltaSignatures(payloads), [
+    "stream_b|:b1",
+    "stream_b|:b2",
+    "stream_a|:a1",
+    "stream_a|:a2",
+  ]);
   assert.deepEqual(llm.streamCalls, ["stream_a_render", "stream_b_render"]);
+});
+
+test("WorkflowEngine passes merge strategy a session snapshot", async () => {
+  const llm = createNamedStreamingLlm({
+    patch: { statePatch: { selected: "multi" } },
+    streams: {
+      stream_a_render: {
+        deltas: ["a"],
+        finalText: "alpha",
+      },
+      stream_b_render: {
+        deltas: ["b"],
+        finalText: "beta",
+      },
+    },
+  });
+  const engine = new WorkflowEngine({
+    workflows: [
+      createStreamingWorkflow({ id: "stream_a", renderName: "stream_a_render", route: "alpha" }),
+      createStreamingWorkflow({ id: "stream_b", renderName: "stream_b_render", route: "beta" }),
+    ],
+    deps: {
+      llm,
+      connectors: createConnectorRegistry(),
+    },
+    render: {
+      mergeStrategy: ({ session }) => {
+        session.activeWorkflowIds.push("leaked_flow");
+        session.messages.push({ role: "assistant", content: "leaked response" });
+        session.facts.leaked = true;
+        return "separate";
+      },
+    },
+  });
+  const session = engine.createSession({
+    sessionId: "session_merge_strategy_snapshot",
+    userId: "user_merge_strategy_snapshot",
+    activeWorkflowIds: ["stream_a", "stream_b"],
+  });
+
+  const result = await engine.invoke("message for active workflows", session);
+
+  assert.deepEqual(assistantTexts(result), ["alpha", "beta"]);
+  assert.deepEqual(session.activeWorkflowIds, ["stream_a", "stream_b"]);
+  assert.deepEqual(session.facts, {});
+  assert.ok(!session.messages.some((message) => message.role === "assistant" && message.content === "leaked response"));
+});
+
+test("WorkflowEngine emits separate function-render messages as each workflow completes", async () => {
+  const engine = new WorkflowEngine({
+    workflows: [
+      createDelayedFunctionRenderWorkflow("function_slow", "slow", 12),
+      createDelayedFunctionRenderWorkflow("function_fast", "fast", 1),
+    ],
+    deps: {
+      llm: createPatchLlm({ statePatch: {} }),
+      connectors: createConnectorRegistry(),
+    },
+  });
+  const session = engine.createSession({
+    sessionId: "session_function_render_order",
+    userId: "user_function_render_order",
+    activeWorkflowIds: ["function_slow", "function_fast"],
+  });
+
+  const { result, payloads } = await collectStream(engine.stream("run both function renders", session));
+
+  assert.deepEqual(assistantMessageContents(payloads), ["function_fast done", "function_slow done"]);
+  assert.deepEqual(assistantTexts(result), ["function_fast done", "function_slow done"]);
+  assert.deepEqual(assistantWorkflowIds(result), ["function_fast", "function_slow"]);
+  assert.deepEqual(session.messages.slice(-2), result.messages);
+});
+
+test("WorkflowEngine waits for concurrent workflow tasks before rollback", async () => {
+  const engine = new WorkflowEngine({
+    workflows: [
+      createConcurrentRollbackWorkflow("rollback_slow_success", 15, false),
+      createConcurrentRollbackWorkflow("rollback_fast_failure", 1, true),
+    ],
+    deps: {
+      llm: createPatchLlm({ statePatch: {} }),
+      connectors: createConnectorRegistry(),
+    },
+  });
+  const session = engine.createSession({
+    sessionId: "session_concurrent_rollback",
+    userId: "user_concurrent_rollback",
+    activeWorkflowIds: ["rollback_slow_success", "rollback_fast_failure"],
+  });
+
+  await assert.rejects(
+    engine.invoke("run concurrent rollback", session),
+    /rollback_fast_failure failed/,
+  );
+  await delay(25);
+
+  const slow = engine.getWorkflowSnapshot<{ done: boolean }>(session, "rollback_slow_success");
+  const fast = engine.getWorkflowSnapshot<{ done: boolean }>(session, "rollback_fast_failure");
+
+  assert.equal(slow?.state.done, false);
+  assert.equal(fast?.state.done, false);
+  assert.deepEqual(session.messages, []);
+});
+
+test("WorkflowEngine rolls back provisional separate stream output when a later workflow fails", async () => {
+  const engine = new WorkflowEngine({
+    workflows: [
+      createConcurrentRollbackWorkflow("rollback_fast_success", 1, false),
+      createConcurrentRollbackWorkflow("rollback_slow_failure", 15, true),
+    ],
+    deps: {
+      llm: createPatchLlm({ statePatch: {} }),
+      connectors: createConnectorRegistry(),
+    },
+  });
+  const session = engine.createSession({
+    sessionId: "session_provisional_stream_rollback",
+    userId: "user_provisional_stream_rollback",
+    activeWorkflowIds: ["rollback_fast_success", "rollback_slow_failure"],
+  });
+  const payloads: EngineStreamPayload[] = [];
+
+  await assert.rejects(
+    async () => {
+      for await (const payload of engine.stream("run provisional rollback", session)) {
+        payloads.push(payload);
+      }
+    },
+    /rollback_slow_failure failed/,
+  );
+  await delay(25);
+
+  const fast = engine.getWorkflowSnapshot<{ done: boolean }>(session, "rollback_fast_success");
+  const slow = engine.getWorkflowSnapshot<{ done: boolean }>(session, "rollback_slow_failure");
+
+  assert.deepEqual(assistantMessageContents(payloads), ["rollback_fast_success done"]);
+  assert.equal(fast?.state.done, false);
+  assert.equal(slow?.state.done, false);
+  assert.deepEqual(session.messages, []);
+  assert.ok(!payloads.some((payload) =>
+    "event" in payload &&
+    payload.event.type === "engine.turn.done",
+  ));
 });
 
 test("WorkflowEngine runs afterPatch stages for active workflows concurrently", async () => {
@@ -815,7 +1288,7 @@ test("WorkflowEngine runs afterPatch stages for active workflows concurrently", 
     activeWorkflowIds: ["concurrent_a", "concurrent_b"],
   });
 
-  await engine.onMessage("run both", session);
+  await engine.invoke("run both", session);
 
   assert.equal(maxInFlight, 2);
 });
@@ -835,12 +1308,12 @@ test("WorkflowEngine stops unstable afterPatch nodes at maxProgramRounds", async
     activeWorkflowIds: ["round_flow"],
   });
 
-  const result = await engine.onMessage("any active message", session);
+  const result = await engine.invoke("any active message", session);
   const instance = engine.getWorkflowSnapshot<{ count: number }>(session, "round_flow");
 
-  assert.equal(result.response.text, "count=2");
+  assert.equal(primaryText(result), "count=2");
   assert.equal(instance?.state.count, 2);
-  assert.ok(result.traces.some((trace) => trace.phase === "nodes.afterPatch.maxRounds"));
+  assert.ok(traceEvents(result).some((trace) => trace.phase === "nodes.afterPatch.maxRounds"));
 });
 
 test("WorkflowEngine can switch away from active workflows through the route gate", async () => {
@@ -858,16 +1331,16 @@ test("WorkflowEngine can switch away from active workflows through the route gat
     activeWorkflowIds: ["test_flow"],
   });
 
-  const result = await engine.onMessage("please competitor", session);
+  const result = await engine.invoke("please competitor", session);
   const activeInstance = engine.getWorkflowSnapshot<TestState>(session, "test_flow");
   const competingInstance = engine.getWorkflowSnapshot<TestState>(session, "competing_flow");
 
-  assert.deepEqual(result.responses.map((response) => response.workflowId), ["competing_flow"]);
+  assert.deepEqual(assistantWorkflowIds(result), []);
   assert.deepEqual(session.activeWorkflowIds, ["competing_flow"]);
   assert.deepEqual(session.routingMemory.suspendedWorkflowIds, ["test_flow"]);
   assert.equal(activeInstance?.state.selected, null);
   assert.equal(competingInstance?.state.selected, "active");
-  assert.ok(result.traces.some((trace) => trace.phase === "routing.switch"));
+  assert.ok(traceEvents(result).some((trace) => trace.phase === "routing.switch"));
   assert.equal(patchCallCount(llm), 1);
 });
 
@@ -886,12 +1359,12 @@ test("WorkflowEngine can append a parallel workflow through the route gate", asy
     activeWorkflowIds: ["test_flow"],
   });
 
-  const result = await engine.onMessage("also competitor", session);
+  const result = await engine.invoke("also competitor", session);
 
-  assert.deepEqual(result.responses.map((response) => response.workflowId), ["test_flow", "competing_flow"]);
+  assert.deepEqual(assistantWorkflowIds(result), ["test_flow", "competing_flow"]);
   assert.deepEqual(session.activeWorkflowIds, ["test_flow", "competing_flow"]);
   assert.equal(session.routingMemory.suspendedWorkflowIds, undefined);
-  assert.ok(result.traces.some((trace) => trace.phase === "routing.parallel"));
+  assert.ok(traceEvents(result).some((trace) => trace.phase === "routing.parallel"));
 });
 
 test("WorkflowEngine skips the route gate when a short reply resolves active ack", async () => {
@@ -909,14 +1382,14 @@ test("WorkflowEngine skips the route gate when a short reply resolves active ack
     activeWorkflowIds: ["ack_flow"],
   });
 
-  await engine.onMessage("start ack", session);
+  await engine.invoke("start ack", session);
   const routeCallsAfterFirstTurn = routeCallCount(llm);
-  const result = await engine.onMessage("确认", session);
+  const result = await engine.invoke("确认", session);
 
   assert.equal(routeCallCount(llm), routeCallsAfterFirstTurn);
-  assert.deepEqual(result.responses.map((response) => response.workflowId), ["ack_flow"]);
-  assert.ok(result.traces.some((trace) => trace.phase === "routing.protocol_fast_path"));
-  assert.ok(result.traces.some((trace) => trace.phase === "routing.continue"));
+  assert.deepEqual(assistantWorkflowIds(result), []);
+  assert.ok(traceEvents(result).some((trace) => trace.phase === "routing.protocol_fast_path"));
+  assert.ok(traceEvents(result).some((trace) => trace.phase === "routing.continue"));
 });
 
 test("WorkflowEngine rejects invalid active workflow ids during session creation", () => {
@@ -948,7 +1421,7 @@ test("WorkflowEngine rejects invalid active workflow ids during session creation
   );
 });
 
-test("WorkflowEngine validates onMessage input and active workflow ids", async () => {
+test("WorkflowEngine validates invoke input and active workflow ids", async () => {
   const engine = new WorkflowEngine({
     workflows: [createTestWorkflow()],
     deps: {
@@ -963,26 +1436,73 @@ test("WorkflowEngine validates onMessage input and active workflow ids", async (
   });
 
   await assert.rejects(
-    engine.onMessage("", session),
+    engine.invoke("", session),
     /Invalid message: message must be a non-empty string/,
   );
   session.activeWorkflowIds.push("missing_flow");
   await assert.rejects(
-    engine.onMessage("route me", session),
+    engine.invoke("route me", session),
     /unknown active workflow id\(s\): missing_flow/,
   );
 
   session.activeWorkflowIds.pop();
   session.activeWorkflowIds.push("test_flow");
   await assert.rejects(
-    engine.onMessage("route me", session),
+    engine.invoke("route me", session),
     /duplicate active workflow id: test_flow/,
   );
 });
 
 test("WorkflowEngine rejects runtime workflow state invariants during construction", () => {
   const workflow = createTestWorkflow();
+  const firstNode = workflow.nodes[0];
+  assert.ok(firstNode);
 
+  assert.throws(
+    () =>
+      createEngineWithWorkflow({
+        ...workflow,
+        id: "",
+      }),
+    /Workflow definition id must be a non-empty string/,
+  );
+  assert.throws(
+    () =>
+      createEngineWithWorkflow({
+        ...workflow,
+        routing: {
+          ...workflow.routing,
+          thresholds: {
+            ...workflow.routing.thresholds,
+            localAccept: 2,
+          },
+        },
+      }),
+    /Workflow test_flow routing\.thresholds\.localAccept must be a finite number between 0 and 1/,
+  );
+  assert.throws(
+    () =>
+      createEngineWithWorkflow({
+        ...workflow,
+        nodes: [
+          firstNode,
+          firstNode,
+        ],
+      }),
+    /Workflow test_flow nodes contains duplicate node name/,
+  );
+  assert.throws(
+    () =>
+      createEngineWithWorkflow({
+        ...workflow,
+        render: {
+          name: "bad_render",
+          instruction: "Reply.",
+          progress: "",
+        },
+      }),
+    /Workflow test_flow render\.progress must be a non-empty string/,
+  );
   assert.throws(
     () =>
       createEngineWithWorkflow({
@@ -1072,9 +1592,9 @@ test("WorkflowEngine logger handles non-serializable node details", async () => 
     activeWorkflowIds: ["diagnostic_flow"],
   });
 
-  const result = await engine.onMessage("diagnose", session);
+  const result = await engine.invoke("diagnose", session);
 
-  assert.equal(result.response.text, "diagnostic ok");
+  assert.equal(primaryText(result), "diagnostic ok");
   assert.ok(logs.some((line) => line.includes("[Circular]")));
 });
 
@@ -1300,6 +1820,95 @@ function createDiagnosticWorkflow(): WorkflowDefinition<{ value?: unknown }> {
   };
 }
 
+function createMessageMutationWorkflow(): WorkflowDefinition<{ done: boolean }> {
+  return {
+    id: "message_mutation_flow",
+    version: "0.1.0",
+    description: "Message mutation isolation test fixture.",
+    routing: defineRouting({
+      examples: ["mutate local history"],
+      entities: ["mutate"],
+      neighbors: [],
+    }),
+    stateSchema: z.object({
+      done: z.boolean(),
+    }),
+    state: {
+      done: false,
+    },
+    patch: definePatch({
+      state: {},
+    }),
+    invalidation: {},
+    nodes: [
+      {
+        kind: "effect",
+        name: "mutate_local_message",
+        stage: "afterPatch",
+        description: "Mutates workflow-local message history so session message ownership is observable.",
+        run: ({ state }) => {
+          const firstMessage = state.messages[0];
+          if (firstMessage?.role === "assistant") {
+            firstMessage.content = "mutated local history";
+          }
+
+          return { state: { done: true } };
+        },
+      },
+    ],
+    render: () => ({
+      text: "message isolation ok",
+    }),
+  };
+}
+
+function createRenderMutationWorkflow(): WorkflowDefinition<{ done: boolean; renderTouched?: boolean | undefined }> {
+  return {
+    id: "render_mutation_flow",
+    version: "0.1.0",
+    description: "Render mutation isolation test fixture.",
+    routing: defineRouting({
+      examples: ["render should not mutate"],
+      entities: ["render"],
+      neighbors: [],
+    }),
+    stateSchema: z.object({
+      done: z.boolean(),
+      renderTouched: z.boolean().optional(),
+    }),
+    state: {
+      done: false,
+    },
+    patch: definePatch({
+      state: {},
+    }),
+    invalidation: {},
+    nodes: [
+      {
+        kind: "effect",
+        name: "prepare_render",
+        stage: "afterPatch",
+        description: "Writes legitimate pre-render runtime values that render must not override.",
+        run: ({ context, prefetch }) => {
+          context.set("nodeTouched", true);
+          prefetch.set("nodeTouched", true);
+          return { state: { done: true } };
+        },
+      },
+    ],
+    render: ({ state, context, prefetch, session }) => {
+      state.done = false;
+      state.renderTouched = true;
+      context.set("renderTouched", true);
+      prefetch.set("renderTouched", true);
+      session.sharedCache.set("renderTouched", true);
+      return {
+        text: "render mutation ignored",
+      };
+    },
+  };
+}
+
 function createEngineWithWorkflow(workflow: unknown): WorkflowEngine {
   return new WorkflowEngine({
     workflows: [workflow as WorkflowDefinitionInput],
@@ -1503,6 +2112,97 @@ function createConcurrentAfterPatchWorkflow(
   };
 }
 
+function createDelayedFunctionRenderWorkflow(
+  id: string,
+  route: string,
+  renderDelayMs: number,
+): WorkflowDefinition<{ done: boolean }> {
+  return {
+    id,
+    version: "0.1.0",
+    description: `${id} delayed function render fixture.`,
+    routing: defineRouting({
+      examples: [route],
+      entities: [route],
+      neighbors: [],
+    }),
+    stateSchema: z.object({
+      done: z.boolean(),
+    }),
+    state: {
+      done: false,
+    },
+    patch: definePatch({
+      state: {},
+    }),
+    invalidation: {},
+    nodes: [
+      {
+        kind: "effect",
+        name: "mark_done",
+        stage: "afterPatch",
+        description: "Marks the workflow done before the delayed function render.",
+        run: () => ({ state: { done: true } }),
+      },
+    ],
+    render: async () => {
+      await delay(renderDelayMs);
+      return {
+        text: `${id} done`,
+      };
+    },
+  };
+}
+
+function createConcurrentRollbackWorkflow(
+  id: string,
+  effectDelayMs: number,
+  failRender: boolean,
+): WorkflowDefinition<{ done: boolean }> {
+  return {
+    id,
+    version: "0.1.0",
+    description: `${id} concurrent rollback fixture.`,
+    routing: defineRouting({
+      examples: [id],
+      entities: [id],
+      neighbors: [],
+    }),
+    stateSchema: z.object({
+      done: z.boolean(),
+    }),
+    state: {
+      done: false,
+    },
+    patch: definePatch({
+      state: {},
+    }),
+    invalidation: {},
+    nodes: [
+      {
+        kind: "effect",
+        name: "delayed_mutation",
+        stage: "afterPatch",
+        description: "Mutates after a delay so rollback must wait for all concurrent workflow tasks.",
+        when: ({ state }) => state.done === false,
+        run: async () => {
+          await delay(effectDelayMs);
+          return { state: { done: true } };
+        },
+      },
+    ],
+    render: () => {
+      if (failRender) {
+        throw new Error(`${id} failed`);
+      }
+
+      return {
+        text: `${id} done`,
+      };
+    },
+  };
+}
+
 function createToolRenderWorkflow(): WorkflowDefinition<{ done: boolean }> {
   const program = workflow({
     id: "tool_render_flow",
@@ -1600,6 +2300,73 @@ function createEffectDependencyWorkflow(): WorkflowDefinition<EffectDependencySt
     render: ({ state }) => ({
       text: `selected=${state.selected}; runs=${state.runs}`,
     }),
+  };
+}
+
+function createRollbackWorkflow(config: {
+  id?: string;
+} = {}): WorkflowDefinition<RollbackState> {
+  const id = config.id ?? "rollback_flow";
+
+  return {
+    id,
+    version: "0.1.0",
+    description: `${id} rollback fixture.`,
+    routing: defineRouting({
+      examples: ["rollback"],
+      entities: ["rollback"],
+      neighbors: [],
+    }),
+    stateSchema: z.object({
+      selected: z.string().nullable(),
+      runs: z.number(),
+    }),
+    state: {
+      selected: null,
+      runs: 0,
+    },
+    patch: definePatch({
+      state: {
+        selected: z.string().nullable(),
+      },
+    }),
+    invalidation: {},
+    nodes: [
+      {
+        kind: "prefetch",
+        name: "remember_message",
+        stage: "beforePatch",
+        progress: "Remembering message",
+        description: "Records the current message so failed turns can prove prefetch rollback.",
+        run: ({ message }) => ({ lastMessage: message ?? "" }),
+      },
+      {
+        kind: "effect",
+        name: "load_selected",
+        stage: "afterPatch",
+        description: "Records selected state in context and shared cache so failed turns can prove runtime rollback.",
+        dependsOn: ["selected"],
+        when: ({ state }) => state.selected !== null,
+        run: ({ state, context, session }) => {
+          context.set("lastSelected", state.selected);
+          session.sharedCache.set("lastSelected", state.selected);
+          return {
+            state: {
+              runs: state.runs + 1,
+            },
+          };
+        },
+      },
+    ],
+    render: ({ state, message }) => {
+      if (message?.includes("fail")) {
+        throw new Error("rollback render failed");
+      }
+
+      return {
+        text: `selected=${state.selected}; runs=${state.runs}`,
+      };
+    },
   };
 }
 
@@ -1767,10 +2534,109 @@ function assistantText(message: LlmTextRequest["messages"][number] | undefined):
     .join("\n");
 }
 
+function structuredRequestNamed(
+  calls: readonly unknown[],
+  name: string,
+): LlmStructuredRequest<z.ZodType> | undefined {
+  return calls.find((call): call is LlmStructuredRequest<z.ZodType> =>
+    Boolean(
+      call &&
+      typeof call === "object" &&
+      (call as { name?: unknown }).name === name &&
+      "instruction" in call &&
+      "messages" in call,
+    )
+  );
+}
+
+async function collectStream(
+  stream: AsyncIterable<EngineStreamPayload>,
+): Promise<{ payloads: EngineStreamPayload[]; result: EngineInvokeResult }> {
+  const payloads: EngineStreamPayload[] = [];
+  const messages: EngineInvokeResult["messages"] = [];
+  const events: EngineInvokeResult["events"] = [];
+  let completed = false;
+  for await (const payload of stream) {
+    payloads.push(payload);
+    if ("message" in payload) {
+      messages.push(payload.message);
+    } else {
+      events.push(payload.event);
+      if (payload.event.type === "engine.turn.done") {
+        completed = true;
+      }
+    }
+  }
+  if (!completed) {
+    throw new Error("Expected engine.turn.done stream event");
+  }
+  return { payloads, result: { messages, events } };
+}
+
+function primaryText(result: EngineInvokeResult): string {
+  return result.messages.find((message) => message.role === "assistant")?.content ?? "";
+}
+
+function assistantTexts(result: EngineInvokeResult): string[] {
+  return result.messages.flatMap((message) => message.role === "assistant" ? [message.content] : []);
+}
+
+function assistantWorkflowIds(result: EngineInvokeResult): string[] {
+  return result.messages.flatMap((message) => {
+    if (message.role !== "assistant") return [];
+    const workflowId = message["workflowId"];
+    return typeof workflowId === "string" ? [workflowId] : [];
+  });
+}
+
+function traceEvents(result: EngineInvokeResult): EngineTraceEvent[] {
+  return result.events.flatMap((event) => event.type === "engine.trace" ? [event.trace] : []);
+}
+
+function assistantDeltaSignatures(payloads: readonly EngineStreamPayload[]): string[] {
+  return payloads.flatMap((payload) => {
+    if (!("event" in payload) || payload.event.type !== "assistant.message.delta") return [];
+    return [`${payload.event.workflowId}|${payload.event.workflowIds?.join("+") ?? ""}:${payload.event.delta}`];
+  });
+}
+
+function assistantMessageContents(payloads: readonly EngineStreamPayload[]): string[] {
+  return payloads.flatMap((payload) => {
+    if (!("message" in payload) || payload.message.role !== "assistant") return [];
+    return [payload.message.content];
+  });
+}
+
+function workflowStepEventTypes(payloads: readonly EngineStreamPayload[]): string[] {
+  return payloads.flatMap((payload) => {
+    if (!("event" in payload) || !payload.event.type.startsWith("workflow.step.")) return [];
+    return [payload.event.type];
+  });
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+async function eventually(assertion: () => void, timeoutMs = 250): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await delay(5);
+    }
+  }
+
+  if (lastError !== undefined) {
+    throw lastError;
+  }
+  assertion();
 }
 
 function patchCallCount(llm: { structuredCalls: unknown[] }): number {
@@ -1877,4 +2743,9 @@ function isTraceReason(detail: unknown, reason: string): boolean {
     "reason" in detail &&
     (detail as { reason?: unknown }).reason === reason,
   );
+}
+
+function isNestedTraceReason(detail: unknown, reason: string): boolean {
+  if (!detail || typeof detail !== "object" || !("detail" in detail)) return false;
+  return isTraceReason((detail as { detail?: unknown }).detail, reason);
 }

@@ -1,14 +1,36 @@
+/**
+ * Per-session runtime instance store.
+ *
+ * This file maps engine sessions to live workflow instances, creates runtime
+ * context/state/prefetch stores, snapshots instances for diagnostics, and
+ * restores same-process checkpoints after failed turns. It does not run workflow
+ * code or decide active workflow ids.
+ */
 import {
   type JsonRecord,
   PrefetchStore,
+  type PrefetchStoreCheckpoint,
   WorkflowContextStore,
+  type WorkflowContextStoreCheckpoint,
   type WorkflowId,
   type WorkflowInstance,
+  type WorkflowRuntimeState,
 } from "@pac/workflow";
 import { cloneDefault } from "../patching.js";
 import type { EngineDeps, EngineSession, RuntimeWorkflow, WorkflowSnapshot } from "../types.js";
 import { safeJsonStringify } from "../utils/json.js";
-import { withRuntimeMessages } from "../utils/messages.js";
+import { copyWorkflowMessages, withRuntimeMessages } from "../utils/messages.js";
+
+export interface WorkflowInstanceStoreCheckpoint {
+  readonly instances: ReadonlyMap<WorkflowId, WorkflowInstance<JsonRecord>>;
+  readonly runtime: ReadonlyMap<WorkflowId, WorkflowInstanceRuntimeCheckpoint>;
+}
+
+interface WorkflowInstanceRuntimeCheckpoint {
+  readonly state: WorkflowRuntimeState<JsonRecord>;
+  readonly context: WorkflowContextStoreCheckpoint;
+  readonly prefetch: PrefetchStoreCheckpoint;
+}
 
 /**
  * Owns per-session workflow runtime instances for an engine registry.
@@ -57,6 +79,40 @@ export class WorkflowInstanceStore {
       context: cloneSnapshotValue(instance.context.toJSON()),
       prefetch: cloneSnapshotValue(instance.prefetch.toJSON()),
     };
+  }
+
+  /**
+   * Captures all session-scoped workflow instances before a turn mutates them.
+   * Input: engine session.
+   * Output: a checkpoint containing the instance map plus per-instance runtime state.
+   * Boundary: this is same-process rollback state; diagnostic snapshots still use `snapshot(...)`.
+   */
+  checkpoint(session: EngineSession): WorkflowInstanceStoreCheckpoint {
+    const instances = new Map(this.instancesForSession(session));
+    const runtime = new Map<WorkflowId, WorkflowInstanceRuntimeCheckpoint>();
+
+    for (const [workflowId, instance] of instances) {
+      runtime.set(workflowId, checkpointInstance(instance));
+    }
+
+    return { instances, runtime };
+  }
+
+  /**
+   * Restores session-scoped workflow instances to a prior checkpoint.
+   * Input: checkpoint from `checkpoint(...)`.
+   * Output: live instances reset and newly attached failed-turn instances detached.
+   * Boundary: external side effects already triggered by workflow code cannot be undone here.
+   */
+  restore(session: EngineSession, checkpoint: WorkflowInstanceStoreCheckpoint): void {
+    for (const [workflowId, instance] of checkpoint.instances) {
+      const runtime = checkpoint.runtime.get(workflowId);
+      if (runtime) {
+        restoreInstance(instance, runtime);
+      }
+    }
+
+    this.sessionInstances.set(session, new Map(checkpoint.instances));
   }
 
   /**
@@ -117,6 +173,42 @@ export class WorkflowInstanceStore {
       this.sessionInstances.set(session, instances);
     }
     return instances;
+  }
+}
+
+function checkpointInstance(instance: WorkflowInstance<JsonRecord>): WorkflowInstanceRuntimeCheckpoint {
+  return {
+    state: cloneRuntimeState(instance.state),
+    context: contextStoreFor(instance).checkpoint(),
+    prefetch: instance.prefetch.checkpoint(),
+  };
+}
+
+function restoreInstance(
+  instance: WorkflowInstance<JsonRecord>,
+  checkpoint: WorkflowInstanceRuntimeCheckpoint,
+): void {
+  instance.state = cloneRuntimeState(checkpoint.state);
+  contextStoreFor(instance).restore(checkpoint.context);
+  instance.prefetch.restore(checkpoint.prefetch);
+}
+
+function contextStoreFor(instance: WorkflowInstance<JsonRecord>): WorkflowContextStore {
+  if (instance.context instanceof WorkflowContextStore) {
+    return instance.context;
+  }
+
+  throw new Error(`Workflow ${instance.id} runtime context store does not support checkpoint restore`);
+}
+
+function cloneRuntimeState(
+  state: WorkflowRuntimeState<JsonRecord>,
+): WorkflowRuntimeState<JsonRecord> {
+  try {
+    return cloneDefault(state);
+  } catch {
+    const { messages, ...fields } = state;
+    return withRuntimeMessages({ ...fields }, copyWorkflowMessages(messages));
   }
 }
 

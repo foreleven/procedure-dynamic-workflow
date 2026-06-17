@@ -124,3 +124,44 @@ test("WorkflowContextStore drops rejected connector calls from the cache", async
   assert.deepEqual(retry, { calls: 2 });
   assert.strictEqual(repeated, retry);
 });
+
+test("WorkflowContextStore restores checkpointed runtime values and connector cache", async () => {
+  const lookupRef = defineConnectorRef({
+    id: "connectors.checkpoint",
+    inputSchema: z.object({ query: z.string() }),
+    outputSchema: z.object({ calls: z.number() }),
+  });
+  let calls = 0;
+  const registry = createConnectorRegistry([
+    defineConnectorTool(lookupRef, () => {
+      calls += 1;
+      return { calls };
+    }),
+  ]);
+  const context = new WorkflowContextStore(registry);
+  const runtimeValue = () => "kept";
+
+  context.set("runtime", runtimeValue);
+  context.ack({
+    id: "confirm",
+    prompt: "Continue?",
+    options: [{ id: "yes", label: "Yes" }],
+  });
+  const first = await context.call("connectors.checkpoint", { query: "alpha" }, { cacheKey: ["alpha"] });
+  const checkpoint = context.checkpoint();
+
+  context.set("runtime", () => "changed");
+  context.set("temporary", "drop");
+  context.clearAck();
+  await context.call("connectors.checkpoint", { query: "beta" }, { cacheKey: ["beta"] });
+  context.restore(checkpoint);
+  const repeated = await context.call("connectors.checkpoint", { query: "alpha" }, { cacheKey: ["alpha"] });
+  const beta = await context.call("connectors.checkpoint", { query: "beta" }, { cacheKey: ["beta"] });
+
+  assert.strictEqual(context.get("runtime"), runtimeValue);
+  assert.equal(context.has("temporary"), false);
+  assert.equal(context.getAck()?.id, "confirm");
+  assert.strictEqual(repeated, first);
+  assert.deepEqual(beta, { calls: 3 });
+  assert.equal(calls, 3);
+});

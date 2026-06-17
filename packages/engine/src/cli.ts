@@ -4,9 +4,10 @@ import readline from "node:readline";
 import process from "node:process";
 import {
   WorkflowEngine,
+  type EngineInvokeResult,
   type EngineSession,
+  type EngineStreamEvent,
   type EngineTraceEvent,
-  type EngineTurnResult,
 } from "./index.js";
 import {
   createCliLlmClient,
@@ -32,16 +33,34 @@ function printResponse(text: string): void {
   console.log(text);
 }
 
-function responseTextForCli(result: EngineTurnResult): string {
-  if (result.responses.length <= 1) return result.response.text;
-  if (allResponsesSharePrimaryText(result)) return result.response.text;
-  return result.responses
-    .map((item) => `## ${item.workflowId}\n${item.response.text}`)
+function responseTextForCli(result: EngineInvokeResult): string {
+  const assistantMessages = result.messages.filter((message) => message.role === "assistant");
+  if (assistantMessages.length <= 1) return assistantMessages[0]?.content ?? "";
+  if (allAssistantMessagesShareText(assistantMessages)) return assistantMessages[0]?.content ?? "";
+  return assistantMessages
+    .map((message) => {
+      const workflowId = workflowIdForMessage(message);
+      return workflowId === undefined
+        ? message.content
+        : `## ${workflowId}\n${message.content}`;
+    })
     .join("\n\n");
 }
 
-function allResponsesSharePrimaryText(result: EngineTurnResult): boolean {
-  return result.responses.every((item) => item.response.text === result.response.text);
+function assistantMessageTextForCli(
+  message: Extract<EngineInvokeResult["messages"][number], { role: "assistant" }>,
+  includeWorkflowHeader: boolean,
+): string {
+  const workflowId = workflowIdForMessage(message);
+  return includeWorkflowHeader && workflowId !== undefined
+    ? `## ${workflowId}\n${message.content}`
+    : message.content;
+}
+
+function allAssistantMessagesShareText(messages: Array<Extract<EngineInvokeResult["messages"][number], { role: "assistant" }>>): boolean {
+  const [first] = messages;
+  if (!first) return true;
+  return messages.every((message) => message.content === first.content);
 }
 
 function printJson(value: unknown): void {
@@ -69,6 +88,33 @@ function mapSnapshotField(
   return Object.fromEntries(Object.entries(snapshots).map(([id, snapshot]) => [id, snapshot?.[field] ?? null]));
 }
 
+function traceEvents(events: readonly EngineStreamEvent[]): EngineTraceEvent[] {
+  return events.flatMap((event) => event.type === "engine.trace" ? [event.trace] : []);
+}
+
+function workflowIdForMessage(message: EngineInvokeResult["messages"][number]): string | undefined {
+  const workflowId = message["workflowId"];
+  return typeof workflowId === "string" && workflowId.length > 0 ? workflowId : undefined;
+}
+
+function unprintedAssistantText(
+  result: EngineInvokeResult,
+  printedMergedResponse: boolean,
+  printedWorkflowIds: ReadonlySet<string>,
+): string {
+  const assistantMessages = result.messages.filter((message) => message.role === "assistant");
+  const unprinted = result.messages.filter((message) => {
+    if (message.role !== "assistant") return false;
+    const workflowId = workflowIdForMessage(message);
+    if (workflowId === undefined) {
+      return !(printedMergedResponse || (assistantMessages.length === 1 && printedWorkflowIds.size > 0));
+    }
+    return !printedWorkflowIds.has(workflowId);
+  });
+  if (unprinted.length === 0) return "";
+  return responseTextForCli({ messages: unprinted, events: result.events });
+}
+
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   const workflowSource = resolveCliWorkflowSource(options.workflowPath);
@@ -85,8 +131,6 @@ async function main(): Promise<void> {
       : await loadConnectors(undefined);
   const logger = createLogger(options.debug);
   const llm = createCliLlmClient(options, logger);
-  let streamedChars = 0;
-  let lastStreamWorkflowId: string | undefined;
 
   const engine = new WorkflowEngine({
     workflows,
@@ -95,20 +139,6 @@ async function main(): Promise<void> {
       connectors,
     },
     logger,
-    ...(options.stream
-      ? {
-          onResponseDelta: ({ workflowId, workflowIds, delta }) => {
-            const isMergedResponse = (workflowIds?.length ?? 0) > 1;
-            if (!isMergedResponse && workflows.length > 1 && lastStreamWorkflowId !== workflowId) {
-              if (streamedChars > 0) process.stdout.write("\n\n");
-              process.stdout.write(`## ${workflowId}\n`);
-              lastStreamWorkflowId = workflowId;
-            }
-            streamedChars += delta.length;
-            process.stdout.write(delta);
-          },
-        }
-      : {}),
   });
 
   const initialActiveWorkflowIds = workflows.length === 1 && workflows[0] ? [workflows[0].id] : [];
@@ -133,33 +163,116 @@ async function main(): Promise<void> {
   const executeMessage = async (
     line: string,
     targetSession: EngineSession,
-  ): Promise<EngineTurnResult | undefined> => {
+  ): Promise<EngineInvokeResult | undefined> => {
+    let printedStreamOutput = false;
     try {
-      streamedChars = 0;
-      lastStreamWorkflowId = undefined;
       const time = performance.now();
-      const result = await engine.onMessage(line, targetSession);
-      lastTraces = result.traces;
+      const result = options.stream
+        ? await executeStreamingMessage(line, targetSession, () => {
+          printedStreamOutput = true;
+        })
+        : await engine.invoke(line, targetSession);
+      lastTraces = traceEvents(result.events);
       const endTime = performance.now();
 
-      if (streamedChars > 0) {
+      if (printedStreamOutput) {
         process.stdout.write(`\n[耗时: ${(endTime - time).toFixed(2)}ms]\n`);
       } else {
         printResponse(`${responseTextForCli(result)}\n[耗时: ${(endTime - time).toFixed(2)}ms]`);
       }
 
       if (options.showTraces) {
-        printJson(result.traces);
+        printJson(lastTraces);
       }
 
       return result;
     } catch (error) {
-      if (streamedChars > 0) {
+      if (printedStreamOutput) {
         process.stdout.write("\n");
       }
       printResponse(`[error] ${errorMessage(error)}`);
       return undefined;
     }
+  };
+
+  const executeStreamingMessage = async (
+    line: string,
+    targetSession: EngineSession,
+    markPrinted: () => void,
+  ): Promise<EngineInvokeResult> => {
+    const stream = engine.stream(line, targetSession);
+    const messages: EngineInvokeResult["messages"] = [];
+    const events: EngineStreamEvent[] = [];
+    let printedAssistantDelta = false;
+    let printedMergedResponse = false;
+    const printedWorkflowIds = new Set<string>();
+    let lastStreamWorkflowId: string | undefined;
+    let completed = false;
+
+    for await (const payload of stream) {
+      if ("message" in payload) {
+        messages.push(payload.message);
+        if (payload.message.role === "assistant") {
+          const workflowId = workflowIdForMessage(payload.message);
+          const alreadyPrinted = workflowId === undefined
+            ? printedAssistantDelta || printedMergedResponse
+            : printedWorkflowIds.has(workflowId);
+          if (!alreadyPrinted) {
+            if (printedAssistantDelta) process.stdout.write("\n\n");
+            process.stdout.write(assistantMessageTextForCli(payload.message, workflows.length > 1));
+            printedAssistantDelta = true;
+            markPrinted();
+            if (workflowId === undefined) {
+              printedMergedResponse = true;
+            } else {
+              printedWorkflowIds.add(workflowId);
+            }
+          }
+        }
+        continue;
+      }
+
+      events.push(payload.event);
+
+      if (payload.event.type === "engine.turn.done") {
+        completed = true;
+        continue;
+      }
+
+      if (payload.event.type !== "assistant.message.delta") continue;
+
+      const { workflowId, workflowIds, delta } = payload.event;
+      const isMergedResponse = (workflowIds?.length ?? 0) > 1;
+      if (!isMergedResponse && workflows.length > 1 && lastStreamWorkflowId !== workflowId) {
+        if (printedAssistantDelta) process.stdout.write("\n\n");
+        process.stdout.write(`## ${workflowId}\n`);
+        markPrinted();
+        lastStreamWorkflowId = workflowId;
+      }
+      process.stdout.write(delta);
+      if (delta.length > 0) {
+        printedAssistantDelta = true;
+        markPrinted();
+        if (isMergedResponse) {
+          printedMergedResponse = true;
+        } else {
+          printedWorkflowIds.add(workflowId);
+        }
+      }
+    }
+
+    if (!completed) {
+      throw new Error("Engine stream ended before turn completion");
+    }
+
+    const result = { messages, events };
+    const missingText = unprintedAssistantText(result, printedMergedResponse, printedWorkflowIds);
+    if (missingText.length > 0) {
+      if (printedAssistantDelta) process.stdout.write("\n\n");
+      process.stdout.write(missingText);
+      markPrinted();
+    }
+    return result;
   };
 
   const runAgentCase = async (testCase: AgentCase): Promise<void> => {

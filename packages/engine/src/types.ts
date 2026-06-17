@@ -9,10 +9,10 @@ import type {
   WorkflowDefinition,
   WorkflowDeps,
   WorkflowId,
-  WorkflowInstance,
   WorkflowMessage,
   WorkflowNodeStage,
   WorkflowRuntimeState,
+  WorkflowUserMessage,
 } from "@pac/workflow";
 import type { LlmClient } from "./llm/client.js";
 import type { RouteGate } from "./routing/route-gate.js";
@@ -68,7 +68,10 @@ export interface CreateSessionInput {
 
 export interface EngineDeps extends WorkflowDeps {
   llm: LlmClient;
+  now?: (() => Date) | undefined;
 }
+
+export type EngineUserMessageInput = string | WorkflowUserMessage;
 
 export interface WorkflowEngineOptions {
   workflows: readonly WorkflowDefinitionInput[];
@@ -77,12 +80,6 @@ export interface WorkflowEngineOptions {
   render?: WorkflowRenderOptions | undefined;
   maxProgramRounds?: number;
   logger?: (line: string) => void;
-  /**
-   * Streams the user-visible response path. Separate output streams workflow
-   * deltas; merged output streams engine merge deltas with authoritative
-   * `workflowIds`.
-   */
-  onResponseDelta?: (event: { workflowId: WorkflowId; workflowIds?: readonly WorkflowId[]; delta: string }) => void;
 }
 
 export interface WorkflowRoutingOptions {
@@ -116,6 +113,7 @@ export interface WorkflowRenderOptions {
   /**
    * Chooses whether multiple independently rendered LLM workflow responses
    * should be merged into one engine response. Defaults to `merge`;
+   * separate outputs are emitted in workflow completion order, and
    * function-based renders stay separate.
    */
   mergeStrategy?: WorkflowRenderMergeStrategy | undefined;
@@ -127,16 +125,60 @@ export interface EngineTraceEvent {
   detail?: unknown;
 }
 
-export interface EngineTurnResult {
-  response: RenderResponse;
-  responses: Array<{ workflowId: WorkflowId; response: RenderResponse }>;
-  session: EngineSession;
-  traces: EngineTraceEvent[];
+export interface EngineInvokeResult {
+  messages: WorkflowMessage[];
+  events: EngineStreamEvent[];
 }
 
-export interface TargetSelection {
-  instances: WorkflowInstance<JsonRecord>[];
-  ids: Set<WorkflowId>;
+export interface AssistantMessageEvent {
+  type: "assistant.message.delta";
+  workflowId: WorkflowId;
+  workflowIds?: readonly WorkflowId[];
+  delta: string;
 }
 
-export type RecentWorkflowMessage = WorkflowMessage;
+export interface WorkflowStepProgressEvent {
+  type: "workflow.step.progress";
+  workflowId: WorkflowId;
+  node: string;
+  stage: string;
+  progress: string;
+  description?: string;
+}
+
+export interface WorkflowStepLifecycleEvent {
+  type: "workflow.step.start" | "workflow.step.end";
+  workflowId: WorkflowId;
+  node: string;
+  stage: string;
+  stepId: string;
+  label: string;
+  status?: "done" | "error";
+  durationMs?: number;
+  detail?: unknown;
+}
+
+export type WorkflowStepEvent = WorkflowStepProgressEvent | WorkflowStepLifecycleEvent;
+
+export interface EngineTraceStreamEvent {
+  type: "engine.trace";
+  trace: EngineTraceEvent;
+}
+
+export interface EngineTurnDoneEvent {
+  type: "engine.turn.done";
+}
+
+export type EngineStreamEvent =
+  | AssistantMessageEvent
+  | WorkflowStepEvent
+  | EngineTraceStreamEvent
+  | EngineTurnDoneEvent;
+
+export type EngineStreamPayload =
+  | { message: WorkflowMessage }
+  | { event: EngineStreamEvent };
+
+export interface EngineEventSink {
+  emit(payload: EngineStreamPayload): void;
+}

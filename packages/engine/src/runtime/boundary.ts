@@ -3,11 +3,14 @@ import {
   type WorkflowId,
   type WorkflowNode,
 } from "@pac/workflow";
+import type { PatchPolicy, RenderPolicy, RoutingProfile } from "@pac/workflow";
 import { cloneDefault } from "../patching.js";
 import type { RuntimeWorkflow, WorkflowDefinitionInput } from "../types.js";
 import { errorMessage } from "../utils/errors.js";
 
 const RESERVED_STATE_FIELDS = new Set(["messages"]);
+const ROUTING_THRESHOLD_FIELDS = ["localAccept", "localUncertain", "globalAccept"] as const;
+const WORKFLOW_NODE_STAGES = new Set(["beforePatch", "withPatch", "afterPatch"]);
 
 /**
  * Finds the first duplicated string while preserving caller order.
@@ -32,12 +35,13 @@ export function firstDuplicate(values: readonly string[]): string | undefined {
  * Boundary: workflow package builders validate static definition shape; this keeps only engine runtime invariants.
  */
 export function toRuntimeWorkflow(candidate: WorkflowDefinitionInput): RuntimeWorkflow {
+  assertWorkflowDefinitionMetadata(candidate);
+  assertRoutingProfile(candidate.id, candidate.routing);
+  assertPatchPolicy(candidate.id, candidate.patch);
   const nodes = candidate.nodes as Array<WorkflowNode<JsonRecord>>;
+  assertWorkflowNodes(candidate.id, nodes);
+  assertRenderPolicy(candidate.id, candidate.render);
   const state = parseWorkflowDefaultState(candidate.id, candidate.stateSchema, candidate.state);
-
-  if (nodes.length === 0) {
-    throw new Error(`Workflow ${candidate.id} must define at least one node`);
-  }
 
   return {
     id: candidate.id,
@@ -51,6 +55,111 @@ export function toRuntimeWorkflow(candidate: WorkflowDefinitionInput): RuntimeWo
     invalidation: candidate.invalidation,
     render: candidate.render,
   } as RuntimeWorkflow;
+}
+
+function assertWorkflowDefinitionMetadata(candidate: WorkflowDefinitionInput): void {
+  assertNonEmptyString(candidate.id, "Workflow definition id");
+  const label = `Workflow ${candidate.id}`;
+  assertNonEmptyString(candidate.version, `${label} version`);
+  assertNonEmptyString(candidate.description, `${label} description`);
+}
+
+function assertRoutingProfile(workflowId: WorkflowId, routing: RoutingProfile): void {
+  const label = `Workflow ${workflowId} routing`;
+  assertNonEmptyStringArray(routing.examples, `${label}.examples`);
+  assertNonEmptyStringArray(routing.entities, `${label}.entities`);
+  assertNonEmptyStringArray(routing.neighbors, `${label}.neighbors`);
+  assertRoutingThresholds(`${label}.thresholds`, routing.thresholds);
+}
+
+function assertRoutingThresholds(label: string, thresholds: RoutingProfile["thresholds"]): void {
+  if (!isRecord(thresholds)) {
+    throw new Error(`${label} must be an object`);
+  }
+
+  for (const field of ROUTING_THRESHOLD_FIELDS) {
+    assertRoutingThreshold(`${label}.${field}`, thresholds[field]);
+  }
+
+  for (const key of Object.keys(thresholds)) {
+    if (!ROUTING_THRESHOLD_FIELDS.includes(key as (typeof ROUTING_THRESHOLD_FIELDS)[number])) {
+      throw new Error(`${label}.${key} is not supported`);
+    }
+  }
+}
+
+function assertRoutingThreshold(label: string, value: unknown): void {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) {
+    throw new Error(`${label} must be a finite number between 0 and 1`);
+  }
+}
+
+function assertPatchPolicy(workflowId: WorkflowId, patch: PatchPolicy<unknown>): void {
+  const label = `Workflow ${workflowId} patch`;
+  if (!patch || typeof patch !== "object") {
+    throw new Error(`${label} must be an object`);
+  }
+  if (!patch.schema || typeof patch.schema.parse !== "function") {
+    throw new Error(`${label}.schema must provide parse(input)`);
+  }
+  assertNonEmptyString(patch.instruction, `${label}.instruction`);
+  if (patch.model !== undefined) assertNonEmptyString(patch.model, `${label}.model`);
+  if (patch.progress !== undefined) assertNonEmptyString(patch.progress, `${label}.progress`);
+}
+
+function assertWorkflowNodes(workflowId: WorkflowId, nodes: readonly WorkflowNode<JsonRecord>[]): void {
+  const label = `Workflow ${workflowId} nodes`;
+  if (!Array.isArray(nodes) || nodes.length === 0) {
+    throw new Error(`${label} must contain at least one node`);
+  }
+
+  const names = new Set<string>();
+  for (const node of nodes) {
+    if (!node || typeof node !== "object") {
+      throw new Error(`${label} item must be an object`);
+    }
+    if (node.kind !== "prefetch" && node.kind !== "effect") {
+      throw new Error(`${label} ${String(node.name)} kind must be prefetch or effect`);
+    }
+    assertNonEmptyString(node.name, `${label} name`);
+    if (!WORKFLOW_NODE_STAGES.has(node.stage)) {
+      throw new Error(`${label} ${node.name} stage must be beforePatch, withPatch, or afterPatch`);
+    }
+    assertNonEmptyString(node.description, `${label} ${node.name} description`);
+    if (node.kind === "prefetch") {
+      assertNonEmptyString(node.progress, `${label} ${node.name} progress`);
+    } else if (node.progress !== undefined) {
+      assertNonEmptyString(node.progress, `${label} ${node.name} progress`);
+    }
+    if (node.kind === "effect" && node.dependsOn !== undefined) {
+      assertNonEmptyStringArray(node.dependsOn, `${label} ${node.name} dependsOn`);
+    }
+    if (typeof node.run !== "function") {
+      throw new Error(`${label} ${node.name} run must be a function`);
+    }
+    if (node.when !== undefined && typeof node.when !== "function") {
+      throw new Error(`${label} ${node.name} when must be a function`);
+    }
+    if (names.has(node.name)) {
+      throw new Error(`${label} contains duplicate node name: ${node.name}`);
+    }
+    names.add(node.name);
+  }
+}
+
+function assertRenderPolicy(
+  workflowId: WorkflowId,
+  render: WorkflowDefinitionInput["render"],
+): void {
+  if (typeof render === "function") return;
+  const policy = render as RenderPolicy;
+  const label = `Workflow ${workflowId} render`;
+  if (!policy || typeof policy !== "object") {
+    throw new Error(`${label} must be a function or render policy`);
+  }
+  assertNonEmptyString(policy.name, `${label}.name`);
+  assertNonEmptyString(policy.instruction, `${label}.instruction`);
+  assertNonEmptyString(policy.progress, `${label}.progress`);
 }
 
 function parseWorkflowDefaultState(
@@ -99,4 +208,16 @@ function isPlainObject(value: unknown): value is JsonRecord {
   if (!isRecord(value) || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
+}
+
+function assertNonEmptyString(value: unknown, label: string): asserts value is string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`${label} must be a non-empty string`);
+  }
+}
+
+function assertNonEmptyStringArray(value: unknown, label: string): asserts value is readonly string[] {
+  if (!Array.isArray(value) || !value.every((item) => typeof item === "string" && item.trim().length > 0)) {
+    throw new Error(`${label} must be an array of non-empty strings`);
+  }
 }

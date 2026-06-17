@@ -1,3 +1,11 @@
+/**
+ * OpenAI-compatible LLM adapter boundary.
+ *
+ * This file validates engine/provider requests, adapts them to pi-ai calls, and
+ * normalizes text, streaming, and structured-output responses. It must not know
+ * workflow state semantics, retry patch failures, or recover malformed model
+ * output beyond throwing clear boundary errors.
+ */
 import {
   complete,
   stream,

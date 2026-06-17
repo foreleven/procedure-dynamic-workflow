@@ -10,10 +10,17 @@ export type {
 } from "./llm/client.js";
 export type {
   CreateSessionInput,
+  AssistantMessageEvent,
   EngineDeps,
+  EngineInvokeResult,
   EngineSession,
+  EngineStreamEvent,
+  EngineStreamPayload,
   EngineTraceEvent,
-  EngineTurnResult,
+  EngineTraceStreamEvent,
+  EngineTurnDoneEvent,
+  EngineUserMessageInput,
+  WorkflowStepEvent,
   WorkflowSnapshot,
   WorkflowDefinitionInput,
   WorkflowEngineOptions,

@@ -1,23 +1,36 @@
+/**
+ * Workflow response rendering and engine-level response merge.
+ *
+ * This file converts completed workflow state/message history into either a
+ * workflow-owned function render result or an LLM render request. It also merges
+ * already-rendered workflow responses for presentation. It never advances state,
+ * calls connectors, or commits session transcripts.
+ */
 import {
   type JsonRecord,
+  type PrefetchStoreCheckpoint,
   type RenderPolicy,
   type RenderResponse,
+  WorkflowContextStore,
+  type WorkflowContextStoreCheckpoint,
   type WorkflowId,
   type WorkflowInstance,
   type WorkflowRuntimeState,
   type WorkflowStepController,
 } from "@pac/workflow";
-import type { EngineSession, EngineTraceEvent, WorkflowEngineOptions } from "../types.js";
+import type { EngineEventSink, EngineSession, EngineTraceEvent, WorkflowEngineOptions } from "../types.js";
 import { RuntimeTracer } from "./tracer.js";
-import { messagesForRender } from "../utils/messages.js";
+import { copyWorkflowMessages, messagesForRender } from "../utils/messages.js";
 import { safeJsonStringify } from "../utils/json.js";
 import { normalizeRenderResponse, normalizeStreamTextEvent, renderText } from "../utils/rendering.js";
 import { preStateFor } from "../utils/state.js";
 import { TurnChangeTracker } from "../utils/turn.js";
+import { cloneDefault } from "../patching.js";
+import { cloneEngineSessionForExtension } from "../session.js";
 
 /**
  * Renders workflow-local responses and merges completed engine responses.
- * Input: runtime dependencies, runtime tracer, and optional stream delta callback.
+ * Input: runtime dependencies, runtime tracer, and render options.
  * Output: normalized render responses and engine-level merged response text.
  * Boundary: WorkflowEngine owns turn scheduling and transcript commit.
  */
@@ -25,7 +38,6 @@ export class ResponseRenderer {
   constructor(
     private readonly deps: WorkflowEngineOptions["deps"],
     private readonly tracer: RuntimeTracer,
-    private readonly onResponseDelta: WorkflowEngineOptions["onResponseDelta"],
     private readonly renderOptions: WorkflowEngineOptions["render"],
   ) {}
 
@@ -63,23 +75,25 @@ export class ResponseRenderer {
     session: EngineSession,
     message: string,
     traces: EngineTraceEvent[],
+    events: EngineEventSink,
     turnChanges: TurnChangeTracker,
     preStates: Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>,
     streamDeltas = true,
   ): Promise<{ workflowId: WorkflowId; response: RenderResponse }> {
-    return this.renderAndRecordResponse(instance, session, message, traces, turnChanges, preStates, streamDeltas);
+    return this.renderAndRecordResponse(instance, session, message, traces, events, turnChanges, preStates, streamDeltas);
   }
 
   /**
    * Merges already-rendered workflow responses into one user-visible engine response.
    * Input: independent workflow render responses from the same user turn.
-   * Output: one normalized response suitable for `EngineTurnResult.response`.
+   * Output: one normalized response suitable for the engine's merged assistant message.
    * Boundary: this is engine-level presentation only; workflow state and workflow-local responses are not changed.
    */
   async mergeRenderedResponses(
     participants: readonly MergedResponseParticipant[],
     session: EngineSession,
     message: string,
+    events: EngineEventSink,
   ): Promise<RenderResponse> {
     const workflowIds = participants.map(({ workflowId }) => workflowId);
     if (participants.length === 0) return { text: "" };
@@ -98,7 +112,14 @@ export class ResponseRenderer {
         const normalizedEvent = normalizeStreamTextEvent(mergedWorkflowId, event);
         if (normalizedEvent.type === "text_delta") {
           text += normalizedEvent.delta;
-          this.onResponseDelta?.({ workflowId: mergedWorkflowId, workflowIds, delta: normalizedEvent.delta });
+          events.emit({
+            event: {
+              type: "assistant.message.delta",
+              workflowId: mergedWorkflowId,
+              workflowIds,
+              delta: normalizedEvent.delta,
+            },
+          });
           continue;
         }
 
@@ -123,14 +144,15 @@ export class ResponseRenderer {
     session: EngineSession,
     message: string,
     traces: EngineTraceEvent[],
+    events: EngineEventSink,
     turnChanges: TurnChangeTracker,
     preStates: Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>,
     streamDeltas = true,
   ): Promise<{ workflowId: WorkflowId; response: RenderResponse }> {
     const startedAt = this.tracer.start(instance.id, "render");
-    const response = await this.renderInstance(instance, session, message, turnChanges, preStates, traces, streamDeltas);
+    const response = await this.renderInstance(instance, session, message, turnChanges, preStates, traces, events, streamDeltas);
     this.tracer.done(instance.id, "render", startedAt, { textChars: response.text.length });
-    this.traceAssistantMessage(instance, response, traces, turnChanges);
+    this.traceAssistantMessage(instance, response, traces, events, turnChanges);
     return {
       workflowId: instance.id,
       response,
@@ -141,13 +163,14 @@ export class ResponseRenderer {
     instance: WorkflowInstance<JsonRecord>,
     response: RenderResponse,
     traces: EngineTraceEvent[],
+    events: EngineEventSink,
     turnChanges: TurnChangeTracker,
   ): void {
-    traces.push({
+    this.tracer.trace(traces, {
       workflowId: instance.id,
       phase: "messages.assistant",
       detail: { contentChars: response.text.length },
-    });
+    }, events);
     turnChanges.forWorkflow(instance.id).recordState(["messages"]);
   }
 
@@ -164,22 +187,28 @@ export class ResponseRenderer {
     turnChanges: TurnChangeTracker,
     preStates: Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>,
     traces: EngineTraceEvent[],
+    events: EngineEventSink,
     streamDeltas: boolean,
   ): Promise<RenderResponse> {
     const render = instance.artifact.render;
     if (typeof render === "function") {
-      const response = await render({
-        session,
-        context: instance.context,
-        state: instance.state,
-        preState: preStateFor(preStates, instance),
-        prefetch: instance.prefetch,
-        deps: this.deps,
-        turn: turnChanges.snapshot(instance.id),
-        step: noopStepController,
-        message,
-      });
-      return normalizeRenderResponse(instance.id, response);
+      const checkpoint = checkpointFunctionRenderRuntime(instance);
+      try {
+        const response = await render({
+          session: cloneEngineSessionForExtension(session),
+          context: instance.context,
+          state: instance.state,
+          preState: preStateFor(preStates, instance),
+          prefetch: instance.prefetch,
+          deps: this.deps,
+          turn: turnChanges.snapshot(instance.id),
+          step: noopStepController,
+          message,
+        });
+        return normalizeRenderResponse(instance.id, response);
+      } finally {
+        restoreFunctionRenderRuntime(instance, checkpoint);
+      }
     }
 
     const instruction = renderInstructionForRuntime(render.instruction, instance.state);
@@ -188,7 +217,7 @@ export class ResponseRenderer {
       stage: "render",
       progress: render.progress,
       description: "Render the next assistant reply from the workflow message log.",
-    });
+    }, events);
 
     const request = {
       name: render.name,
@@ -203,7 +232,13 @@ export class ResponseRenderer {
         if (normalizedEvent.type === "text_delta") {
           text += normalizedEvent.delta;
           if (streamDeltas) {
-            this.onResponseDelta?.({ workflowId: instance.id, delta: normalizedEvent.delta });
+            events.emit({
+              event: {
+                type: "assistant.message.delta",
+                workflowId: instance.id,
+                delta: normalizedEvent.delta,
+              },
+            });
           }
           continue;
         }
@@ -298,6 +333,53 @@ export interface MergedResponseParticipant {
   workflowId: WorkflowId;
   description: string;
   response: RenderResponse;
+}
+
+interface FunctionRenderRuntimeCheckpoint {
+  readonly state: WorkflowRuntimeState<JsonRecord>;
+  readonly context: WorkflowContextStoreCheckpoint;
+  readonly prefetch: PrefetchStoreCheckpoint;
+}
+
+function checkpointFunctionRenderRuntime(
+  instance: WorkflowInstance<JsonRecord>,
+): FunctionRenderRuntimeCheckpoint {
+  return {
+    state: cloneRuntimeState(instance.state),
+    context: contextStoreFor(instance).checkpoint(),
+    prefetch: instance.prefetch.checkpoint(),
+  };
+}
+
+function restoreFunctionRenderRuntime(
+  instance: WorkflowInstance<JsonRecord>,
+  checkpoint: FunctionRenderRuntimeCheckpoint,
+): void {
+  instance.state = cloneRuntimeState(checkpoint.state);
+  contextStoreFor(instance).restore(checkpoint.context);
+  instance.prefetch.restore(checkpoint.prefetch);
+}
+
+function contextStoreFor(instance: WorkflowInstance<JsonRecord>): WorkflowContextStore {
+  if (instance.context instanceof WorkflowContextStore) {
+    return instance.context;
+  }
+
+  throw new Error(`Workflow ${instance.id} runtime context store does not support render checkpoint restore`);
+}
+
+function cloneRuntimeState(
+  state: WorkflowRuntimeState<JsonRecord>,
+): WorkflowRuntimeState<JsonRecord> {
+  try {
+    return cloneDefault(state);
+  } catch {
+    const { messages, ...fields } = state;
+    return {
+      ...fields,
+      messages: copyWorkflowMessages(messages),
+    };
+  }
 }
 
 function mergedResponseInstruction(

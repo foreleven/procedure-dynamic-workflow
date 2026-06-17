@@ -20,7 +20,11 @@ import {
 } from "./definition/workflow-guards.js";
 
 export { WorkflowContextStore } from "./runtime/context.js";
-export type { WorkflowContext, WorkflowContextCallOptions } from "./runtime/context.js";
+export type {
+  WorkflowContext,
+  WorkflowContextCallOptions,
+  WorkflowContextStoreCheckpoint,
+} from "./runtime/context.js";
 export { ToolMessage } from "./runtime/messages.js";
 export type {
   ToolMessageInput,

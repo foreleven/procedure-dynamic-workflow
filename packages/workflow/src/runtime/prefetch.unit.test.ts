@@ -61,3 +61,18 @@ test("PrefetchStore validates keys and merge objects", () => {
     /PrefetchStore key must be a non-empty string/,
   );
 });
+
+test("PrefetchStore restores checkpointed values by reference", () => {
+  const store = new PrefetchStore();
+  const runtimeValue = new Map([["id", "customer_1"]]);
+
+  store.set("customer", runtimeValue);
+  const checkpoint = store.checkpoint();
+
+  store.set("customer", new Map([["id", "customer_2"]]));
+  store.set("temporary", "drop");
+  store.restore(checkpoint);
+
+  assert.strictEqual(store.get("customer"), runtimeValue);
+  assert.equal(store.get("temporary"), undefined);
+});

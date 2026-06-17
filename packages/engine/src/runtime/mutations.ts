@@ -1,7 +1,8 @@
 import type { JsonRecord, MessagePatch, WorkflowInstance } from "@pac/workflow";
 import { applyObjectPatch, applySessionPatch } from "../patching.js";
-import type { EngineSession, EngineTraceEvent } from "../types.js";
+import type { EngineEventSink, EngineSession, EngineTraceEvent } from "../types.js";
 import { resetStateField } from "../utils/state.js";
+import { recordEngineTrace } from "./tracer.js";
 
 /**
  * Applies a structured LLM message patch to session and workflow state.
@@ -14,11 +15,12 @@ export function applyWorkflowMessagePatch(
   session: EngineSession,
   patch: MessagePatch,
   traces: EngineTraceEvent[],
+  events: EngineEventSink,
 ): string[] {
   applySessionPatch(session, patch.sessionPatch);
   const dirtyFields = applyObjectPatch(instance.state, patch.statePatch ?? {});
 
-  traces.push({
+  recordEngineTrace(traces, {
     workflowId: instance.id,
     phase: "patch",
     detail: {
@@ -26,7 +28,7 @@ export function applyWorkflowMessagePatch(
       statePatch: patch.statePatch,
       dirtyFields,
     },
-  });
+  }, events);
 
   return dirtyFields;
 }
@@ -41,6 +43,7 @@ export function applyWorkflowInvalidation(
   instance: WorkflowInstance<JsonRecord>,
   dirtyFields: string[],
   traces: EngineTraceEvent[],
+  events: EngineEventSink,
   protectedFields: Iterable<string> = [],
 ): string[] {
   const invalidated: string[] = [];
@@ -63,11 +66,11 @@ export function applyWorkflowInvalidation(
   }
 
   if (invalidated.length > 0) {
-    traces.push({
+    recordEngineTrace(traces, {
       workflowId: instance.id,
       phase: "invalidate",
       detail: invalidated,
-    });
+    }, events);
   }
 
   return invalidated;

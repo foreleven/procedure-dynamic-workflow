@@ -32,6 +32,7 @@ export abstract class RouteGate {
 
 export interface FlashLlmRouteGateOptions {
   model?: string | undefined;
+  now?: (() => Date) | undefined;
 }
 
 /**
@@ -54,7 +55,7 @@ export class FlashLlmRouteGate extends RouteGate {
       ...(this.options.model ? { model: this.options.model } : {}),
       instruction: routeGateInstruction(input.mode),
       schema: RouteGateDecisionSchema,
-      messages: routeGateMessages(input),
+      messages: routeGateMessages(input, this.options.now),
     });
   }
 }
@@ -87,11 +88,11 @@ function routeGateInstruction(mode: RouteGateInput["mode"]): string {
   ].join("\n");
 }
 
-function routeGateMessages(input: RouteGateInput): Message[] {
+function routeGateMessages(input: RouteGateInput, now: (() => Date) | undefined): Message[] {
   return [
     {
       role: "user",
-      timestamp: Date.now(),
+      timestamp: timestampNow(now),
       content: safeJsonStringify(
         {
           latestUserMessage: input.latestUserMessage,
@@ -113,4 +114,8 @@ function routeGateMessages(input: RouteGateInput): Message[] {
       ),
     },
   ];
+}
+
+function timestampNow(now: (() => Date) | undefined): number {
+  return (now?.() ?? new Date()).getTime();
 }

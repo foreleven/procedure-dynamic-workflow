@@ -206,6 +206,7 @@ function workflowNodeExportSchema() {
       stage: z.enum(["beforePatch", "withPatch", "afterPatch"]),
       progress: z.string().optional(),
       description: z.string(),
+      dependsOn: z.array(z.string()).optional(),
       when: functionSchema().optional(),
       run: functionSchema(),
     })

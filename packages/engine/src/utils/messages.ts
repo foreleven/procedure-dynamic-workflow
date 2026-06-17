@@ -25,11 +25,11 @@ export function appendWorkflowMessages(
 }
 
 export function copyWorkflowMessages(messages: readonly WorkflowMessage[]): WorkflowMessage[] {
-  return [...messages];
+  return messages.map(normalizeWorkflowMessage);
 }
 
 export function normalizeWorkflowMessages(messages: readonly WorkflowMessage[]): WorkflowMessage[] {
-  return messages.map(normalizeWorkflowMessage);
+  return copyWorkflowMessages(messages);
 }
 
 export function withRuntimeMessages(
@@ -54,13 +54,17 @@ export function withRuntimeMessages(
  * Converts workflow-owned message history into provider-facing pi-ai messages.
  * Input: runtime workflow state containing user, assistant, and tool messages.
  * Output: pi-ai messages for patch extraction and render prompts.
- * Boundary: workflow tool messages become plain runtime facts so models cannot imitate tool-call formats.
+ * Boundary: callers must timestamp user messages before this conversion; workflow tool messages become plain runtime facts.
  */
-export function messagesForRender(state: WorkflowRuntimeState<JsonRecord>): Message[] {
+export function messagesForRender(
+  state: WorkflowRuntimeState<JsonRecord>,
+): Message[] {
   return messagesForWorkflowMessages(state.messages);
 }
 
-export function messagesForPatch(state: WorkflowRuntimeState<JsonRecord>): Message[] {
+export function messagesForPatch(
+  state: WorkflowRuntimeState<JsonRecord>,
+): Message[] {
   return messagesForWorkflowMessages(state.messages);
 }
 
@@ -68,9 +72,11 @@ export function messagesForPatch(state: WorkflowRuntimeState<JsonRecord>): Messa
  * Converts an already assembled workflow message log into provider messages.
  * Input: session-owned or workflow-local runtime message history.
  * Output: provider-facing pi-ai messages preserving user/assistant metadata and tool facts.
- * Boundary: this does not read or mutate workflow state; callers own message ordering.
+ * Boundary: this does not read clocks or mutate workflow state; callers own message ordering and user-message timestamps.
  */
-export function messagesForWorkflowMessages(messages: readonly WorkflowMessage[]): Message[] {
+export function messagesForWorkflowMessages(
+  messages: readonly WorkflowMessage[],
+): Message[] {
   return messages.flatMap(toRuntimeFactMessages);
 }
 
@@ -143,12 +149,15 @@ function formatRuntimeToolFact(message: WorkflowToolMessage): string {
   return lines.join("\n");
 }
 
-function userMessage(input: string | WorkflowUserMessage): Message {
-  const timestamp = typeof input === "string" ? undefined : numberField(input, "timestamp");
+function userMessage(input: WorkflowUserMessage): Message {
+  const timestamp = numberField(input, "timestamp");
+  if (timestamp === undefined) {
+    throw new Error("Workflow user message timestamp must be a finite number before provider conversion");
+  }
   return {
     role: "user",
-    content: typeof input === "string" ? input : input.content,
-    timestamp: timestamp ?? Date.now(),
+    content: input.content,
+    timestamp,
   };
 }
 

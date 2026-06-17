@@ -1,5 +1,5 @@
 import type { WorkflowId } from "@pac/workflow";
-import type { EngineTraceEvent, WorkflowEngineOptions } from "../types.js";
+import type { EngineEventSink, EngineTraceEvent, WorkflowEngineOptions } from "../types.js";
 import { formatLogLine } from "../utils/logging.js";
 
 export interface RuntimeProgressDetail {
@@ -17,6 +17,26 @@ export interface RuntimeStepDetail {
   status?: "done" | "error";
   durationMs?: number;
   detail?: unknown;
+}
+
+/**
+ * Records one diagnostic trace and mirrors it to the turn event stream.
+ * Input: the mutable turn trace array, the trace entry, and the current event sink.
+ * Output: trace array mutation plus an `engine.trace` payload for streaming consumers.
+ * Boundary: this helper does not write logs; callers keep logger semantics explicit.
+ */
+export function recordEngineTrace(
+  traces: EngineTraceEvent[],
+  trace: EngineTraceEvent,
+  events: EngineEventSink,
+): void {
+  traces.push(trace);
+  events.emit({
+    event: {
+      type: "engine.trace",
+      trace,
+    },
+  });
 }
 
 /**
@@ -45,29 +65,82 @@ export class RuntimeTracer {
     this.logger?.(formatLogLine(workflowId, phase, "event", undefined, detail));
   }
 
-  progress(traces: EngineTraceEvent[], workflowId: WorkflowId, detail: RuntimeProgressDetail): void {
-    traces.push({
+  trace(traces: EngineTraceEvent[], trace: EngineTraceEvent, events: EngineEventSink): void {
+    recordEngineTrace(traces, trace, events);
+  }
+
+  progress(
+    traces: EngineTraceEvent[],
+    workflowId: WorkflowId,
+    detail: RuntimeProgressDetail,
+    events: EngineEventSink,
+  ): void {
+    this.trace(traces, {
       workflowId,
       phase: "node.progress",
       detail,
+    }, events);
+    events.emit({
+      event: {
+        type: "workflow.step.progress",
+        workflowId,
+        node: detail.node,
+        stage: detail.stage,
+        progress: detail.progress,
+        ...(detail.description === undefined ? {} : { description: detail.description }),
+      },
     });
     this.event(workflowId, "node.progress", detail);
   }
 
-  stepStart(traces: EngineTraceEvent[], workflowId: WorkflowId, detail: RuntimeStepDetail): void {
-    traces.push({
+  stepStart(
+    traces: EngineTraceEvent[],
+    workflowId: WorkflowId,
+    detail: RuntimeStepDetail,
+    events: EngineEventSink,
+  ): void {
+    this.trace(traces, {
       workflowId,
       phase: "node.step.start",
       detail,
+    }, events);
+    events.emit({
+      event: {
+        type: "workflow.step.start",
+        workflowId,
+        node: detail.node,
+        stage: detail.stage,
+        stepId: detail.stepId,
+        label: detail.label,
+        ...(detail.detail === undefined ? {} : { detail: detail.detail }),
+      },
     });
     this.event(workflowId, "node.step.start", detail);
   }
 
-  stepEnd(traces: EngineTraceEvent[], workflowId: WorkflowId, detail: RuntimeStepDetail): void {
-    traces.push({
+  stepEnd(
+    traces: EngineTraceEvent[],
+    workflowId: WorkflowId,
+    detail: RuntimeStepDetail,
+    events: EngineEventSink,
+  ): void {
+    this.trace(traces, {
       workflowId,
       phase: "node.step.end",
       detail,
+    }, events);
+    events.emit({
+      event: {
+        type: "workflow.step.end",
+        workflowId,
+        node: detail.node,
+        stage: detail.stage,
+        stepId: detail.stepId,
+        label: detail.label,
+        ...(detail.status === undefined ? {} : { status: detail.status }),
+        ...(detail.durationMs === undefined ? {} : { durationMs: detail.durationMs }),
+        ...(detail.detail === undefined ? {} : { detail: detail.detail }),
+      },
     });
     this.event(workflowId, "node.step.end", detail);
   }

@@ -1,6 +1,6 @@
 import type { JsonRecord, WorkflowId, WorkflowInstance } from "@pac/workflow";
 import { WorkflowInstanceStore } from "../runtime/instances.js";
-import type { EngineSession, TargetSelection } from "../types.js";
+import type { EngineSession } from "../types.js";
 import type { WorkflowRoutingResult } from "./router.js";
 
 export interface RoutingPlanApplyInput {
@@ -17,7 +17,7 @@ export interface RoutingPlanApplyInput {
  * Boundary: this mutates only routing/session lifecycle state; workflow state changes stay in WorkflowEngine.
  */
 export class RoutingPlanApplier {
-  apply(input: RoutingPlanApplyInput): TargetSelection {
+  apply(input: RoutingPlanApplyInput): WorkflowInstance<JsonRecord>[] {
     const previousActiveIds = input.activeInstances.map((instance) => instance.id);
     const targetIds = unique(input.result.targetWorkflowIds);
 
@@ -51,11 +51,7 @@ export class RoutingPlanApplier {
       input.instances.attach(input.session, targetId);
     }
 
-    const targetSet = new Set(targetIds);
-    return {
-      instances: input.instances.forIds(input.session, targetIds),
-      ids: targetSet,
-    };
+    return input.instances.forIds(input.session, targetIds);
   }
 }
 

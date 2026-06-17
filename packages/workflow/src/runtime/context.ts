@@ -51,6 +51,18 @@ export interface WorkflowContext<TConnectors extends ConnectorCatalog = Connecto
   toJSON(): JsonRecord;
 }
 
+export interface WorkflowContextStoreCheckpoint {
+  readonly values: readonly (readonly [string, unknown])[];
+  readonly keyRevisions: readonly (readonly [string, number])[];
+  readonly connectorCallCache: readonly {
+    readonly connectorId: string;
+    readonly cacheKey: unknown;
+    readonly promise: Promise<unknown>;
+  }[];
+  readonly currentRevision: number;
+  readonly currentAck: AckRequest | undefined;
+}
+
 /**
  * Conversation-scoped runtime context.
  * It is intentionally not schema-validated, cloned, or persisted because workflows may store
@@ -171,6 +183,45 @@ export class WorkflowContextStore<TConnectors extends ConnectorCatalog = Connect
       values.__ack = this.currentAck;
     }
     return values;
+  }
+
+  /**
+   * Captures mutable context internals for engine turn rollback.
+   * Input: current in-memory values, revisions, ack, and connector-call cache.
+   * Output: a shallow checkpoint that preserves non-serializable runtime object identities.
+   * Boundary: intended for runtime transaction control, not persistence or cross-process transport.
+   */
+  checkpoint(): WorkflowContextStoreCheckpoint {
+    return {
+      values: [...this.values.entries()],
+      keyRevisions: [...this.keyRevisions.entries()],
+      connectorCallCache: [...this.connectorCallCache],
+      currentRevision: this.currentRevision,
+      currentAck: this.currentAck,
+    };
+  }
+
+  /**
+   * Restores a checkpoint created by this store type.
+   * Input: checkpoint from `checkpoint()`.
+   * Output: this store's mutable in-memory state reset to that checkpoint.
+   * Boundary: connector promises are restored by reference because connector work cannot be cloned.
+   */
+  restore(checkpoint: WorkflowContextStoreCheckpoint): void {
+    this.values.clear();
+    for (const [key, value] of checkpoint.values) {
+      this.values.set(key, value);
+    }
+
+    this.keyRevisions.clear();
+    for (const [key, revision] of checkpoint.keyRevisions) {
+      this.keyRevisions.set(key, revision);
+    }
+
+    this.connectorCallCache.length = 0;
+    this.connectorCallCache.push(...checkpoint.connectorCallCache);
+    this.currentRevision = checkpoint.currentRevision;
+    this.currentAck = checkpoint.currentAck;
   }
 
   private markChanged(key: string): void {
