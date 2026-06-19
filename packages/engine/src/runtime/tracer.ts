@@ -20,17 +20,15 @@ export interface RuntimeStepDetail {
 }
 
 /**
- * Records one diagnostic trace and mirrors it to the turn event stream.
- * Input: the mutable turn trace array, the trace entry, and the current event sink.
- * Output: trace array mutation plus an `engine.trace` payload for streaming consumers.
+ * Emits one diagnostic trace to the turn event stream.
+ * Input: the trace entry and the current event sink.
+ * Output: an `engine.trace` payload for streaming consumers.
  * Boundary: this helper does not write logs; callers keep logger semantics explicit.
  */
 export function recordEngineTrace(
-  traces: EngineTraceEvent[],
   trace: EngineTraceEvent,
   events: EngineEventSink,
 ): void {
-  traces.push(trace);
   events.emit({
     event: {
       type: "engine.trace",
@@ -41,7 +39,7 @@ export function recordEngineTrace(
 
 /**
  * Centralizes engine trace and log emission.
- * Input: optional engine logger plus trace arrays supplied by turn execution.
+ * Input: optional engine logger plus the current turn event sink.
  * Output: stable log lines and trace events for runtime diagnostics.
  * Boundary: this class never mutates workflow state; it only records execution metadata.
  */
@@ -65,17 +63,16 @@ export class RuntimeTracer {
     this.logger?.(formatLogLine(workflowId, phase, "event", undefined, detail));
   }
 
-  trace(traces: EngineTraceEvent[], trace: EngineTraceEvent, events: EngineEventSink): void {
-    recordEngineTrace(traces, trace, events);
+  trace(trace: EngineTraceEvent, events: EngineEventSink): void {
+    recordEngineTrace(trace, events);
   }
 
   progress(
-    traces: EngineTraceEvent[],
     workflowId: WorkflowId,
     detail: RuntimeProgressDetail,
     events: EngineEventSink,
   ): void {
-    this.trace(traces, {
+    this.trace({
       workflowId,
       phase: "node.progress",
       detail,
@@ -94,12 +91,11 @@ export class RuntimeTracer {
   }
 
   stepStart(
-    traces: EngineTraceEvent[],
     workflowId: WorkflowId,
     detail: RuntimeStepDetail,
     events: EngineEventSink,
   ): void {
-    this.trace(traces, {
+    this.trace({
       workflowId,
       phase: "node.step.start",
       detail,
@@ -119,12 +115,11 @@ export class RuntimeTracer {
   }
 
   stepEnd(
-    traces: EngineTraceEvent[],
     workflowId: WorkflowId,
     detail: RuntimeStepDetail,
     events: EngineEventSink,
   ): void {
-    this.trace(traces, {
+    this.trace({
       workflowId,
       phase: "node.step.end",
       detail,

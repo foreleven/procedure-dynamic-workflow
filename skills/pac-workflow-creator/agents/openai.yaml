@@ -1,4 +1,4 @@
 interface:
   display_name: "Workflow Creator"
   short_description: "Compile procedures into PAC workflow modules"
-  default_prompt: "Use $pac-workflow-creator with this procedure file to produce a PAC workflow module with business-first state design."
+  default_prompt: "Use $pac-workflow-creator with this procedure file to produce a PAC workflow module with minimal business-first state design."

@@ -199,26 +199,54 @@ function workflowTemplateExportSchema() {
 }
 
 function workflowNodeExportSchema() {
-  return z
-    .object({
-      kind: z.enum(["prefetch", "effect"]),
-      name: z.string(),
-      stage: z.enum(["beforePatch", "withPatch", "afterPatch"]),
-      progress: z.string().optional(),
-      description: z.string(),
-      dependsOn: z.array(z.string()).optional(),
+  const base = {
+    name: z.string(),
+    stage: z.enum(["beforePatch", "withPatch", "afterPatch"]),
+    progress: z.string().optional(),
+    description: z.string(),
+  };
+  return z.discriminatedUnion("kind", [
+    z.object({
+      ...base,
+      kind: z.literal("prefetch"),
       when: functionSchema().optional(),
       run: functionSchema(),
-    })
-    .superRefine((node, context) => {
-      if (node.kind === "prefetch" && !node.progress) {
+    }).superRefine((node, context) => {
+      if (!node.progress) {
         context.addIssue({
           code: "custom",
           message: "prefetch node progress must be a non-empty string",
           path: ["progress"],
         });
       }
-    });
+    }),
+    z.object({
+      ...base,
+      kind: z.literal("effect"),
+      dependsOn: z.array(z.string()).optional(),
+      when: functionSchema().optional(),
+      run: functionSchema(),
+    }),
+    z.object({
+      ...base,
+      kind: z.literal("loop"),
+      dependsOn: z.array(z.string()).optional(),
+      maxRuns: z.number(),
+      stateSchema: zodTypeSchema(),
+      instruction: z.string(),
+      model: z.string().optional(),
+      effects: z.array(workflowLoopEffectExportSchema()),
+    }),
+  ]);
+}
+
+function workflowLoopEffectExportSchema() {
+  return z.object({
+    name: z.string(),
+    description: z.string(),
+    dependsOn: z.array(z.string()).optional(),
+    run: functionSchema(),
+  });
 }
 
 function renderPolicyExportSchema() {

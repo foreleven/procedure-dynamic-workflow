@@ -14,7 +14,7 @@ Runtime exports:
 - `AckOptionSchema`, `AckRequestSchema`, `ConnectorRegistry`, `DEFAULT_ROUTING_THRESHOLDS`, `JsonRecordSchema`, `PrefetchStore`, `SessionPatchSchema`, `ToolMessage`, `WorkflowContextStore`, `createConnectorRegistry`, `defineConnectorCatalog`, `defineConnectorRef`, `defineConnectorTool`, `definePatch`, `defineRouting`, `defineWorkflowDefinition`, `defineWorkflowDefinitionFromTemplate`, `defineWorkflowHooks`, `defineWorkflowTemplate`, `effectAction`, `hydrateContextAction`, `loadWorkflowMetadata`, `prefetchAction`, `renderAction`, `resolveAckSelection`, `setContextAction`, `setStateAction`, `settlePrefetch`, `workflow`, `workflowActions`, and `z`.
 
 Public types:
-- `AckRequest`, `AckSelection`, `ConnectorCatalog`, `ConnectorInput`, `ConnectorOutput`, `PatchPolicy`, `PrefetchStoreCheckpoint`, `ProgramWorkflowBaseConfig`, `ProgramWorkflowConfig`, `ProgramWorkflowTemplateConfig`, `RenderPolicy`, `RenderResponse`, `RoutingProfile`, `SessionContext`, `ToolMessageInput`, `WorkflowAssistantMessage`, `WorkflowContext`, `WorkflowContextCallOptions`, `WorkflowContextStoreCheckpoint`, `WorkflowDefinition`, `WorkflowDefinitionBody`, `WorkflowDefinitionMetadata`, `WorkflowDefinitionTemplate`, `WorkflowMessage`, `WorkflowMetadata`, `WorkflowNode`, `WorkflowPatch`, `WorkflowProgram`, `WorkflowRuntimeInput`, `WorkflowStatePatch`, `WorkflowStepController`, `WorkflowStepHandle`, `WorkflowTemplateProgram`, `WorkflowToolMessage`, and `WorkflowUserMessage`.
+- `AckRequest`, `AckSelection`, `ConnectorCatalog`, `ConnectorInput`, `ConnectorOutput`, `PatchPolicy`, `PrefetchStoreCheckpoint`, `ProgramLoop`, `ProgramLoopConfig`, `ProgramLoopEffectConfig`, `ProgramWorkflowBaseConfig`, `ProgramWorkflowConfig`, `ProgramWorkflowTemplateConfig`, `RenderPolicy`, `RenderResponse`, `RoutingProfile`, `SessionContext`, `ToolMessageInput`, `WorkflowAssistantMessage`, `WorkflowContext`, `WorkflowContextCallOptions`, `WorkflowContextStoreCheckpoint`, `WorkflowDefinition`, `WorkflowDefinitionBody`, `WorkflowDefinitionMetadata`, `WorkflowDefinitionTemplate`, `WorkflowLoopNode`, `WorkflowLoopRuntime`, `WorkflowMessage`, `WorkflowMetadata`, `WorkflowNode`, `WorkflowPatch`, `WorkflowProgram`, `WorkflowRuntimeInput`, `WorkflowStatePatch`, `WorkflowStepController`, `WorkflowStepHandle`, `WorkflowTemplateProgram`, `WorkflowToolMessage`, and `WorkflowUserMessage`.
 
 ### Workflow Definition
 
@@ -29,7 +29,7 @@ Input:
 - Optional `id`, `version`, `description`, and `routing` for standalone modules that export complete workflow definitions.
 
 Output:
-- a `WorkflowProgram` or `WorkflowTemplateProgram` with `patch(...)`, `prefetch(...)`, `effect(...)`, `command(...)`, and `render(...)`.
+- a `WorkflowProgram` or `WorkflowTemplateProgram` with `patch(...)`, `prefetch(...)`, `effect(...)`, `loop(...)`, `command(...)`, and `render(...)`.
 - If metadata is omitted, `render(...)` returns a `WorkflowDefinitionTemplate`; agent-directory CLI loading attaches `agent.yaml` metadata before runtime execution.
 - If metadata is supplied, `render(...)` returns a complete `WorkflowDefinition`.
 - In agent-directory loading, manifest metadata is the source of truth and overrides metadata from legacy complete definitions.
@@ -39,7 +39,7 @@ Behavior:
 - asserts non-empty workflow metadata when supplied and invalidation invariants during definition;
 - rejects author `TState`/default state shapes that declare the runtime-owned `messages` field;
 - asserts non-empty node names and descriptions during registration, and validates required prefetch progress text;
-- `effect(name, dependsOn, config)` and `config.dependsOn` gate an effect by state-field dependency snapshots;
+- `effect(name, dependsOn, config)` and `config.dependsOn` gate an effect by state-field or completed-loop dependency snapshots;
 - `patch(...)` must be called exactly once before `render(...)`;
 - duplicate node names are rejected;
 - asserts render policy metadata before producing a workflow definition.
@@ -77,7 +77,7 @@ Input:
 Behavior:
 - effect configs do not declare `when`; business guards belong at the start of `run`;
 - effect configs do not expose `progress`; use `step.start(...)` and `step.end(...)` for loading UI;
-- the program DSL runtime passed to effect callbacks does not expose `preState`;
+- workflow callbacks do not receive a separate `preState` or latest-message string; use `state.messages` for workflow-local transcript context;
 - when `dependsOn` is omitted, the effect runs during each stabilization round until it produces no semantic change;
 - when `dependsOn` is provided, the runtime compares the current dependency values to the last successful run for that node and skips unchanged snapshots during stabilization;
 - `dependsOn: []` runs once for the workflow instance;
@@ -89,6 +89,28 @@ Boundary:
 - dependency fields are workflow state keys, not context or prefetch keys;
 - `messages` is reserved and cannot be used as a dependency field;
 - step labels are user-visible loading text, while optional step details are diagnostics.
+
+#### Loop nodes
+
+Use `loop(name, config)` for bounded multi-pass workflow execution inside one engine turn.
+
+Input:
+- `dependsOn`: optional workflow state fields or prior completed loops such as `loop.discovery`.
+- `maxRuns`: required integer from `1` to `5`.
+- `stateSchema`: Zod schema for the model-produced state for one loop run.
+- `instruction`: planner instruction for deciding `continue`, `satisfied`, or `blocked`.
+
+Behavior:
+- the engine calls the LLM once per run to produce `{ status, reason, state }`;
+- `continue` requires schema-valid loop `state`; `satisfied` and `blocked` require `state: null`;
+- loop effects are registered with `loop.effect(name, ["loop.state"], config)` and receive `runtime.loop.state`;
+- loop effects can return partial workflow state and `messages`, using the same patch boundary as ordinary effects;
+- `dependsOn: ["loop.someLoop"]` on a later effect or loop waits until `someLoop` has stopped.
+
+Boundary:
+- loop runtime state is engine-owned and not part of workflow `stateSchema`;
+- put raw evidence in `ToolMessage`s, not workflow state;
+- use workflow state patches only for compact durable handoff facts.
 
 #### `defineWorkflowDefinition(definition)`
 

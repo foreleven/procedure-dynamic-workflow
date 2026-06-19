@@ -2,6 +2,20 @@
 
 Design workflow state before writing connector calls or nodes. State is durable business truth across turns, not a scratchpad and not a mirror of tool parameters.
 
+## Keep State Deliberately Small
+
+Default to the smallest state that can preserve the user's durable intent and the workflow lifecycle. A good state model is usually boring: one compact `status`, one or two user-expressible business facts, a selected reference or draft only when a later turn needs it, and a committed record id only after an irreversible action.
+
+Before adding any field, try to delete it:
+
+- If it can be recomputed from another state field in the same turn, do not store it.
+- If it only helps build one connector input, compute it in the node that calls the connector.
+- If it is a query plan, search result, candidate list, score, page body, summary, display label, or connector payload, keep it in runtime context or a `ToolMessage`, not state.
+- If it is a scenario/type enum used only to choose prompts or helper text, prefer deriving behavior from one natural-language request field unless the procedure requires that enum to survive across turns.
+- If it is an optional connector parameter, default or omit it at call time unless the user can explicitly control it as a business choice.
+
+Add a field only when removing it would make a later turn ambiguous, lose a user commitment, or make an irreversible command unsafe. Simpler state is preferred even if connector code has to do a little more local derivation.
+
 ## Build State From Business Meaning
 
 Start from the procedure:
@@ -54,6 +68,8 @@ Examples:
 Avoid:
 
 - Candidate arrays, large connector payloads, raw external records, and derived display text.
+- Query plans, search terms, page extraction batches, and ranking/scoring details.
+- Scenario enums, booleans, or status flags that merely restate a natural-language request and are not needed for a later turn.
 - Boolean flags that hide the real business object, such as `submitted: true` without a committed record.
 - One field per connector parameter when the procedure has a smaller business concept.
 - State fields kept only to make one connector call easier.

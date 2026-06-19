@@ -9,29 +9,36 @@
 import {
   type JsonRecord,
   type WorkflowEffectNode,
-  type WorkflowId,
   type WorkflowInstance,
+  type WorkflowLoopEffectNode,
+  type WorkflowLoopNode,
+  type WorkflowLoopRuntime,
   type WorkflowNode,
   type WorkflowNodeStage,
   type WorkflowPrefetchNode,
+  type WorkflowPatch,
   type WorkflowRuntimeInput,
-  type WorkflowRuntimeState,
   type WorkflowStepController,
+  type WorkflowToolMessage,
 } from "@pac/workflow";
+import { z } from "zod";
 import { applyObjectPatch } from "../patching.js";
 import { applyWorkflowInvalidation } from "./mutations.js";
-import type { EngineEventSink, EngineSession, EngineTraceEvent, WorkflowEngineOptions } from "../types.js";
+import type { EngineEventSink, EngineSession, WorkflowEngineOptions } from "../types.js";
 import { RuntimeTracer } from "./tracer.js";
 import { errorMessage } from "../utils/errors.js";
-import { sameRuntimeValue } from "../utils/json.js";
-import { appendWorkflowMessage, appendWorkflowMessages } from "../utils/messages.js";
-import { preStateFor } from "../utils/state.js";
+import { safeJsonStringify, sameRuntimeValue } from "../utils/json.js";
+import { appendWorkflowMessage, appendWorkflowMessages, messagesForWorkflowMessages } from "../utils/messages.js";
 import { TurnChangeTracker, type WorkflowTurnChanges } from "../utils/turn.js";
 
 export interface WorkflowNodeRunnerCheckpoint {
   readonly effectDependencies: ReadonlyMap<
     WorkflowInstance<JsonRecord>,
     Map<string, readonly unknown[]> | undefined
+  >;
+  readonly loopCompletions: ReadonlyMap<
+    WorkflowInstance<JsonRecord>,
+    Map<string, LoopCompletion> | undefined
   >;
 }
 
@@ -43,6 +50,7 @@ export interface WorkflowNodeRunnerCheckpoint {
  */
 export class WorkflowNodeRunner {
   private readonly effectDependencies = new WeakMap<WorkflowInstance<JsonRecord>, Map<string, readonly unknown[]>>();
+  private readonly loopCompletions = new WeakMap<WorkflowInstance<JsonRecord>, Map<string, LoopCompletion>>();
 
   constructor(
     private readonly deps: WorkflowEngineOptions["deps"],
@@ -63,6 +71,10 @@ export class WorkflowNodeRunner {
       WorkflowInstance<JsonRecord>,
       Map<string, readonly unknown[]> | undefined
     >();
+    const loopCompletions = new Map<
+      WorkflowInstance<JsonRecord>,
+      Map<string, LoopCompletion> | undefined
+    >();
 
     for (const instance of instances) {
       const dependencies = this.effectDependencies.get(instance);
@@ -70,9 +82,14 @@ export class WorkflowNodeRunner {
         instance,
         dependencies === undefined ? undefined : cloneEffectDependencies(dependencies),
       );
+      const completions = this.loopCompletions.get(instance);
+      loopCompletions.set(
+        instance,
+        completions === undefined ? undefined : cloneLoopCompletions(completions),
+      );
     }
 
-    return { effectDependencies };
+    return { effectDependencies, loopCompletions };
   }
 
   /**
@@ -89,54 +106,55 @@ export class WorkflowNodeRunner {
         this.effectDependencies.set(instance, cloneEffectDependencies(dependencies));
       }
     }
+    for (const [instance, completions] of checkpoint.loopCompletions) {
+      if (completions === undefined) {
+        this.loopCompletions.delete(instance);
+      } else {
+        this.loopCompletions.set(instance, cloneLoopCompletions(completions));
+      }
+    }
   }
 
   /**
    * Runs one node stage exactly once.
-   * Input: a runtime instance, current session/message, trace sink, turn changes, pre-turn states, and stage.
+   * Input: a runtime instance, current session, event sink, turn changes, and stage.
    * Output: node side effects applied to the runtime instance.
    * Boundary: used for beforePatch and withPatch stages where stabilization is not desired.
    */
   async runStageOnce(
     instance: WorkflowInstance<JsonRecord>,
     session: EngineSession,
-    message: string,
-    traces: EngineTraceEvent[],
     events: EngineEventSink,
     turnChanges: TurnChangeTracker,
-    preStates: Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>,
     stage: WorkflowNodeStage,
   ): Promise<void> {
-    await this.runStageRound(instance, session, message, traces, events, turnChanges, preStates, stage);
+    await this.runStageRound(instance, session, events, turnChanges, stage);
   }
 
   /**
    * Runs one node stage until no node reports a semantic change or the round limit is reached.
-   * Input: a runtime instance, current session/message, trace sink, turn changes, pre-turn states, and stage.
+   * Input: a runtime instance, current session, event sink, turn changes, and stage.
    * Output: node side effects applied across stabilization rounds.
    * Boundary: max-round exhaustion is traced instead of throwing so callers can still render diagnostics.
    */
   async runStageUntilStable(
     instance: WorkflowInstance<JsonRecord>,
     session: EngineSession,
-    message: string,
-    traces: EngineTraceEvent[],
     events: EngineEventSink,
     turnChanges: TurnChangeTracker,
-    preStates: Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>,
     stage: WorkflowNodeStage,
   ): Promise<void> {
     for (let round = 0; round < this.maxProgramRounds; round += 1) {
       const phase = `nodes.${stage}.round`;
       const startedAt = this.tracer.start(instance.id, phase, { round });
 
-      const changed = await this.runStageRound(instance, session, message, traces, events, turnChanges, preStates, stage);
+      const changed = await this.runStageRound(instance, session, events, turnChanges, stage);
       this.tracer.done(instance.id, phase, startedAt, { round, changed });
 
       if (!changed) return;
     }
 
-    this.tracer.trace(traces, {
+    this.tracer.trace({
       workflowId: instance.id,
       phase: `nodes.${stage}.maxRounds`,
       detail: { maxProgramRounds: this.maxProgramRounds },
@@ -146,11 +164,8 @@ export class WorkflowNodeRunner {
   private async runStageRound(
     instance: WorkflowInstance<JsonRecord>,
     session: EngineSession,
-    message: string,
-    traces: EngineTraceEvent[],
     events: EngineEventSink,
     turnChanges: TurnChangeTracker,
-    preStates: Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>,
     stage: WorkflowNodeStage,
   ): Promise<boolean> {
     let changed = false;
@@ -159,11 +174,11 @@ export class WorkflowNodeRunner {
       if (node.stage !== stage) continue;
 
       const phase = `node.${stage}.${node.name}`;
-      const input = this.nodeInput(instance, session, message, turnChanges, preStates, noopStepController);
+      const input = this.nodeInput(instance, session, turnChanges, noopStepController);
 
       if (node.when && !(await node.when(input))) {
         this.clearEffectDependenciesIfChanged(instance, node);
-        this.tracer.trace(traces, {
+        this.tracer.trace({
           workflowId: instance.id,
           phase: `${phase}.skip`,
           detail: { reason: "when" },
@@ -174,8 +189,8 @@ export class WorkflowNodeRunner {
 
       const dependencyState = this.effectDependencyState(instance, node);
       if (!dependencyState.shouldRun) {
-        const dependsOn = node.kind === "effect" ? node.dependsOn ?? [] : [];
-        this.tracer.trace(traces, {
+        const dependsOn = dependencyNodeDependsOn(node);
+        this.tracer.trace({
           workflowId: instance.id,
           phase: `${phase}.skip`,
           detail: { reason: "dependencies", dependsOn },
@@ -185,7 +200,7 @@ export class WorkflowNodeRunner {
       }
 
       if (node.progress !== undefined) {
-        this.tracer.progress(traces, instance.id, {
+        this.tracer.progress(instance.id, {
           node: node.name,
           stage: node.stage,
           progress: node.progress,
@@ -195,8 +210,8 @@ export class WorkflowNodeRunner {
 
       const startedAt = this.tracer.start(instance.id, phase);
 
-      const result = await this.runNode(instance, session, message, traces, events, turnChanges, preStates, node);
-      if (node.kind === "effect") {
+      const result = await this.runNode(instance, session, events, turnChanges, node);
+      if (isDependencyTrackedNode(node)) {
         this.recordEffectDependencies(instance, node, dependencyState.current);
       }
 
@@ -213,22 +228,21 @@ export class WorkflowNodeRunner {
   private async runNode(
     instance: WorkflowInstance<JsonRecord>,
     session: EngineSession,
-    message: string,
-    traces: EngineTraceEvent[],
     events: EngineEventSink,
     turnChanges: TurnChangeTracker,
-    preStates: Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>,
     node: WorkflowNode<JsonRecord>,
   ): Promise<NodeRunResult> {
     const changes = turnChanges.forWorkflow(instance.id);
     const contextRevision = instance.context.revision;
-    const stepScope = this.createStepScope(instance, node, traces, events);
-    const input = this.nodeInput(instance, session, message, turnChanges, preStates, stepScope.controller);
+    const stepScope = this.createStepScope(instance, node, events);
+    const input = this.nodeInput(instance, session, turnChanges, stepScope.controller);
 
     try {
       const result = node.kind === "prefetch"
-        ? await this.runPrefetchNode(instance, node, input, changes, contextRevision, traces, events)
-        : await this.runEffectNode(instance, node, input, changes, contextRevision, traces, events);
+        ? await this.runPrefetchNode(instance, node, input, changes, contextRevision, events)
+        : node.kind === "effect"
+          ? await this.runEffectNode(instance, node, input, changes, contextRevision, events)
+          : await this.runLoopNode(instance, node, input, changes, contextRevision, events);
       stepScope.closeOpenSteps("done", { autoEnded: true });
       return result;
     } catch (error) {
@@ -246,9 +260,7 @@ export class WorkflowNodeRunner {
   private nodeInput(
     instance: WorkflowInstance<JsonRecord>,
     session: EngineSession,
-    message: string,
     turnChanges: TurnChangeTracker,
-    preStates: Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>,
     step: WorkflowStepController,
   ): WorkflowRuntimeInput<JsonRecord> {
     const changes = turnChanges.forWorkflow(instance.id);
@@ -256,12 +268,10 @@ export class WorkflowNodeRunner {
       session,
       context: instance.context,
       state: instance.state,
-      preState: preStateFor(preStates, instance),
       prefetch: instance.prefetch,
       deps: this.deps,
       turn: changes.snapshot(),
       step,
-      message,
     };
   }
 
@@ -277,7 +287,6 @@ export class WorkflowNodeRunner {
     input: WorkflowRuntimeInput<JsonRecord>,
     changes: WorkflowTurnChanges,
     contextRevision: number,
-    traces: EngineTraceEvent[],
     events: EngineEventSink,
   ): Promise<NodeRunResult> {
     const result = await node.run(input);
@@ -303,7 +312,7 @@ export class WorkflowNodeRunner {
       stateChangedFields: appendedToolMessage ? ["messages"] : [],
       prefetch: instance.prefetch.toJSON(),
     };
-    this.recordNodeTraceIfChanged(instance, node, detail, traces, events);
+    this.recordNodeTraceIfChanged(instance, node, detail, events);
 
     return { changed: detail.changed, detail };
   }
@@ -320,10 +329,20 @@ export class WorkflowNodeRunner {
     input: WorkflowRuntimeInput<JsonRecord>,
     changes: WorkflowTurnChanges,
     contextRevision: number,
-    traces: EngineTraceEvent[],
     events: EngineEventSink,
   ): Promise<NodeRunResult> {
     const result = await node.run(input);
+    return this.applyWorkflowPatchResult(instance, node, result, changes, contextRevision, events);
+  }
+
+  private applyWorkflowPatchResult(
+    instance: WorkflowInstance<JsonRecord>,
+    node: WorkflowTraceNode,
+    result: WorkflowPatch<JsonRecord> | void,
+    changes: WorkflowTurnChanges,
+    contextRevision: number,
+    events: EngineEventSink,
+  ): NodeRunResult {
     const appendedMessages = appendWorkflowMessages(instance.state, result?.messages ?? []);
     const contextChangedKeys = instance.context.changedKeysSince(contextRevision);
     if (!result) {
@@ -333,7 +352,7 @@ export class WorkflowNodeRunner {
       }
       const changed = contextChangedKeys.length > 0 || appendedMessages.length > 0;
       const detail = { changed, contextChangedKeys, appendedMessages: appendedMessages.length };
-      this.recordNodeTraceIfChanged(instance, node, detail, traces, events);
+      this.recordNodeTraceIfChanged(instance, node, detail, events);
       return {
         changed,
         detail,
@@ -344,7 +363,6 @@ export class WorkflowNodeRunner {
     const invalidated = applyWorkflowInvalidation(
       instance,
       stateChanged,
-      traces,
       events,
       changes.messagePatchedStateFields,
     );
@@ -367,20 +385,232 @@ export class WorkflowNodeRunner {
       dirtyFields: stateChanged,
       invalidated,
     };
-    this.recordNodeTraceIfChanged(instance, node, detail, traces, events);
+    this.recordNodeTraceIfChanged(instance, node, detail, events);
 
     return { changed, detail };
   }
 
+  private async runLoopNode(
+    instance: WorkflowInstance<JsonRecord>,
+    node: WorkflowLoopNode<JsonRecord>,
+    input: WorkflowRuntimeInput<JsonRecord>,
+    changes: WorkflowTurnChanges,
+    _contextRevision: number,
+    events: EngineEventSink,
+  ): Promise<NodeRunResult> {
+    const detail: LoopRunDetail = {
+      changed: false,
+      runs: 0,
+      status: "max_runs",
+      appendedMessages: 0,
+      childChanged: false,
+    };
+    let latestReason: string | null = null;
+
+    for (let run = 1; run <= node.maxRuns; run += 1) {
+      detail.runs = run;
+      const decision = await this.planLoopState(instance, node, input, run, events);
+      latestReason = decision.reason;
+      const appendedDecision = appendWorkflowMessage(instance.state, {
+        role: "tool",
+        name: `loop.${node.name}.state`,
+        call: { loop: node.name, run },
+        result: {
+          status: decision.status,
+          reason: decision.reason,
+          state: decision.state,
+        },
+      });
+      if (appendedDecision) {
+        changes.recordState(["messages"]);
+        detail.appendedMessages += 1;
+        detail.changed = true;
+      }
+
+      if (decision.status === "satisfied" || decision.status === "blocked") {
+        detail.status = decision.status;
+        this.recordLoopCompletion(instance, node.name, {
+          status: decision.status,
+          runs: run,
+          reason: decision.reason,
+        });
+        this.recordNodeTraceIfChanged(instance, node, detail, events);
+        return { changed: detail.changed, detail };
+      }
+
+      if (decision.state === null) {
+        throw new Error(`Workflow ${instance.id} loop ${node.name} continue decision must include state`);
+      }
+
+      const loopRuntime: WorkflowLoopRuntime<JsonRecord> = {
+        name: node.name,
+        run,
+        maxRuns: node.maxRuns,
+        state: decision.state,
+        decisionReason: decision.reason,
+        messages: instance.state.messages.filter((message): message is WorkflowToolMessage => message.role === "tool"),
+      };
+      const childResult = await this.runLoopEffects(instance, node, input, loopRuntime, changes, events);
+      detail.childChanged = detail.childChanged || childResult.changed;
+      detail.changed = detail.changed || childResult.changed;
+    }
+
+    this.recordLoopCompletion(instance, node.name, {
+      status: "max_runs",
+      runs: node.maxRuns,
+      reason: latestReason,
+    });
+    this.recordNodeTraceIfChanged(instance, node, detail, events);
+    return { changed: detail.changed, detail };
+  }
+
+  private async planLoopState(
+    instance: WorkflowInstance<JsonRecord>,
+    node: WorkflowLoopNode<JsonRecord>,
+    input: WorkflowRuntimeInput<JsonRecord>,
+    run: number,
+    events: EngineEventSink,
+  ): Promise<LoopDecision> {
+    const schema = z.object({
+      status: z.enum(["continue", "satisfied", "blocked"]),
+      reason: z.string(),
+      state: node.stateSchema.nullable(),
+    });
+    const phase = `llm.loop.${node.name}`;
+    const startedAt = this.tracer.start(instance.id, phase, {
+      loop: node.name,
+      run,
+      maxRuns: node.maxRuns,
+      model: node.model ?? "default",
+    });
+
+    try {
+      const decision = await this.deps.llm.structured({
+        name: `${instance.id}_${node.name}_loop_state`,
+        ...(node.model ? { model: node.model } : {}),
+        instruction: loopInstructionForRuntime(instance.id, node, input.state, run),
+        schema,
+        messages: messagesForWorkflowMessages(input.state.messages),
+      });
+      if (decision.status === "continue" && decision.state === null) {
+        throw new Error(`Workflow ${instance.id} loop ${node.name} continue decision must include state`);
+      }
+      if (decision.status !== "continue" && decision.state !== null) {
+        throw new Error(`Workflow ${instance.id} loop ${node.name} ${decision.status} decision must use null state`);
+      }
+      this.tracer.done(instance.id, phase, startedAt, {
+        loop: node.name,
+        run,
+        status: decision.status,
+        reason: decision.reason,
+      });
+      this.tracer.trace({
+        workflowId: instance.id,
+        phase: "node.loop.state",
+        detail: { loop: node.name, run, status: decision.status, reason: decision.reason },
+      }, events);
+      return decision as LoopDecision;
+    } catch (error) {
+      this.tracer.done(instance.id, phase, startedAt, {
+        loop: node.name,
+        run,
+        error: errorMessage(error),
+      });
+      throw error;
+    }
+  }
+
+  private async runLoopEffects(
+    instance: WorkflowInstance<JsonRecord>,
+    node: WorkflowLoopNode<JsonRecord>,
+    input: WorkflowRuntimeInput<JsonRecord>,
+    loopRuntime: WorkflowLoopRuntime<JsonRecord>,
+    changes: WorkflowTurnChanges,
+    events: EngineEventSink,
+  ): Promise<{ changed: boolean }> {
+    let changed = false;
+    const completed = new Set<string>(["loop.state"]);
+    const pending = [...node.effects];
+
+    while (pending.length > 0) {
+      const index = pending.findIndex((effect) =>
+        (effect.dependsOn ?? ["loop.state"]).every((dependency) => completed.has(dependency))
+      );
+      if (index < 0) {
+        const blocked = pending.map((effect) => effect.name).join(", ");
+        throw new Error(`Workflow ${instance.id} loop ${node.name} has unresolved loop effect dependencies: ${blocked}`);
+      }
+
+      const [effect] = pending.splice(index, 1);
+      if (!effect) continue;
+      const effectChanged = await this.runLoopEffect(instance, node, effect, input, loopRuntime, changes, events);
+      changed = changed || effectChanged;
+      completed.add(effect.name);
+    }
+
+    return { changed };
+  }
+
+  private async runLoopEffect(
+    instance: WorkflowInstance<JsonRecord>,
+    loopNode: WorkflowLoopNode<JsonRecord>,
+    effect: WorkflowLoopEffectNode<JsonRecord>,
+    input: WorkflowRuntimeInput<JsonRecord>,
+    loopRuntime: WorkflowLoopRuntime<JsonRecord>,
+    changes: WorkflowTurnChanges,
+    events: EngineEventSink,
+  ): Promise<boolean> {
+    const traceNode: WorkflowTraceNode = {
+      name: `${loopNode.name}.${effect.name}`,
+      stage: loopNode.stage,
+    };
+    const contextRevision = instance.context.revision;
+    const stepScope = this.createStepScope(instance, traceNode, events);
+    const childInput: WorkflowRuntimeInput<JsonRecord> = {
+      ...input,
+      state: instance.state,
+      context: instance.context,
+      prefetch: instance.prefetch,
+      step: stepScope.controller,
+    };
+    const phase = `node.${loopNode.stage}.${loopNode.name}.${effect.name}`;
+    const startedAt = this.tracer.start(instance.id, phase, {
+      loop: loopNode.name,
+      run: loopRuntime.run,
+      effect: effect.name,
+    });
+
+    try {
+      const result = await effect.run(childInput, loopRuntime);
+      const applied = this.applyWorkflowPatchResult(instance, traceNode, result, changes, contextRevision, events);
+      stepScope.closeOpenSteps("done", { autoEnded: true });
+      this.tracer.done(instance.id, phase, startedAt, {
+        loop: loopNode.name,
+        run: loopRuntime.run,
+        effect: effect.name,
+        changed: applied.changed,
+      });
+      return applied.changed;
+    } catch (error) {
+      stepScope.closeOpenSteps("error", { autoEnded: true, error: errorMessage(error) });
+      this.tracer.done(instance.id, phase, startedAt, {
+        loop: loopNode.name,
+        run: loopRuntime.run,
+        effect: effect.name,
+        error: errorMessage(error),
+      });
+      throw error;
+    }
+  }
+
   private recordNodeTraceIfChanged(
     instance: WorkflowInstance<JsonRecord>,
-    node: WorkflowNode<JsonRecord>,
+    node: WorkflowTraceNode,
     detail: NodeRunDetail,
-    traces: EngineTraceEvent[],
     events: EngineEventSink,
   ): void {
     if (detail.changed) {
-      this.tracer.trace(traces, {
+      this.tracer.trace({
         workflowId: instance.id,
         phase: `node.${node.stage}.${node.name}`,
         detail,
@@ -416,11 +646,16 @@ export class WorkflowNodeRunner {
     instance: WorkflowInstance<JsonRecord>,
     node: WorkflowNode<JsonRecord>,
   ): EffectDependencyState {
-    if (node.kind !== "effect" || node.dependsOn === undefined) {
+    if (!isDependencyTrackedNode(node) || node.dependsOn === undefined) {
       return { shouldRun: true };
     }
 
-    const current = node.dependsOn.map((field) => instance.state[field]);
+    const dependencyValues = this.dependencyValues(instance, node.dependsOn);
+    if (!dependencyValues.ready) {
+      return { shouldRun: false };
+    }
+
+    const current = dependencyValues.values;
     const previous = this.effectDependencyStore(instance).get(node.name);
     if (!previous || !sameDependencyValues(previous, current)) {
       return { shouldRun: true, current };
@@ -431,7 +666,7 @@ export class WorkflowNodeRunner {
 
   private recordEffectDependencies(
     instance: WorkflowInstance<JsonRecord>,
-    node: WorkflowEffectNode<JsonRecord>,
+    node: WorkflowEffectNode<JsonRecord> | WorkflowLoopNode<JsonRecord>,
     current: readonly unknown[] | undefined,
   ): void {
     if (node.dependsOn === undefined || current === undefined) return;
@@ -443,9 +678,43 @@ export class WorkflowNodeRunner {
     node: WorkflowNode<JsonRecord>,
   ): void {
     const dependencyState = this.effectDependencyState(instance, node);
-    if (node.kind === "effect" && node.dependsOn !== undefined && dependencyState.shouldRun) {
+    if (isDependencyTrackedNode(node) && node.dependsOn !== undefined && dependencyState.shouldRun) {
       this.effectDependencyStore(instance).delete(node.name);
     }
+  }
+
+  private dependencyValues(
+    instance: WorkflowInstance<JsonRecord>,
+    dependsOn: readonly string[],
+  ): { ready: true; values: readonly unknown[] } | { ready: false } {
+    const values: unknown[] = [];
+    for (const dependency of dependsOn) {
+      if (dependency.startsWith("loop.")) {
+        const completion = this.loopCompletionStore(instance).get(dependency.slice("loop.".length));
+        if (!completion) return { ready: false };
+        values.push(completion);
+        continue;
+      }
+      values.push(instance.state[dependency]);
+    }
+    return { ready: true, values };
+  }
+
+  private recordLoopCompletion(
+    instance: WorkflowInstance<JsonRecord>,
+    loopName: string,
+    completion: LoopCompletion,
+  ): void {
+    this.loopCompletionStore(instance).set(loopName, completion);
+  }
+
+  private loopCompletionStore(instance: WorkflowInstance<JsonRecord>): Map<string, LoopCompletion> {
+    const existing = this.loopCompletions.get(instance);
+    if (existing) return existing;
+
+    const next = new Map<string, LoopCompletion>();
+    this.loopCompletions.set(instance, next);
+    return next;
   }
 
   private effectDependencyStore(instance: WorkflowInstance<JsonRecord>): Map<string, readonly unknown[]> {
@@ -459,8 +728,7 @@ export class WorkflowNodeRunner {
 
   private createStepScope(
     instance: WorkflowInstance<JsonRecord>,
-    node: WorkflowNode<JsonRecord>,
-    traces: EngineTraceEvent[],
+    node: WorkflowTraceNode,
     events: EngineEventSink,
   ): WorkflowStepScope {
     let stepIndex = 0;
@@ -476,7 +744,7 @@ export class WorkflowNodeRunner {
         const stepId = `${node.name}:${stepIndex}`;
         const trackedStep = { label, startedAt: Date.now() };
         openSteps.set(stepId, trackedStep);
-        this.tracer.stepStart(traces, instance.id, {
+        this.tracer.stepStart(instance.id, {
           node: node.name,
           stage: node.stage,
           stepId,
@@ -491,7 +759,7 @@ export class WorkflowNodeRunner {
             const openStep = openSteps.get(stepId);
             if (!openStep) return;
             openSteps.delete(stepId);
-            this.tracer.stepEnd(traces, instance.id, {
+            this.tracer.stepEnd(instance.id, {
               node: node.name,
               stage: node.stage,
               stepId,
@@ -510,7 +778,7 @@ export class WorkflowNodeRunner {
       closeOpenSteps: (status, detail) => {
         for (const [stepId, openStep] of [...openSteps.entries()]) {
           openSteps.delete(stepId);
-          this.tracer.stepEnd(traces, instance.id, {
+          this.tracer.stepEnd(instance.id, {
             node: node.name,
             stage: node.stage,
             stepId,
@@ -528,6 +796,32 @@ export class WorkflowNodeRunner {
 type NodeRunDetail = JsonRecord & {
   changed: boolean;
 };
+
+type LoopStatus = "satisfied" | "blocked" | "max_runs";
+
+interface LoopCompletion {
+  status: LoopStatus;
+  runs: number;
+  reason: string | null;
+}
+
+interface LoopDecision {
+  status: "continue" | "satisfied" | "blocked";
+  reason: string;
+  state: JsonRecord | null;
+}
+
+type LoopRunDetail = NodeRunDetail & {
+  runs: number;
+  status: LoopStatus;
+  appendedMessages: number;
+  childChanged: boolean;
+};
+
+interface WorkflowTraceNode {
+  name: string;
+  stage: WorkflowNodeStage;
+}
 
 interface NodeRunResult {
   changed: boolean;
@@ -574,6 +868,54 @@ function cloneEffectDependencies(
     clone.set(nodeName, [...values]);
   }
   return clone;
+}
+
+function cloneLoopCompletions(
+  completions: ReadonlyMap<string, LoopCompletion>,
+): Map<string, LoopCompletion> {
+  const clone = new Map<string, LoopCompletion>();
+  for (const [loopName, completion] of completions) {
+    clone.set(loopName, { ...completion });
+  }
+  return clone;
+}
+
+function isDependencyTrackedNode(
+  node: WorkflowNode<JsonRecord>,
+): node is WorkflowEffectNode<JsonRecord> | WorkflowLoopNode<JsonRecord> {
+  return node.kind === "effect" || node.kind === "loop";
+}
+
+function dependencyNodeDependsOn(node: WorkflowNode<JsonRecord>): readonly string[] {
+  return isDependencyTrackedNode(node) ? node.dependsOn ?? [] : [];
+}
+
+function loopInstructionForRuntime(
+  workflowId: string,
+  node: WorkflowLoopNode<JsonRecord>,
+  state: JsonRecord,
+  run: number,
+): string {
+  return [
+    `Workflow ${workflowId} loop ${node.name} planner.`,
+    "",
+    "You are deciding the next internal loop state for this workflow turn.",
+    "Return status=continue with a schema-valid state when another run of loop effects should execute.",
+    "Return status=satisfied with state=null when the available evidence is enough.",
+    "Return status=blocked with state=null when continuing would require unsupported scope, unsafe action, or user clarification.",
+    `Current run: ${run} of ${node.maxRuns}.`,
+    "",
+    "Current workflow state:",
+    safeJsonStringify(workflowStateForPrompt(state), 2),
+    "",
+    "Loop instruction:",
+    node.instruction.trim(),
+  ].join("\n");
+}
+
+function workflowStateForPrompt(state: JsonRecord): JsonRecord {
+  const { messages: _messages, ...fields } = state;
+  return fields;
 }
 
 function isPlainObject(value: unknown): value is JsonRecord {

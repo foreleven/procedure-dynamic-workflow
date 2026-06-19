@@ -31,17 +31,8 @@ export const TavilyTimeRangeSchema = z.enum([
 export const TavilyExtractDepthSchema = z.enum(["basic", "advanced"]);
 export const TavilyContentFormatSchema = z.enum(["markdown", "text"]);
 export const TavilyAnswerModeSchema = z.enum(["none", "basic", "advanced"]);
-export const TavilyResearchModelSchema = z.enum(["mini", "pro", "auto"]);
-export const TavilyCitationFormatSchema = z.enum([
-  "numbered",
-  "mla",
-  "apa",
-  "chicago",
-]);
-export const TavilyOutputLengthSchema = z.enum(["short", "standard", "long"]);
 
 const DateOnlySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
-const JsonObjectSchema = z.record(z.string(), z.unknown());
 
 export const WebImageSchema = z.object({
   url: z.string().min(1),
@@ -84,27 +75,6 @@ export const WebSearchInputSchema = WebSearchBaseInputSchema
   });
 
 export type WebSearchInput = z.infer<typeof WebSearchInputSchema>;
-
-export const WebNewsSearchInputSchema = WebSearchBaseInputSchema
-  .omit({
-    topic: true,
-    country: true,
-  })
-  .superRefine((input, context) => {
-    if (
-      input.chunksPerSource !== undefined &&
-      input.searchDepth !== undefined &&
-      input.searchDepth !== "advanced"
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["chunksPerSource"],
-        message: "chunksPerSource requires advanced search depth.",
-      });
-    }
-  });
-
-export type WebNewsSearchInput = z.infer<typeof WebNewsSearchInputSchema>;
 
 export const WebSearchResultSchema = z.object({
   title: z.string(),
@@ -180,131 +150,11 @@ export const WebExtractOutputSchema = z.object({
 
 export type WebExtractOutput = z.infer<typeof WebExtractOutputSchema>;
 
-const SiteTraversalBaseInputSchema = z.object({
-  url: z.string().min(1),
-  instructions: z.string().min(1).optional(),
-  maxDepth: z.number().int().min(1).max(5).optional(),
-  maxBreadth: z.number().int().min(1).max(500).optional(),
-  limit: z.number().int().min(1).max(200).optional(),
-  selectPaths: z.array(z.string().min(1)).max(50).optional(),
-  selectDomains: z.array(z.string().min(1)).max(50).optional(),
-  excludePaths: z.array(z.string().min(1)).max(50).optional(),
-  excludeDomains: z.array(z.string().min(1)).max(50).optional(),
-  allowExternal: z.boolean().optional(),
-  timeoutSeconds: z.number().min(10).max(150).optional(),
-});
-
-export const WebMapSiteInputSchema = SiteTraversalBaseInputSchema;
-
-export type WebMapSiteInput = z.infer<typeof WebMapSiteInputSchema>;
-
-export const WebMapSiteOutputSchema = z.object({
-  baseUrl: z.string(),
-  urls: z.array(z.string()),
-  responseTimeSeconds: z.number().nullable(),
-  requestId: z.string().nullable(),
-  usage: UsageSchema,
-});
-
-export type WebMapSiteOutput = z.infer<typeof WebMapSiteOutputSchema>;
-
-export const WebCrawlSiteInputSchema = SiteTraversalBaseInputSchema.extend({
-  chunksPerSource: z.number().int().min(1).max(5).optional(),
-  extractDepth: TavilyExtractDepthSchema.optional(),
-  format: TavilyContentFormatSchema.optional(),
-  includeImages: z.boolean().optional(),
-  includeFavicon: z.boolean().optional(),
-}).superRefine((input, context) => {
-  if (input.chunksPerSource !== undefined && input.instructions === undefined) {
-    context.addIssue({
-      code: "custom",
-      path: ["chunksPerSource"],
-      message: "chunksPerSource requires crawl instructions.",
-    });
-  }
-});
-
-export type WebCrawlSiteInput = z.infer<typeof WebCrawlSiteInputSchema>;
-
-export const WebCrawlSiteOutputSchema = z.object({
-  baseUrl: z.string(),
-  results: z.array(WebContentResultSchema),
-  responseTimeSeconds: z.number().nullable(),
-  requestId: z.string().nullable(),
-  usage: UsageSchema,
-});
-
-export type WebCrawlSiteOutput = z.infer<typeof WebCrawlSiteOutputSchema>;
-
-export const WebResearchSourceSchema = z.object({
-  title: z.string().nullable(),
-  url: z.string(),
-  favicon: z.string().nullable(),
-});
-
-export type WebResearchSource = z.infer<typeof WebResearchSourceSchema>;
-
-export const WebStartResearchInputSchema = z.object({
-  input: z.string().min(1),
-  model: TavilyResearchModelSchema.optional(),
-  citationFormat: TavilyCitationFormatSchema.optional(),
-  includeDomains: z.array(z.string().min(1)).max(20).optional(),
-  excludeDomains: z.array(z.string().min(1)).max(20).optional(),
-  outputLength: TavilyOutputLengthSchema.optional(),
-  outputSchema: JsonObjectSchema.optional(),
-});
-
-export type WebStartResearchInput = z.infer<
-  typeof WebStartResearchInputSchema
->;
-
-export const WebStartResearchOutputSchema = z.object({
-  requestId: z.string(),
-  createdAt: z.string(),
-  status: z.string(),
-  input: z.string(),
-  model: z.string(),
-  responseTimeSeconds: z.number().nullable(),
-});
-
-export type WebStartResearchOutput = z.infer<
-  typeof WebStartResearchOutputSchema
->;
-
-export const WebGetResearchInputSchema = z.object({
-  requestId: z.string().min(1),
-});
-
-export type WebGetResearchInput = z.infer<typeof WebGetResearchInputSchema>;
-
-export const WebResearchContentSchema = z.union([z.string(), JsonObjectSchema]);
-
-export const WebGetResearchOutputSchema = z.object({
-  requestId: z.string(),
-  createdAt: z.string().nullable(),
-  status: z.string(),
-  content: WebResearchContentSchema.nullable(),
-  sources: z.array(WebResearchSourceSchema),
-  responseTimeSeconds: z.number().nullable(),
-});
-
-export type WebGetResearchOutput = z.infer<
-  typeof WebGetResearchOutputSchema
->;
-
 export const searchWebConnector = defineConnectorRef({
   id: "connectors.web.search",
   description:
     "Read-only Tavily web search for open web source discovery. Search results are candidate sources, not verified facts.",
   inputSchema: WebSearchInputSchema,
-  outputSchema: WebSearchOutputSchema,
-});
-
-export const searchNewsConnector = defineConnectorRef({
-  id: "connectors.web.searchNews",
-  description:
-    "Read-only Tavily news search for current events and time-sensitive source discovery.",
-  inputSchema: WebNewsSearchInputSchema,
   outputSchema: WebSearchOutputSchema,
 });
 
@@ -316,46 +166,9 @@ export const extractPagesConnector = defineConnectorRef({
   outputSchema: WebExtractOutputSchema,
 });
 
-export const mapSiteConnector = defineConnectorRef({
-  id: "connectors.web.mapSite",
-  description:
-    "Read-only Tavily site mapping for discovering relevant URLs within or around one site.",
-  inputSchema: WebMapSiteInputSchema,
-  outputSchema: WebMapSiteOutputSchema,
-});
-
-export const crawlSiteConnector = defineConnectorRef({
-  id: "connectors.web.crawlSite",
-  description:
-    "Read-only Tavily site crawl for collecting extracted content from a bounded website traversal.",
-  inputSchema: WebCrawlSiteInputSchema,
-  outputSchema: WebCrawlSiteOutputSchema,
-});
-
-export const startResearchConnector = defineConnectorRef({
-  id: "connectors.web.startResearch",
-  description:
-    "Start an asynchronous Tavily Research task for multi-source web investigation.",
-  inputSchema: WebStartResearchInputSchema,
-  outputSchema: WebStartResearchOutputSchema,
-});
-
-export const getResearchConnector = defineConnectorRef({
-  id: "connectors.web.getResearch",
-  description:
-    "Read the current status or final report for a Tavily Research task.",
-  inputSchema: WebGetResearchInputSchema,
-  outputSchema: WebGetResearchOutputSchema,
-});
-
 export const openWebIntelligenceConnectorCatalog = defineConnectorCatalog({
   "connectors.web.search": searchWebConnector,
-  "connectors.web.searchNews": searchNewsConnector,
   "connectors.web.extractPages": extractPagesConnector,
-  "connectors.web.mapSite": mapSiteConnector,
-  "connectors.web.crawlSite": crawlSiteConnector,
-  "connectors.web.startResearch": startResearchConnector,
-  "connectors.web.getResearch": getResearchConnector,
 });
 
 export type OpenWebIntelligenceConnectorCatalog =
@@ -371,18 +184,6 @@ export async function searchWeb(
   input: WebSearchInput,
 ): Promise<WebSearchOutput> {
   return callTavilySearch(input);
-}
-
-/**
- * Searches Tavily's news topic for current or time-sensitive sources.
- * Input: query plus optional recency, date, and domain controls.
- * Output: ranked news-like candidate sources with snippets and source metadata.
- * Boundary: this is read-only source discovery and does not verify claims by itself.
- */
-export async function searchNews(
-  input: WebNewsSearchInput,
-): Promise<WebSearchOutput> {
-  return callTavilySearch({ ...input, topic: "news" });
 }
 
 /**
@@ -408,113 +209,15 @@ export async function extractPages(
   });
 }
 
-/**
- * Maps URLs around one site without extracting full page bodies.
- * Input: root URL plus bounded traversal and regex filters.
- * Output: discovered URLs and request metadata.
- * Boundary: this is read-only discovery; page content still requires extract or crawl.
- */
-export async function mapSite(
-  input: WebMapSiteInput,
-): Promise<WebMapSiteOutput> {
-  const response = await postTavily(
-    "/map",
-    toSiteTraversalRequest(input),
-    TavilyMapRawSchema,
-  );
-  return WebMapSiteOutputSchema.parse({
-    baseUrl: response.base_url,
-    urls: response.results,
-    responseTimeSeconds: response.response_time ?? null,
-    requestId: response.request_id ?? null,
-    usage: usageFromRaw(response.usage),
-  });
-}
-
-/**
- * Crawls a site and extracts bounded content from discovered pages.
- * Input: root URL plus traversal, extraction, and regex filters.
- * Output: extracted page bodies and request metadata.
- * Boundary: this is read-only evidence collection and should be kept narrowly scoped to control cost and latency.
- */
-export async function crawlSite(
-  input: WebCrawlSiteInput,
-): Promise<WebCrawlSiteOutput> {
-  const response = await postTavily(
-    "/crawl",
-    toTavilyCrawlRequest(input),
-    TavilyCrawlRawSchema,
-  );
-  return WebCrawlSiteOutputSchema.parse({
-    baseUrl: response.base_url,
-    results: response.results,
-    responseTimeSeconds: response.response_time ?? null,
-    requestId: response.request_id ?? null,
-    usage: usageFromRaw(response.usage),
-  });
-}
-
-/**
- * Starts an asynchronous Tavily Research task.
- * Input: research question plus optional model, citation, domain, and output controls.
- * Output: request id and initial task status.
- * Boundary: this enqueues external work; workflows must call getResearch to read completion state.
- */
-export async function startResearch(
-  input: WebStartResearchInput,
-): Promise<WebStartResearchOutput> {
-  const response = await postTavily(
-    "/research",
-    toTavilyResearchRequest(input),
-    TavilyStartResearchRawSchema,
-  );
-  return WebStartResearchOutputSchema.parse({
-    requestId: response.request_id,
-    createdAt: response.created_at,
-    status: response.status,
-    input: response.input,
-    model: response.model,
-    responseTimeSeconds: response.response_time ?? null,
-  });
-}
-
-/**
- * Reads Tavily Research task status and result.
- * Input: request id returned by startResearch.
- * Output: pending/completed/failed status, report content when available, and cited sources.
- * Boundary: this is read-only polling; workflows own retry or waiting policy.
- */
-export async function getResearch(
-  input: WebGetResearchInput,
-): Promise<WebGetResearchOutput> {
-  const response = await getTavily(
-    `/research/${encodeURIComponent(input.requestId)}`,
-    TavilyGetResearchRawSchema,
-  );
-  return WebGetResearchOutputSchema.parse({
-    requestId: response.request_id,
-    createdAt: response.created_at ?? null,
-    status: response.status,
-    content: response.content ?? null,
-    sources: response.sources,
-    responseTimeSeconds: response.response_time ?? null,
-  });
-}
-
 export const openWebIntelligenceConnectorTools = [
   defineConnectorTool(searchWebConnector, searchWeb),
-  defineConnectorTool(searchNewsConnector, searchNews),
   defineConnectorTool(extractPagesConnector, extractPages),
-  defineConnectorTool(mapSiteConnector, mapSite),
-  defineConnectorTool(crawlSiteConnector, crawlSite),
-  defineConnectorTool(startResearchConnector, startResearch),
-  defineConnectorTool(getResearchConnector, getResearch),
 ];
 
 /**
  * Provides the open web intelligence connector tools for engine-owned registry construction.
  * Input: none.
- * Output: Tavily-backed read-only web search, extraction, traversal, and research connector tools.
+ * Output: Tavily-backed read-only web search and page extraction connector tools.
  * Boundary: the engine owns ConnectorRegistry creation and duplicate-id validation across files.
  */
 export default function loadOpenWebIntelligenceConnectorTools() {
@@ -599,60 +302,6 @@ const TavilyExtractRawSchema = z
   })
   .passthrough();
 
-const TavilyMapRawSchema = z
-  .object({
-    base_url: z.string(),
-    results: z.array(z.string()).default([]),
-    response_time: z.coerce.number().optional(),
-    request_id: z.string().optional(),
-    usage: TavilyUsageSchema.optional(),
-  })
-  .passthrough();
-
-const TavilyCrawlRawSchema = z
-  .object({
-    base_url: z.string(),
-    results: z.array(TavilyContentRawResultSchema).default([]),
-    response_time: z.coerce.number().optional(),
-    request_id: z.string().optional(),
-    usage: TavilyUsageSchema.optional(),
-  })
-  .passthrough();
-
-const TavilyStartResearchRawSchema = z
-  .object({
-    request_id: z.string(),
-    created_at: z.string(),
-    status: z.string(),
-    input: z.string(),
-    model: z.string(),
-    response_time: z.coerce.number().optional(),
-  })
-  .passthrough();
-
-const TavilyResearchSourceRawSchema = z
-  .object({
-    title: z.string().nullable().optional(),
-    url: z.string(),
-    favicon: z.string().nullable().optional(),
-  })
-  .transform((value) => ({
-    title: value.title ?? null,
-    url: value.url,
-    favicon: value.favicon ?? null,
-  }));
-
-const TavilyGetResearchRawSchema = z
-  .object({
-    request_id: z.string(),
-    created_at: z.string().optional(),
-    status: z.string(),
-    content: WebResearchContentSchema.optional(),
-    sources: z.array(TavilyResearchSourceRawSchema).default([]),
-    response_time: z.coerce.number().optional(),
-  })
-  .passthrough();
-
 const TavilyErrorResponseSchema = z
   .object({
     detail: z
@@ -670,12 +319,7 @@ type TavilyConfig = {
   projectId?: string;
 };
 
-type TavilyPostPath =
-  | "/search"
-  | "/extract"
-  | "/map"
-  | "/crawl"
-  | "/research";
+type TavilyPostPath = "/search" | "/extract";
 
 async function callTavilySearch(
   input: WebSearchInput,
@@ -744,60 +388,6 @@ function toTavilyExtractRequest(input: WebExtractInput): Record<string, unknown>
   return request;
 }
 
-function toSiteTraversalRequest(
-  input: WebMapSiteInput,
-): Record<string, unknown> {
-  const request: Record<string, unknown> = {
-    url: input.url,
-    max_depth: input.maxDepth ?? 1,
-    max_breadth: input.maxBreadth ?? 20,
-    limit: input.limit ?? 50,
-    allow_external: input.allowExternal ?? false,
-    include_usage: true,
-  };
-
-  setIfDefined(request, "instructions", input.instructions);
-  setIfNonEmptyArray(request, "select_paths", input.selectPaths);
-  setIfNonEmptyArray(request, "select_domains", input.selectDomains);
-  setIfNonEmptyArray(request, "exclude_paths", input.excludePaths);
-  setIfNonEmptyArray(request, "exclude_domains", input.excludeDomains);
-  setIfDefined(request, "timeout", input.timeoutSeconds);
-
-  return request;
-}
-
-function toTavilyCrawlRequest(input: WebCrawlSiteInput): Record<string, unknown> {
-  const request: Record<string, unknown> = {
-    ...toSiteTraversalRequest(input),
-    extract_depth: input.extractDepth ?? "basic",
-    format: input.format ?? "markdown",
-    include_images: input.includeImages ?? false,
-    include_favicon: input.includeFavicon ?? true,
-  };
-
-  setIfDefined(request, "chunks_per_source", input.chunksPerSource);
-
-  return request;
-}
-
-function toTavilyResearchRequest(
-  input: WebStartResearchInput,
-): Record<string, unknown> {
-  const request: Record<string, unknown> = {
-    input: input.input,
-    model: input.model ?? "auto",
-    stream: false,
-  };
-
-  setIfDefined(request, "citation_format", input.citationFormat);
-  setIfNonEmptyArray(request, "include_domains", input.includeDomains);
-  setIfNonEmptyArray(request, "exclude_domains", input.excludeDomains);
-  setIfDefined(request, "output_length", input.outputLength);
-  setIfDefined(request, "output_schema", input.outputSchema);
-
-  return request;
-}
-
 /**
  * Posts one schema-validated request to Tavily.
  * Input: API path, JSON body, and schema for the raw Tavily response.
@@ -814,21 +404,6 @@ async function postTavily<T>(
     method: "POST",
     headers: tavilyHeaders(config),
     body: JSON.stringify(body),
-  });
-  return parseTavilyResponse(response, path, schema);
-}
-
-/**
- * Reads one schema-validated Tavily resource.
- * Input: API path and schema for the raw Tavily response.
- * Output: schema-validated raw Tavily response.
- * Boundary: HTTP and Tavily error details are surfaced without logging API keys.
- */
-async function getTavily<T>(path: string, schema: z.ZodType<T>): Promise<T> {
-  const config = readTavilyConfig();
-  const response = await fetch(`${config.baseUrl}${path}`, {
-    method: "GET",
-    headers: tavilyHeaders(config),
   });
   return parseTavilyResponse(response, path, schema);
 }

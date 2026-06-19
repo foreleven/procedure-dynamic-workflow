@@ -55,16 +55,16 @@ cases:
         expect:
           responseSatisfies: 系统应围绕用户指定的三个对象做对比，标注公开来源和不确定性；价格不可见或需要登录/销售联系的部分不能编造。
 
-  - id: website_crawl_requires_confirmation
-    description: 用户要求系统化官网分析时，系统必须先确认抓取范围，不能直接无边界抓取网站。
+  - id: website_audit_uses_search_extract
+    description: 用户要求系统化官网分析时，系统应只基于公开搜索和页面抽取，不声称已全站抓取。
     turns:
       - message: 系统分析一下 https://example.com 官网，看看定位、功能页、客户案例和博客策略。
         expect:
-          responseSatisfies: 系统应在抓取前确认站点范围、页面类型、数量上限和排除范围，说明只处理公开页面；不能直接表示已经完成全站抓取。
+          responseSatisfies: 系统应说明只处理公开可访问页面，通过公开搜索发现官网相关页面并抽取正文；不能表示已经完成全站抓取、站点遍历或登录后页面分析。
 
-  - id: deep_research_requires_confirmation
-    description: 用户要求深度报告时，系统必须先确认研究范围和输出结构，再启动深度研究。
+  - id: deep_research_uses_bounded_public_sources
+    description: 用户要求深度报告时，系统应说明当前能力是有界公开搜索和页面抽取，不启动异步深度研究任务。
     turns:
       - message: 帮我做一份 AI 客服 SaaS 的深度市场研究报告，要有证据链。
         expect:
-          responseSatisfies: 系统应确认研究对象、地区、时间范围和输出结构，说明深度研究基于公开互联网资料且需要后续核验；不能直接声称完成正式尽调。
+          responseSatisfies: 系统应说明研究对象、地区、时间范围和输出结构，基于公开搜索和页面抽取形成证据链；不能声称已启动异步深度研究任务或完成正式尽调。

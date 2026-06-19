@@ -9,13 +9,14 @@ import type {
   WorkflowDefinition,
   WorkflowNode,
 } from "../workflow.js";
-import { effectDependenciesSchema } from "./program-guards.js";
+import { effectDependenciesSchema, loopEffectDependenciesSchema } from "./program-guards.js";
 import {
   errorMessage,
   isNonEmptyString,
   nonEmptyString,
   nonEmptyStringArray,
   parseSchema,
+  zodSchema,
 } from "../utils/schema.js";
 
 const RESERVED_STATE_FIELDS = new Set(["messages"]);
@@ -165,6 +166,17 @@ function workflowNodeMetadataSchema(label: string) {
   });
 }
 
+function workflowLoopNodeSchema(label: string) {
+  return z.object({
+    maxRuns: z.number().int(`${label} maxRuns must be an integer from 1 to 5`)
+      .min(1, `${label} maxRuns must be an integer from 1 to 5`)
+      .max(5, `${label} maxRuns must be an integer from 1 to 5`),
+    instruction: nonEmptyString(`${label} instruction`),
+    model: nonEmptyString(`${label} model`).optional(),
+    stateSchema: zodSchema(`${label} stateSchema`, `${label} stateSchema must be a Zod schema`),
+  });
+}
+
 function renderPolicySchema(label: string) {
   return z.object({
     name: nonEmptyString(`${label}.name`),
@@ -208,6 +220,7 @@ function assertWorkflowNodeInvariants<
   }
 
   const names = new Set<string>();
+  const loopNames = new Set<string>();
   for (const node of nodes) {
     parseSchema(workflowNodeMetadataSchema(label), node);
     if (node.kind === "prefetch") {
@@ -218,11 +231,81 @@ function assertWorkflowNodeInvariants<
     parseSchema(nonEmptyString(`${label} ${node.name} description`), node.description);
     if (node.kind === "effect" && node.dependsOn !== undefined) {
       parseSchema(effectDependenciesSchema(`${label} ${node.name} dependsOn`), node.dependsOn);
+      assertKnownLoopDependencies(node.dependsOn, loopNames, `${label} ${node.name} dependsOn`);
+    }
+    if (node.kind === "loop") {
+      parseSchema(workflowLoopNodeSchema(`${label} ${node.name}`), node);
+      if (node.dependsOn !== undefined) {
+        parseSchema(effectDependenciesSchema(`${label} ${node.name} dependsOn`), node.dependsOn);
+        assertKnownLoopDependencies(node.dependsOn, loopNames, `${label} ${node.name} dependsOn`);
+      }
+      assertWorkflowLoopEffects(node.effects, `${label} ${node.name}`);
     }
     if (names.has(node.name)) {
       throw new Error(`${label} contains duplicate node name: ${node.name}`);
     }
     names.add(node.name);
+    if (node.kind === "loop") {
+      loopNames.add(node.name);
+    }
+  }
+}
+
+function assertKnownLoopDependencies(
+  dependencies: readonly string[],
+  priorNodeNames: ReadonlySet<string>,
+  label: string,
+): void {
+  for (const dependency of dependencies) {
+    if (!dependency.startsWith("loop.")) continue;
+    const loopName = dependency.slice("loop.".length);
+    if (!priorNodeNames.has(loopName)) {
+      throw new Error(`${label} references unknown or later loop dependency: ${dependency}`);
+    }
+  }
+}
+
+interface WorkflowLoopEffectCandidate {
+  name?: unknown;
+  description?: unknown;
+  dependsOn?: readonly string[] | undefined;
+  run?: unknown;
+}
+
+function assertWorkflowLoopEffects(
+  effects: readonly WorkflowLoopEffectCandidate[],
+  label: string,
+): void {
+  if (!Array.isArray(effects) || effects.length === 0) {
+    throw new Error(`${label} must contain at least one loop effect`);
+  }
+
+  const names = new Set<string>();
+  for (const record of effects) {
+    parseSchema(
+      z.object({
+        name: nonEmptyString(`${label} loop effect name`),
+        description: nonEmptyString(`${label} loop effect description`),
+      }),
+      record,
+    );
+    if (typeof record.run !== "function") {
+      throw new Error(`${label} loop effect ${String(record.name)} run must be a function`);
+    }
+    if (record.dependsOn !== undefined) {
+      parseSchema(loopEffectDependenciesSchema(`${label} loop effect ${String(record.name)} dependsOn`), record.dependsOn);
+      for (const dependency of record.dependsOn) {
+        if (dependency !== "loop.state" && !names.has(dependency)) {
+          throw new Error(
+            `${label} loop effect ${String(record.name)} dependsOn references unknown loop dependency: ${dependency}`,
+          );
+        }
+      }
+    }
+    if (names.has(record.name as string)) {
+      throw new Error(`${label} contains duplicate loop effect name: ${String(record.name)}`);
+    }
+    names.add(record.name as string);
   }
 }
 

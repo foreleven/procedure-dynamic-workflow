@@ -167,6 +167,42 @@ test("workflow program compiles effect dependencies and patch invalidation into 
   assert.deepEqual(definition.invalidation, { count: ["status"] });
 });
 
+test("workflow program compiles loop nodes with typed stateSchema and loop effects", () => {
+  const program = createProgram("compiled_loop_definition");
+
+  program.patch({ state: { count: z.number() } });
+  const researchLoop = program.loop("research", {
+    description: "Runs bounded research passes for loop coverage.",
+    dependsOn: ["count"],
+    maxRuns: 2,
+    stateSchema: z.object({
+      query: z.string(),
+    }),
+    instruction: "Plan the next bounded research query.",
+  });
+  researchLoop.effect("store_query", ["loop.state"], {
+    description: "Stores the compact loop state for downstream workflow logic.",
+    run: (_state, _context, runtime) => ({
+      status: runtime.loop.state.query,
+    }),
+  });
+
+  const definition = program.render({
+    name: "render",
+    instruction: "Reply.",
+    progress: "Rendering",
+  });
+
+  const node = definition.nodes[0];
+  assert.equal(node?.kind, "loop");
+  if (node?.kind !== "loop") throw new Error("Expected loop node");
+  assert.equal(node.name, "research");
+  assert.deepEqual(node.dependsOn, ["count"]);
+  assert.equal(node.maxRuns, 2);
+  assert.equal(node.effects[0]?.name, "store_query");
+  assert.deepEqual(node.stateSchema.parse({ query: "competitors" }), { query: "competitors" });
+});
+
 test("workflow program can compile a manifest-backed template without metadata", () => {
   const program = workflow({
     stateSchema: z.object({

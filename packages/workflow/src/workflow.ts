@@ -49,12 +49,19 @@ export interface WorkflowRuntimeInput<
   session: SessionContext;
   context: WorkflowContext<TConnectors>;
   state: WorkflowRuntimeState<TState>;
-  preState: WorkflowRuntimeState<TState>;
   prefetch: PrefetchStore;
   deps: WorkflowDeps<TConnectors>;
   turn: WorkflowTurn;
   step: WorkflowStepController;
-  message?: string;
+}
+
+export interface WorkflowLoopRuntime<TLoopState extends object = object> {
+  name: string;
+  run: number;
+  maxRuns: number;
+  state: TLoopState;
+  decisionReason: string;
+  messages: WorkflowToolMessage[];
 }
 
 export interface WorkflowTurn {
@@ -139,12 +146,44 @@ export interface WorkflowEffectNode<
   run: WorkflowFunction<TState, TConnectors>;
 }
 
+export type WorkflowLoopFunction<
+  TState extends object,
+  TConnectors extends ConnectorCatalog = ConnectorCatalog,
+> = (
+  input: WorkflowRuntimeInput<TState, TConnectors>,
+  loop: WorkflowLoopRuntime<object>,
+) => MaybePromise<WorkflowPatch<TState> | void>;
+
+export interface WorkflowLoopEffectNode<
+  TState extends object,
+  TConnectors extends ConnectorCatalog = ConnectorCatalog,
+> {
+  name: string;
+  description: string;
+  dependsOn?: readonly string[];
+  run: WorkflowLoopFunction<TState, TConnectors>;
+}
+
+export interface WorkflowLoopNode<
+  TState extends object,
+  TConnectors extends ConnectorCatalog = ConnectorCatalog,
+> extends WorkflowNodeBase<TState, TConnectors> {
+  kind: "loop";
+  dependsOn?: readonly string[];
+  maxRuns: number;
+  instruction: string;
+  model?: string | undefined;
+  stateSchema: z.ZodType<object>;
+  effects: Array<WorkflowLoopEffectNode<TState, TConnectors>>;
+}
+
 export type WorkflowNode<
   TState extends object,
   TConnectors extends ConnectorCatalog = ConnectorCatalog,
 > =
   | WorkflowPrefetchNode<TState, TConnectors>
-  | WorkflowEffectNode<TState, TConnectors>;
+  | WorkflowEffectNode<TState, TConnectors>
+  | WorkflowLoopNode<TState, TConnectors>;
 
 export interface RenderResponse {
   text: string;

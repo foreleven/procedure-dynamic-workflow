@@ -118,8 +118,8 @@ function assertWorkflowNodes(workflowId: WorkflowId, nodes: readonly WorkflowNod
     if (!node || typeof node !== "object") {
       throw new Error(`${label} item must be an object`);
     }
-    if (node.kind !== "prefetch" && node.kind !== "effect") {
-      throw new Error(`${label} ${String(node.name)} kind must be prefetch or effect`);
+    if (node.kind !== "prefetch" && node.kind !== "effect" && node.kind !== "loop") {
+      throw new Error(`${label} ${String(node.name)} kind must be prefetch, effect, or loop`);
     }
     assertNonEmptyString(node.name, `${label} name`);
     if (!WORKFLOW_NODE_STAGES.has(node.stage)) {
@@ -134,7 +134,9 @@ function assertWorkflowNodes(workflowId: WorkflowId, nodes: readonly WorkflowNod
     if (node.kind === "effect" && node.dependsOn !== undefined) {
       assertNonEmptyStringArray(node.dependsOn, `${label} ${node.name} dependsOn`);
     }
-    if (typeof node.run !== "function") {
+    if (node.kind === "loop") {
+      assertLoopNode(workflowId, node, `${label} ${node.name}`);
+    } else if (typeof node.run !== "function") {
       throw new Error(`${label} ${node.name} run must be a function`);
     }
     if (node.when !== undefined && typeof node.when !== "function") {
@@ -144,6 +146,38 @@ function assertWorkflowNodes(workflowId: WorkflowId, nodes: readonly WorkflowNod
       throw new Error(`${label} contains duplicate node name: ${node.name}`);
     }
     names.add(node.name);
+  }
+}
+
+function assertLoopNode(workflowId: WorkflowId, node: Extract<WorkflowNode<JsonRecord>, { kind: "loop" }>, label: string): void {
+  if (node.dependsOn !== undefined) {
+    assertNonEmptyStringArray(node.dependsOn, `${label} dependsOn`);
+  }
+  if (!Number.isInteger(node.maxRuns) || node.maxRuns < 1 || node.maxRuns > 5) {
+    throw new Error(`${label} maxRuns must be an integer from 1 to 5`);
+  }
+  if (!node.stateSchema || typeof node.stateSchema.parse !== "function") {
+    throw new Error(`${label} stateSchema must provide parse(input)`);
+  }
+  assertNonEmptyString(node.instruction, `${label} instruction`);
+  if (node.model !== undefined) assertNonEmptyString(node.model, `${label} model`);
+  if (!Array.isArray(node.effects) || node.effects.length === 0) {
+    throw new Error(`${label} must contain at least one loop effect`);
+  }
+  const effectNames = new Set<string>();
+  for (const effect of node.effects) {
+    assertNonEmptyString(effect.name, `${label} loop effect name`);
+    assertNonEmptyString(effect.description, `${label} loop effect ${effect.name} description`);
+    if (effect.dependsOn !== undefined) {
+      assertNonEmptyStringArray(effect.dependsOn, `${label} loop effect ${effect.name} dependsOn`);
+    }
+    if (typeof effect.run !== "function") {
+      throw new Error(`${label} loop effect ${effect.name} run must be a function`);
+    }
+    if (effectNames.has(effect.name)) {
+      throw new Error(`Workflow ${workflowId} loop ${node.name} contains duplicate loop effect name: ${effect.name}`);
+    }
+    effectNames.add(effect.name);
   }
 }
 

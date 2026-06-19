@@ -9,14 +9,12 @@
  */
 import {
   type JsonRecord,
-  type RenderResponse,
   type WorkflowId,
   type WorkflowInstance,
   type WorkflowMessage,
-  type WorkflowRuntimeState,
   type WorkflowUserMessage,
 } from "@pac/workflow";
-import { applySessionPatch, cloneDefault } from "./patching.js";
+import { applySessionPatch } from "./patching.js";
 import { WorkflowInstanceStore } from "./runtime/instances.js";
 import {
   cloneEngineRoutingMemory,
@@ -26,13 +24,18 @@ import {
 } from "./session.js";
 import {
   copyWorkflowMessages,
-  withRuntimeMessages,
 } from "./utils/messages.js";
 import { TurnChangeTracker } from "./utils/turn.js";
-import { ResponseRenderer, type MergedResponseParticipant } from "./runtime/response-renderer.js";
+import { ResponseRenderer } from "./runtime/response-renderer.js";
 import { WorkflowNodeRunner } from "./runtime/node-runner.js";
 import { RuntimeTracer } from "./runtime/tracer.js";
-import { WorkflowTurnRunner, type WorkflowTurnRunResult } from "./runtime/workflow-turn-runner.js";
+import {
+  WorkflowTurnRunner,
+  type WorkflowTurnRunnerRuntime,
+  type WorkflowTurnRunResult,
+} from "./runtime/workflow-turn-runner.js";
+import { WorkflowExecutor } from "./runtime/workflow-executor.js";
+import { WorkflowRenderer, type WorkflowRenderOutput } from "./runtime/workflow-renderer.js";
 import { EngineEventStream } from "./runtime/events.js";
 import { LlmWorkflowRouter } from "./routing/llm-workflow-router.js";
 import { RoutingPlanApplier } from "./routing/routing-plan-applier.js";
@@ -45,6 +48,7 @@ import {
   firstDuplicate,
   toRuntimeWorkflow,
 } from "./runtime/boundary.js";
+import { errorMessage } from "./utils/errors.js";
 import type {
   CreateSessionInput,
   EngineEventSink,
@@ -52,7 +56,6 @@ import type {
   EngineSession,
   EngineStreamEvent,
   EngineStreamPayload,
-  EngineTraceEvent,
   EngineUserMessageInput,
   RuntimeWorkflow,
   WorkflowEngineOptions,
@@ -64,7 +67,9 @@ export class WorkflowEngine {
   private readonly instances: WorkflowInstanceStore;
   private readonly nodeRunner: WorkflowNodeRunner;
   private readonly renderer: ResponseRenderer;
-  private readonly workflowRunner: WorkflowTurnRunner;
+  private readonly workflowExecutor: WorkflowExecutor;
+  private readonly workflowRenderer: WorkflowRenderer;
+  private readonly workflowRunnerRuntime: WorkflowTurnRunnerRuntime;
   private readonly tracer: RuntimeTracer;
   private readonly router: WorkflowRouter;
   private readonly routingPlanApplier = new RoutingPlanApplier();
@@ -89,7 +94,14 @@ export class WorkflowEngine {
     this.tracer = new RuntimeTracer(options.logger);
     this.nodeRunner = new WorkflowNodeRunner(options.deps, this.tracer, options.maxProgramRounds ?? 6);
     this.renderer = new ResponseRenderer(options.deps, this.tracer, options.render);
-    this.workflowRunner = new WorkflowTurnRunner(options.deps, this.nodeRunner, this.renderer, this.tracer);
+    this.workflowExecutor = new WorkflowExecutor();
+    this.workflowRenderer = new WorkflowRenderer(this.renderer, this.tracer);
+    this.workflowRunnerRuntime = {
+      deps: options.deps,
+      nodeRunner: this.nodeRunner,
+      renderer: this.renderer,
+      tracer: this.tracer,
+    };
     this.router = options.routing?.router ?? new LlmWorkflowRouter({
       llm: options.deps.llm,
       gate: options.routing?.gate,
@@ -162,109 +174,61 @@ export class WorkflowEngine {
       throw new Error(`Invalid engine session: ${activeWorkflowError}`);
     }
 
-    const traces: EngineTraceEvent[] = [];
     const turnChanges = new TurnChangeTracker();
     const turnStartedAt = this.tracer.start("engine", "turn", { message: userMessage.content });
     const transaction = this.beginTurnTransaction(session);
+    let responseTextChars = 0;
 
     try {
-      await this.runMessageInTransaction(userMessage, session, events, traces, turnChanges, turnStartedAt);
+      const sessionMessagesBeforeTurn = copyWorkflowMessages(session.messages);
+      const turnBaseMessages = [...sessionMessagesBeforeTurn, userMessage];
+      const activeInstances = this.instances.forIds(session, session.activeWorkflowIds);
+      const recentMessages = recentWorkflowMessages(session.messages, this.recentMessageLimit);
+      const messageText = userMessage.content;
+
+      const runnable = await this.selectTargetWorkflows(
+        messageText,
+        session,
+        activeInstances,
+        recentMessages,
+        events,
+      );
+      if (runnable.length === 0) {
+        const response = {
+          text: "我还不能确定要执行哪个 workflow。",
+        };
+        const assistantMessage = assistantWorkflowMessage(response.text);
+        this.commitSessionMessages(session, [...turnBaseMessages, assistantMessage]);
+        events.emit({ message: assistantMessage });
+        responseTextChars = response.text.length;
+      } else {
+        const execution = await this.runSelectedWorkflows(
+          runnable,
+          session,
+          userMessage,
+          events,
+          turnChanges,
+        );
+
+        this.commitSessionMessages(
+          session,
+          this.sessionMessagesForCompletedWorkflows(
+            session,
+            turnBaseMessages,
+            execution.workflowResults,
+            execution.outputMessages,
+          ),
+        );
+        session.routingMemory.lastMatchedWorkflowIds = runnable.map((instance) => instance.id);
+        responseTextChars = execution.outputMessages.reduce((sum, item) => sum + assistantContentLength(item), 0);
+      }
     } catch (error) {
       transaction.rollback();
+      this.tracer.done("engine", "turn", turnStartedAt, { error: errorMessage(error) });
       throw error;
     }
-  }
 
-  private async runMessageInTransaction(
-    userMessage: WorkflowUserMessage,
-    session: EngineSession,
-    events: EngineEventSink,
-    traces: EngineTraceEvent[],
-    turnChanges: TurnChangeTracker,
-    turnStartedAt: number,
-  ): Promise<void> {
-    const sessionMessagesBeforeTurn = copyWorkflowMessages(session.messages);
-    const turnBaseMessages = [...sessionMessagesBeforeTurn, userMessage];
-    const activeInstances = this.instances.forIds(session, session.activeWorkflowIds);
-    const recentMessages = recentWorkflowMessages(session.messages, this.recentMessageLimit);
-    const messageText = userMessage.content;
-
-    const runnable = await this.selectTargetWorkflows(
-      messageText,
-      session,
-      activeInstances,
-      recentMessages,
-      traces,
-      events,
-    );
-    const preStates = new Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>(
-      runnable.map((instance) => [
-        instance.id,
-        cloneWorkflowPreState(instance),
-      ]),
-    );
-
-    if (runnable.length === 0) {
-      const response = {
-        text: "我还不能确定要执行哪个 workflow。",
-      };
-      const assistantMessage = assistantWorkflowMessage(response.text);
-      this.commitSessionMessages(session, [...turnBaseMessages, assistantMessage]);
-      events.emit({ message: assistantMessage });
-      this.tracer.done("engine", "turn", turnStartedAt, { responseTextChars: response.text.length });
-      return;
-    }
-
-    const shouldMergeFinalResponse = await this.shouldMergeWorkflowResponses(runnable, session, messageText);
-    const workflowTasks = runnable.map((instance) =>
-      this.workflowRunTask(
-        instance,
-        session,
-        userMessage,
-        traces,
-        events,
-        turnChanges,
-        preStates,
-        shouldMergeFinalResponse,
-      ),
-    );
-    const workflowResults = shouldMergeFinalResponse
-      ? await settleWorkflowRunTasks(workflowTasks)
-      : await this.emitSeparateWorkflowResultsAsReady(workflowTasks, events);
-
-    const finalResponse = await this.finalResponseForWorkflowResults(
-      workflowResults,
-      session,
-      messageText,
-      traces,
-      events,
-      shouldMergeFinalResponse,
-    );
-    const outputMessages = this.outputMessagesForWorkflowResults(
-      workflowResults,
-      finalResponse,
-      shouldMergeFinalResponse,
-    );
-
-    this.commitSessionMessages(
-      session,
-      this.sessionMessagesForCompletedWorkflows(
-        session,
-        turnBaseMessages,
-        workflowResults,
-        outputMessages,
-      ),
-    );
-    for (const outputMessage of outputMessages) {
-      if (shouldMergeFinalResponse) {
-        events.emit({ message: outputMessage });
-      }
-    }
-    session.routingMemory.lastMatchedWorkflowIds = runnable.map((instance) => instance.id);
-
-    this.tracer.done("engine", "turn", turnStartedAt, {
-      responseTextChars: outputMessages.reduce((sum, item) => sum + assistantContentLength(item), 0),
-    });
+    this.tracer.done("engine", "turn", turnStartedAt, { responseTextChars });
   }
 
   getWorkflowSnapshot<TState extends object>(
@@ -293,7 +257,6 @@ export class WorkflowEngine {
     session: EngineSession,
     activeInstances: WorkflowInstance<JsonRecord>[],
     recentMessages: readonly WorkflowMessage[],
-    traces: EngineTraceEvent[],
     events: EngineEventSink,
   ): Promise<WorkflowInstance<JsonRecord>[]> {
     const gatePhase = activeInstances.length > 0 ? "routing.gate.existing_session" : "routing.gate.new_session";
@@ -326,12 +289,12 @@ export class WorkflowEngine {
       ...(result.detail === undefined ? {} : { detail: result.detail }),
     };
     const phase = isProtocolFastPathResult(result) ? "routing.protocol_fast_path" : gatePhase;
-    this.tracer.trace(traces, {
+    this.tracer.trace({
       workflowId: "engine",
       phase,
       detail,
     }, events);
-    this.tracer.trace(traces, {
+    this.tracer.trace({
       workflowId: "engine",
       phase: `routing.${result.action}`,
       detail,
@@ -342,115 +305,34 @@ export class WorkflowEngine {
     return selection;
   }
 
-  private async finalResponseForWorkflowResults(
-    workflowResults: readonly WorkflowTurnRunResult[],
-    session: EngineSession,
-    message: string,
-    traces: EngineTraceEvent[],
-    events: EngineEventSink,
-    shouldMergeFinalResponse: boolean,
-  ): Promise<RenderResponse> {
-    const primaryResponse = workflowResults[0]?.response ?? { text: "" };
-    if (
-      workflowResults.length <= 1 ||
-      !shouldMergeFinalResponse
-    ) {
-      return primaryResponse;
-    }
-
-    const participants: MergedResponseParticipant[] = workflowResults.map((result) => ({
-      workflowId: result.workflowId,
-      description: result.description,
-      response: result.response,
-    }));
-    const workflowIds = participants.map(({ workflowId }) => workflowId);
-    const startedAt = this.tracer.start("engine", "response.merge", { workflowIds });
-    const response = await this.renderer.mergeRenderedResponses(participants, session, message, events);
-    const detail = { workflowIds, textChars: response.text.length };
-    this.tracer.trace(traces, {
-      workflowId: "engine",
-      phase: "response.merge",
-      detail,
-    }, events);
-    this.tracer.done("engine", "response.merge", startedAt, detail);
-    return response;
-  }
-
-  private async shouldMergeWorkflowResponses(
-    instances: readonly WorkflowInstance<JsonRecord>[],
-    session: EngineSession,
-    message: string,
-  ): Promise<boolean> {
-    if (instances.length <= 1) return false;
-    if (instances.some((instance) => typeof instance.artifact.render === "function")) return false;
-    const decision = await this.renderer.mergeDecision(cloneEngineSessionForExtension(session), message, instances);
-    return decision === "merge";
-  }
-
-  private workflowRunTask(
-    instance: WorkflowInstance<JsonRecord>,
+  /**
+   * Starts every selected workflow independently and hands render handles to WorkflowRenderer.
+   * Input: routed workflow instances and immutable per-turn execution context.
+   * Output: rendered workflow results plus assistant messages for transcript commit.
+   * Boundary: workflow-local execution, render scheduling, and response presentation stay in runtime helpers.
+   */
+  private async runSelectedWorkflows(
+    runnable: readonly WorkflowInstance<JsonRecord>[],
     session: EngineSession,
     message: WorkflowUserMessage,
-    traces: EngineTraceEvent[],
     events: EngineEventSink,
     turnChanges: TurnChangeTracker,
-    preStates: Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>,
-    shouldMergeFinalResponse: boolean,
-  ): WorkflowRunTask {
-    return {
-      workflowId: instance.id,
-      promise: this.workflowRunner.run({
-        instance,
-        session,
-        message,
-        traces,
-        events,
-        turnChanges,
-        preStates,
-        streamResponseDeltas: !shouldMergeFinalResponse,
-      }),
-    };
-  }
+  ): Promise<WorkflowRenderOutput> {
+    const runners = runnable.map((instance) => new WorkflowTurnRunner(this.workflowRunnerRuntime, {
+      instance,
+      session,
+      message,
+      events,
+      turnChanges,
+    }));
 
-  /**
-   * Emits non-merged workflow messages in the order each workflow finishes.
-   * Input: already-started per-workflow run tasks for one turn.
-   * Output: workflow results ordered by completion time.
-   * Boundary: waits for every task to settle before throwing so rollback cannot race live mutations.
-   */
-  private async emitSeparateWorkflowResultsAsReady(
-    tasks: readonly WorkflowRunTask[],
-    events: EngineEventSink,
-  ): Promise<WorkflowTurnRunResult[]> {
-    const includeWorkflowId = tasks.length > 1;
-    const pending = new Map<WorkflowId, Promise<SettledWorkflowRunTask>>(
-      tasks.map((task) => [task.workflowId, settleWorkflowRunTask(task)]),
-    );
-    const results: WorkflowTurnRunResult[] = [];
-    let firstError: unknown;
-
-    while (pending.size > 0) {
-      const settled = await Promise.race(pending.values());
-      pending.delete(settled.workflowId);
-
-      if (settled.status === "rejected") {
-        firstError ??= settled.error;
-        continue;
-      }
-
-      if (firstError === undefined) {
-        results.push(settled.result);
-        events.emit({
-          message: assistantWorkflowMessage(
-            settled.result.response.text,
-            includeWorkflowId ? settled.result.workflowId : undefined,
-          ),
-        });
-      }
-    }
-
-    if (firstError !== undefined) throw firstError;
-    return results;
+    return await this.workflowRenderer.render({
+      renders: this.workflowExecutor.execute(runners),
+      instances: runnable,
+      session,
+      message: message.content,
+      events,
+    });
   }
 
   private sessionMessagesForCompletedWorkflows(
@@ -466,18 +348,6 @@ export class WorkflowEngine {
     }
 
     return [...turnBaseMessages, ...runtimeMessages, ...outputMessages];
-  }
-
-  private outputMessagesForWorkflowResults(
-    workflowResults: readonly WorkflowTurnRunResult[],
-    finalResponse: RenderResponse,
-    shouldMergeFinalResponse: boolean,
-  ): WorkflowMessage[] {
-    if (workflowResults.length <= 1 || shouldMergeFinalResponse) {
-      return [assistantWorkflowMessage(finalResponse.text)];
-    }
-
-    return workflowResults.map((result) => assistantWorkflowMessage(result.response.text, result.workflowId));
   }
 
   private commitSessionMessages(session: EngineSession, messages: readonly WorkflowMessage[]): void {
@@ -526,23 +396,6 @@ interface EngineSessionCheckpoint {
   readonly sharedCacheEntries: readonly (readonly [string, unknown])[];
   readonly routingMemory: EngineSession["routingMemory"];
 }
-
-interface WorkflowRunTask {
-  readonly workflowId: WorkflowId;
-  readonly promise: Promise<WorkflowTurnRunResult>;
-}
-
-type SettledWorkflowRunTask =
-  | {
-      readonly status: "fulfilled";
-      readonly workflowId: WorkflowId;
-      readonly result: WorkflowTurnRunResult;
-    }
-  | {
-      readonly status: "rejected";
-      readonly workflowId: WorkflowId;
-      readonly error: unknown;
-    };
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
@@ -624,47 +477,6 @@ function assistantWorkflowMessage(content: string, workflowId?: WorkflowId): Wor
 
 function assistantContentLength(message: WorkflowMessage): number {
   return message.role === "assistant" ? message.content.length : 0;
-}
-
-function cloneWorkflowPreState(
-  instance: WorkflowInstance<JsonRecord>,
-): WorkflowRuntimeState<JsonRecord> {
-  try {
-    return withRuntimeMessages(cloneDefault(instance.state), instance.state.messages);
-  } catch {
-    const { messages, ...fields } = instance.state;
-    return withRuntimeMessages({ ...fields }, messages);
-  }
-}
-
-async function settleWorkflowRunTasks(
-  tasks: readonly WorkflowRunTask[],
-): Promise<WorkflowTurnRunResult[]> {
-  const settled = await Promise.all(tasks.map(settleWorkflowRunTask));
-  const firstError = settled.find((item) => item.status === "rejected");
-  if (firstError) throw firstError.error;
-  return settled.map((item) => {
-    if (item.status === "rejected") {
-      throw item.error;
-    }
-    return item.result;
-  });
-}
-
-async function settleWorkflowRunTask(task: WorkflowRunTask): Promise<SettledWorkflowRunTask> {
-  try {
-    return {
-      status: "fulfilled",
-      workflowId: task.workflowId,
-      result: await task.promise,
-    };
-  } catch (error) {
-    return {
-      status: "rejected",
-      workflowId: task.workflowId,
-      error,
-    };
-  }
 }
 
 function checkpointEngineSession(session: EngineSession): EngineSessionCheckpoint {

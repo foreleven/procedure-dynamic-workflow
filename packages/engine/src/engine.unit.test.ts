@@ -40,6 +40,12 @@ interface RollbackState {
   runs: number;
 }
 
+interface LoopResearchState {
+  researchQuestions: string[];
+  candidate: string | null;
+  status: "collecting" | "ready";
+}
+
 test("WorkflowEngine returns fallback response when the route gate does not match", async () => {
   const llm: LlmClient = {
     async text() {
@@ -244,6 +250,57 @@ test("WorkflowEngine routes, patches, invalidates, runs nodes, and renders funct
   assert.equal(patchCallCount(llm), 1);
   assert.ok(traceEvents(result).some((trace) => trace.phase === "routing.gate.new_session" && trace.workflowId === "engine"));
   assert.ok(traceEvents(result).some((trace) => trace.phase === "invalidate"));
+});
+
+test("WorkflowEngine runs loop planner states, loop effects, and loop completion dependencies", async () => {
+  const llm = createLoopResearchLlm([
+    {
+      status: "continue",
+      reason: "Search for direct competitors first.",
+      state: { query: "alpha competitors" },
+    },
+    {
+      status: "satisfied",
+      reason: "Candidate evidence is enough for this bounded pass.",
+      state: null,
+    },
+  ]);
+  const engine = new WorkflowEngine({
+    workflows: [createLoopResearchWorkflow()],
+    deps: {
+      llm,
+      connectors: createConnectorRegistry(),
+    },
+    routing: {
+      router: {
+        async route() {
+          return {
+            action: "continue",
+            targetWorkflowIds: ["loop_research_flow"],
+            suspendedWorkflowIds: [],
+          };
+        },
+      },
+    },
+  });
+  const session = engine.createSession({
+    sessionId: "session_loop_research",
+    userId: "user_loop_research",
+    activeWorkflowIds: ["loop_research_flow"],
+  });
+
+  const result = await engine.invoke("research alpha", session);
+  const instance = engine.getWorkflowSnapshot<LoopResearchState>(session, "loop_research_flow");
+
+  assert.equal(primaryText(result), "candidate=alpha competitors; status=ready");
+  assert.deepEqual(instance?.state.researchQuestions, ["research alpha"]);
+  assert.equal(instance?.state.candidate, "alpha competitors");
+  assert.equal(instance?.state.status, "ready");
+  assert.equal(loopCallCount(llm, "loop_research_flow_research_loop_state"), 2);
+  assert.ok(instance?.state.messages.some((message) =>
+    message.role === "tool" &&
+    message.name === "loop.research.state"
+  ));
 });
 
 test("WorkflowEngine routes to every gate-matched workflow", async () => {
@@ -1664,6 +1721,72 @@ function createTestWorkflow(): WorkflowDefinition<TestState> {
   };
 }
 
+function createLoopResearchWorkflow(): WorkflowDefinition<LoopResearchState> {
+  const program = workflow<LoopResearchState>({
+    id: "loop_research_flow",
+    version: "0.1.0",
+    description: "Loop research workflow for engine coverage.",
+    routing: defineRouting({
+      examples: ["research alpha"],
+      entities: ["research"],
+      neighbors: [],
+    }),
+    stateSchema: z.object({
+      researchQuestions: z.array(z.string()),
+      candidate: z.string().nullable(),
+      status: z.enum(["collecting", "ready"]),
+    }),
+    state: {
+      researchQuestions: [],
+      candidate: null,
+      status: "collecting",
+    },
+  });
+
+  program.patch({
+    state: {
+      researchQuestions: z.array(z.string()),
+    },
+  });
+
+  const researchLoop = program.loop("research", {
+    description: "Plans and executes bounded research passes for a candidate.",
+    dependsOn: ["researchQuestions"],
+    maxRuns: 2,
+    stateSchema: z.object({
+      query: z.string(),
+    }),
+    instruction: "Use prior evidence to decide the next research query or stop.",
+  });
+
+  researchLoop.effect("store_candidate", ["loop.state"], {
+    description: "Stores a compact handoff candidate from the current loop state.",
+    run: (_state, _context, runtime) => ({
+      candidate: runtime.loop.state.query,
+      messages: [
+        new ToolMessage({
+          name: "test.loopCandidate",
+          call: { run: runtime.loop.run },
+          result: { query: runtime.loop.state.query },
+        }),
+      ],
+    }),
+  });
+
+  program.effect("mark_ready", ["loop.research"], {
+    description: "Marks the workflow ready only after the loop has stopped.",
+    run: () => ({
+      status: "ready",
+    }),
+  });
+
+  return program.render({
+    name: "loop_research_render",
+    progress: "Rendering loop research",
+    instruction: "Render loop research state.",
+  });
+}
+
 function createReservedMessagesPatchWorkflow(): WorkflowDefinition<TestState> {
   return {
     ...createTestWorkflow(),
@@ -2338,7 +2461,7 @@ function createRollbackWorkflow(config: {
         stage: "beforePatch",
         progress: "Remembering message",
         description: "Records the current message so failed turns can prove prefetch rollback.",
-        run: ({ message }) => ({ lastMessage: message ?? "" }),
+        run: ({ state }) => ({ lastMessage: latestUserMessageText(state.messages) ?? "" }),
       },
       {
         kind: "effect",
@@ -2358,8 +2481,8 @@ function createRollbackWorkflow(config: {
         },
       },
     ],
-    render: ({ state, message }) => {
-      if (message?.includes("fail")) {
+    render: ({ state }) => {
+      if (latestUserMessageText(state.messages)?.includes("fail")) {
         throw new Error("rollback render failed");
       }
 
@@ -2368,6 +2491,14 @@ function createRollbackWorkflow(config: {
       };
     },
   };
+}
+
+function latestUserMessageText(messages: readonly WorkflowMessage[]): string | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role === "user") return message.content;
+  }
+  return undefined;
 }
 
 function createMaxRoundsWorkflow(): WorkflowDefinition<{ count: number }> {
@@ -2431,7 +2562,7 @@ function createSequentialPatchLlm(patches: unknown[]): LlmClient & { structuredC
   return {
     structuredCalls,
     async text() {
-      throw new Error("text generation should not run for function render policies");
+      return "candidate=alpha competitors; status=ready";
     },
     async structured(request) {
       structuredCalls.push(request);
@@ -2441,6 +2572,36 @@ function createSequentialPatchLlm(patches: unknown[]): LlmClient & { structuredC
       const patch = patches[patchIndex] ?? {};
       patchIndex += 1;
       return request.schema.parse(patch);
+    },
+  };
+}
+
+function createLoopResearchLlm(loopDecisions: unknown[]): LlmClient & { structuredCalls: unknown[] } {
+  const structuredCalls: unknown[] = [];
+  let loopIndex = 0;
+  return {
+    structuredCalls,
+    async text() {
+      return "candidate=alpha competitors; status=ready";
+    },
+    async structured(request) {
+      structuredCalls.push(request);
+      if (request.name === "workflow_route") {
+        return request.schema.parse(routeDecisionForRequest(request));
+      }
+      if (request.name === "loop_research_flow_patch") {
+        return request.schema.parse({
+          statePatch: {
+            researchQuestions: ["research alpha"],
+          },
+        });
+      }
+      if (request.name === "loop_research_flow_research_loop_state") {
+        const decision = loopDecisions[loopIndex];
+        loopIndex += 1;
+        return request.schema.parse(decision);
+      }
+      throw new Error(`Unexpected structured request: ${request.name}`);
     },
   };
 }
@@ -2648,6 +2809,12 @@ function patchCallCount(llm: { structuredCalls: unknown[] }): number {
 function routeCallCount(llm: { structuredCalls: unknown[] }): number {
   return llm.structuredCalls.filter((call) => {
     return call && typeof call === "object" && (call as { name?: unknown }).name === "workflow_route";
+  }).length;
+}
+
+function loopCallCount(llm: { structuredCalls: unknown[] }, name: string): number {
+  return llm.structuredCalls.filter((call) => {
+    return call && typeof call === "object" && (call as { name?: unknown }).name === name;
   }).length;
 }
 

@@ -21,16 +21,47 @@ import type { WorkflowRouter } from "./routing/router.js";
 
 export type RuntimeWorkflow = WorkflowDefinition<JsonRecord, unknown>;
 
-export interface WorkflowDefinitionNodeInput {
-  kind: "prefetch" | "effect";
+interface WorkflowDefinitionNodeBaseInput {
   name: string;
   stage: WorkflowNodeStage;
   progress?: string | undefined;
   description: string;
+}
+
+export interface WorkflowDefinitionPrefetchNodeInput extends WorkflowDefinitionNodeBaseInput {
+  kind: "prefetch";
+  when?: (input: never) => MaybePromise<boolean>;
+  run: (input: never) => MaybePromise<unknown>;
+}
+
+export interface WorkflowDefinitionEffectNodeInput extends WorkflowDefinitionNodeBaseInput {
+  kind: "effect";
   dependsOn?: readonly string[];
   when?: (input: never) => MaybePromise<boolean>;
   run: (input: never) => MaybePromise<unknown>;
 }
+
+export interface WorkflowDefinitionLoopEffectInput {
+  name: string;
+  description: string;
+  dependsOn?: readonly string[];
+  run: (input: never, loop: never) => MaybePromise<unknown>;
+}
+
+export interface WorkflowDefinitionLoopNodeInput extends WorkflowDefinitionNodeBaseInput {
+  kind: "loop";
+  dependsOn?: readonly string[];
+  maxRuns: number;
+  stateSchema: { parse(input: unknown): object };
+  instruction: string;
+  model?: string | undefined;
+  effects: readonly WorkflowDefinitionLoopEffectInput[];
+}
+
+export type WorkflowDefinitionNodeInput =
+  | WorkflowDefinitionPrefetchNodeInput
+  | WorkflowDefinitionEffectNodeInput
+  | WorkflowDefinitionLoopNodeInput;
 
 export interface WorkflowDefinitionInput {
   id: string;

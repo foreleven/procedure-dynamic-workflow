@@ -31,7 +31,7 @@ Never import mock data, service functions, connector tools, or an LLM client fro
 
 1. Read the procedure end to end.
 2. Extract the business goal, completion condition, actors, external systems, connector/tool names, business objects, lifecycle, user-expressible facts, connector-only facts, selection points, confirmation points, irreversible actions, failures, cancellation/replacement rules, and response obligations.
-3. Design state before writing nodes. Follow `references/state-design.md`; collapse, default, or ignore connector parameters that are not durable business facts.
+3. Design state before writing nodes. Follow `references/state-design.md`; keep the state as small as the procedure allows, and collapse, default, or ignore connector parameters that are not durable business facts.
 4. Confirm connector contracts: ids, read/write boundary, required inputs, optional/defaulted inputs, output facts, failure modes, and cacheability.
 5. Plan connector execution before coding nodes: identify calls that can run concurrently, calls that depend on prior connector output, and expensive phases that need visible `step.start(...)` / `end(...)` progress.
 6. Implement the workflow in DSL order: schemas and local helpers, initial state, invalidation, `workflow(...)`, `patch`, `prefetch`, `effect`, `command`, `render`.
@@ -48,22 +48,22 @@ import type { ConnectorCatalog } from "../connectors/main.js";
 
 const StateSchema = z.object({
   status: z.enum(["collecting", "ready", "submitted", "cancelled"]),
-  selectedOption: z.object({ id: z.string(), label: z.string() }).nullable(),
-  draft: z.object({ id: z.string() }).nullable(),
-  committedRecord: z.object({ id: z.string() }).nullable(),
+  request: z.string().nullable(),
+  selectedOptionId: z.string().nullable(),
+  committedRecordId: z.string().nullable(),
 });
 
 type State = z.infer<typeof StateSchema>;
 
 const initialState = StateSchema.parse({
   status: "collecting",
-  selectedOption: null,
-  draft: null,
-  committedRecord: null,
+  request: null,
+  selectedOptionId: null,
+  committedRecordId: null,
 });
 
 const invalidation = {
-  selectedOption: ["draft"],
+  request: ["selectedOptionId"],
 } satisfies Partial<Record<keyof State & string, Array<keyof State & string>>>;
 
 const { patch, prefetch, effect, command, render } = workflow<State, ConnectorCatalog>({
@@ -97,7 +97,7 @@ When parallelizing, preserve render evidence order intentionally: collect connec
 Before finishing, verify:
 
 - The procedure file was specified and used as the business source.
-- State fields model procedure business meaning, not raw tool parameters.
+- State fields are the smallest durable procedure business facts; they do not model raw tool parameters, intermediate query plans, search results, candidate arrays, or display text.
 - Connector parameters were merged, defaulted, trimmed, or ignored where appropriate.
 - Independent connector reads are parallelized; only true data dependencies remain sequential.
 - Expensive connector phases expose specific `step.start(...)` / `end(...)` traces with useful details.

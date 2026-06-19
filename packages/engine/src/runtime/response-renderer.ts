@@ -18,12 +18,11 @@ import {
   type WorkflowRuntimeState,
   type WorkflowStepController,
 } from "@pac/workflow";
-import type { EngineEventSink, EngineSession, EngineTraceEvent, WorkflowEngineOptions } from "../types.js";
+import type { EngineEventSink, EngineSession, WorkflowEngineOptions } from "../types.js";
 import { RuntimeTracer } from "./tracer.js";
 import { copyWorkflowMessages, messagesForRender } from "../utils/messages.js";
 import { safeJsonStringify } from "../utils/json.js";
 import { normalizeRenderResponse, normalizeStreamTextEvent, renderText } from "../utils/rendering.js";
-import { preStateFor } from "../utils/state.js";
 import { TurnChangeTracker } from "../utils/turn.js";
 import { cloneDefault } from "../patching.js";
 import { cloneEngineSessionForExtension } from "../session.js";
@@ -73,14 +72,11 @@ export class ResponseRenderer {
   async renderWorkflowResponse(
     instance: WorkflowInstance<JsonRecord>,
     session: EngineSession,
-    message: string,
-    traces: EngineTraceEvent[],
     events: EngineEventSink,
     turnChanges: TurnChangeTracker,
-    preStates: Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>,
     streamDeltas = true,
   ): Promise<{ workflowId: WorkflowId; response: RenderResponse }> {
-    return this.renderAndRecordResponse(instance, session, message, traces, events, turnChanges, preStates, streamDeltas);
+    return this.renderAndRecordResponse(instance, session, events, turnChanges, streamDeltas);
   }
 
   /**
@@ -135,24 +131,21 @@ export class ResponseRenderer {
 
   /**
    * Renders one workflow response and traces the assistant message selected for session commit.
-   * Input: one runtime workflow instance plus the current session, message, traces, and turn-change stores.
+   * Input: one runtime workflow instance plus the current session, event sink, and turn-change stores.
    * Output: the workflow id paired with its rendered response.
    * Boundary: this method does not mutate message history; WorkflowEngine commits messages after render.
    */
   private async renderAndRecordResponse(
     instance: WorkflowInstance<JsonRecord>,
     session: EngineSession,
-    message: string,
-    traces: EngineTraceEvent[],
     events: EngineEventSink,
     turnChanges: TurnChangeTracker,
-    preStates: Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>,
     streamDeltas = true,
   ): Promise<{ workflowId: WorkflowId; response: RenderResponse }> {
     const startedAt = this.tracer.start(instance.id, "render");
-    const response = await this.renderInstance(instance, session, message, turnChanges, preStates, traces, events, streamDeltas);
+    const response = await this.renderInstance(instance, session, turnChanges, events, streamDeltas);
     this.tracer.done(instance.id, "render", startedAt, { textChars: response.text.length });
-    this.traceAssistantMessage(instance, response, traces, events, turnChanges);
+    this.traceAssistantMessage(instance, response, events, turnChanges);
     return {
       workflowId: instance.id,
       response,
@@ -162,11 +155,10 @@ export class ResponseRenderer {
   private traceAssistantMessage(
     instance: WorkflowInstance<JsonRecord>,
     response: RenderResponse,
-    traces: EngineTraceEvent[],
     events: EngineEventSink,
     turnChanges: TurnChangeTracker,
   ): void {
-    this.tracer.trace(traces, {
+    this.tracer.trace({
       workflowId: instance.id,
       phase: "messages.assistant",
       detail: { contentChars: response.text.length },
@@ -176,17 +168,14 @@ export class ResponseRenderer {
 
   /**
    * Executes either workflow-owned render functions or LLM render policies.
-   * Input: runtime instance, session, message, turn changes, pre-turn state, and trace store.
+   * Input: runtime instance, session, turn changes, and event sink.
    * Output: normalized render response.
    * Boundary: workflow-owned render functions may read runtime context but must return render data only.
    */
   private async renderInstance(
     instance: WorkflowInstance<JsonRecord>,
     session: EngineSession,
-    message: string,
     turnChanges: TurnChangeTracker,
-    preStates: Map<WorkflowId, WorkflowRuntimeState<JsonRecord>>,
-    traces: EngineTraceEvent[],
     events: EngineEventSink,
     streamDeltas: boolean,
   ): Promise<RenderResponse> {
@@ -198,12 +187,10 @@ export class ResponseRenderer {
           session: cloneEngineSessionForExtension(session),
           context: instance.context,
           state: instance.state,
-          preState: preStateFor(preStates, instance),
           prefetch: instance.prefetch,
           deps: this.deps,
           turn: turnChanges.snapshot(instance.id),
           step: noopStepController,
-          message,
         });
         return normalizeRenderResponse(instance.id, response);
       } finally {
@@ -212,7 +199,7 @@ export class ResponseRenderer {
     }
 
     const instruction = renderInstructionForRuntime(render.instruction, instance.state);
-    this.tracer.progress(traces, instance.id, {
+    this.tracer.progress(instance.id, {
       node: render.name,
       stage: "render",
       progress: render.progress,

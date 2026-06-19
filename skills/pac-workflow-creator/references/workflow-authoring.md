@@ -30,8 +30,9 @@ Use the program DSL in this order:
 6. `patch(...)`.
 7. `prefetch(...)`.
 8. `effect(...)`.
-9. `command(...)`.
-10. `export default render(...)`.
+9. `loop(...)` only when the procedure requires bounded multi-pass reasoning.
+10. `command(...)`.
+11. `export default render(...)`.
 
 Agent workflow modules should not declare stable metadata in `workflow(...)`. Standalone complete workflow definitions may include `id`, `version`, `description`, `routing`, and local `connectors` only when explicitly required.
 
@@ -113,6 +114,14 @@ effect("loadCandidates", ["need"], {
   },
 });
 ```
+
+## Loops
+
+Use `loop(name, { stateSchema, maxRuns, instruction, dependsOn })` only when one engine turn needs bounded multi-pass reasoning, such as search -> inspect evidence -> choose next search/extraction. Do not call it `planSchema`; the model-produced payload for one pass is loop state.
+
+Loop body effects use `loop.effect(name, ["loop.state"], config)`. They receive `runtime.loop.state`, can call read-only connectors, and can return partial workflow state plus optional `ToolMessage`s just like ordinary effects.
+
+Keep loop state and evidence-heavy data out of durable workflow state. If a later loop or effect needs a handoff, return a compact state patch with evidence references; raw search results and page bodies should remain `ToolMessage`s.
 
 ## Commands
 

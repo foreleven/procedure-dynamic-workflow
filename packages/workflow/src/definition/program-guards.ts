@@ -10,6 +10,7 @@ import {
   isNonEmptyString,
   nonEmptyString,
   parseSchema,
+  zodSchema,
 } from "../utils/schema.js";
 
 /**
@@ -57,6 +58,23 @@ export function assertProgramNodeInvariants(
   );
 }
 
+export function assertProgramLoopConfigInvariants(
+  config: { maxRuns: number; stateSchema: z.ZodType; instruction: string; model?: string | undefined },
+  label: string,
+): void {
+  parseSchema(
+    z.object({
+      maxRuns: z.number().int(`${label} maxRuns must be an integer from 1 to 5`)
+        .min(1, `${label} maxRuns must be an integer from 1 to 5`)
+        .max(5, `${label} maxRuns must be an integer from 1 to 5`),
+      stateSchema: zodSchema(`${label} stateSchema`, `${label} stateSchema must be a Zod schema`),
+      instruction: nonEmptyString(`${label} instruction`),
+      model: nonEmptyString(`${label} model`).optional(),
+    }),
+    config,
+  );
+}
+
 /**
  * Validates state dependency metadata before effect nodes are registered.
  * Input: optional dependency field list from the program DSL.
@@ -69,6 +87,14 @@ export function assertProgramEffectDependencies(
 ): void {
   if (value === undefined) return;
   parseSchema(effectDependenciesSchema(label), value);
+}
+
+export function assertProgramLoopEffectDependencies(
+  value: readonly string[] | undefined,
+  label: string,
+): void {
+  if (value === undefined) return;
+  parseSchema(loopEffectDependenciesSchema(label), value);
 }
 
 export function assertProgramNodeStage<TState extends object, TConnectors extends ConnectorCatalog>(
@@ -123,6 +149,31 @@ export function effectDependenciesSchema(label: string) {
         context.addIssue({
           code: "custom",
           message: `${label} must not contain duplicate fields`,
+          path: [index],
+        });
+        continue;
+      }
+      seen.add(dependency);
+    }
+  });
+}
+
+export function loopEffectDependenciesSchema(label: string) {
+  return z.array(z.string()).superRefine((dependencies, context) => {
+    const seen = new Set<string>();
+    for (const [index, dependency] of dependencies.entries()) {
+      if (!isNonEmptyString(dependency)) {
+        context.addIssue({
+          code: "custom",
+          message: `${label} must contain only non-empty strings`,
+          path: [index],
+        });
+        continue;
+      }
+      if (seen.has(dependency)) {
+        context.addIssue({
+          code: "custom",
+          message: `${label} must not contain duplicate dependencies`,
           path: [index],
         });
         continue;

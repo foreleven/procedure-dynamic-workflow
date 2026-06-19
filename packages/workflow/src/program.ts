@@ -8,6 +8,8 @@ import { settlePrefetch } from "./runtime/prefetch.js";
 import {
   assertPatchInvalidationInvariants,
   assertProgramEffectDependencies,
+  assertProgramLoopConfigInvariants,
+  assertProgramLoopEffectDependencies,
   assertProgramNodeInvariants,
   assertProgramNodeStage,
   assertProgramWorkflowInvariants,
@@ -23,6 +25,7 @@ import type {
   WorkflowPatch,
   WorkflowStatePatch,
   WorkflowRuntimeInput,
+  WorkflowLoopRuntime,
   WorkflowStepController,
   WorkflowToolMessage,
   WorkflowTurn,
@@ -36,7 +39,6 @@ export interface ProgramRuntime {
   session: SessionContext;
   turn: WorkflowTurn;
   step: WorkflowStepController;
-  message?: string;
 }
 
 /**
@@ -58,7 +60,13 @@ export type ProgramStatePatch<TState extends object> = WorkflowStatePatch<TState
   messages?: WorkflowToolMessage[];
 };
 
-export type ProgramEffectDependencies<TState extends object> = readonly Exclude<keyof TState & string, "messages">[];
+export type ProgramStateDependency<TState extends object> = Exclude<keyof TState & string, "messages">;
+export type ProgramLoopDependency = `loop.${string}`;
+export type ProgramEffectDependencies<TState extends object> = readonly (
+  | ProgramStateDependency<TState>
+  | ProgramLoopDependency
+)[];
+export type ProgramLoopEffectDependencies = readonly string[];
 
 export interface ProgramNodeMetadata {
   /**
@@ -140,6 +148,51 @@ export interface ProgramEffectConfig<
   ) => MaybePromise<ProgramStatePatch<TState> | void>;
 }
 
+export interface ProgramLoopConfig<
+  TState extends object,
+  TLoopState extends object,
+> extends ProgramNodeMetadata {
+  /**
+   * State fields or completed loop names that gate this loop.
+   */
+  dependsOn?: ProgramEffectDependencies<TState>;
+  maxRuns: number;
+  stateSchema: z.ZodType<TLoopState>;
+  model?: string | undefined;
+  instruction: string;
+}
+
+export type ProgramLoopRuntime<TLoopState extends object> = ProgramRuntime & {
+  loop: WorkflowLoopRuntime<TLoopState>;
+};
+
+export interface ProgramLoopEffectConfig<
+  TState extends object,
+  TConnectors extends ConnectorCatalog = ConnectorCatalog,
+  TLoopState extends object = Record<string, unknown>,
+> extends ProgramNodeMetadata {
+  dependsOn?: ProgramLoopEffectDependencies;
+  run: (
+    state: WorkflowRuntimeState<TState>,
+    context: WorkflowContext<TConnectors>,
+    runtime: ProgramLoopRuntime<TLoopState>,
+    step: WorkflowStepController,
+  ) => MaybePromise<ProgramStatePatch<TState> | void>;
+}
+
+export interface ProgramLoop<
+  TState extends object,
+  TConnectors extends ConnectorCatalog = ConnectorCatalog,
+  TLoopState extends object = Record<string, unknown>,
+> {
+  effect(name: string, config: ProgramLoopEffectConfig<TState, TConnectors, TLoopState>): void;
+  effect(
+    name: string,
+    dependsOn: ProgramLoopEffectDependencies,
+    config: ProgramLoopEffectConfig<TState, TConnectors, TLoopState>,
+  ): void;
+}
+
 export interface ProgramCommandConfig<
   TState extends object,
   TConnectors extends ConnectorCatalog = ConnectorCatalog,
@@ -180,6 +233,10 @@ interface WorkflowProgramBase<
     dependsOn: ProgramEffectDependencies<TState>,
     config: ProgramEffectConfig<TState, TConnectors>,
   ): void;
+  loop<TLoopState extends object>(
+    name: string,
+    config: ProgramLoopConfig<TState, TLoopState>,
+  ): ProgramLoop<TState, TConnectors, TLoopState>;
   command(name: string, config: ProgramCommandConfig<TState, TConnectors>): void;
   render(config: ProgramRenderConfig): TRenderOutput;
 }
@@ -275,6 +332,9 @@ export function workflow<
     },
     effect,
     derive,
+    loop(name, loopConfig) {
+      return registerLoop(name, loopConfig);
+    },
     command(name, commandConfig) {
       registerCommand(name, commandConfig);
     },
@@ -353,18 +413,7 @@ export function workflow<
       ...(effectConfig.dependsOn !== undefined ? { dependsOn: [...effectConfig.dependsOn] } : {}),
       run: async (input) => {
         const result = await effectConfig.run(input.state, input.context, toProgramRuntime(input), input.step);
-        if (!result) return undefined;
-
-        const { messages, ...statePatch } = result;
-        const patch: WorkflowPatch<TState> = {};
-        if (Object.keys(statePatch).length > 0) {
-          // `messages` is a reserved runtime append channel; the remaining keys are workflow state fields.
-          patch.state = statePatch as WorkflowStatePatch<TState>;
-        }
-        if (messages && messages.length > 0) {
-          patch.messages = messages;
-        }
-        return Object.keys(patch).length > 0 ? patch : undefined;
+        return programStatePatchToWorkflowPatch(result);
       },
     });
   }
@@ -382,19 +431,83 @@ export function workflow<
       when: async (input) => commandConfig.when(input.state, input.context, toProgramRuntime(input)),
       run: async (input) => {
         const result = await commandConfig.run(input.state, input.context, toProgramRuntime(input), input.step);
-        if (!result) return undefined;
-
-        const { messages, ...statePatch } = result;
-        const patch: WorkflowPatch<TState> = {};
-        if (Object.keys(statePatch).length > 0) {
-          patch.state = statePatch as WorkflowStatePatch<TState>;
-        }
-        if (messages && messages.length > 0) {
-          patch.messages = messages;
-        }
-        return Object.keys(patch).length > 0 ? patch : undefined;
+        return programStatePatchToWorkflowPatch(result);
       },
     });
+  }
+
+  function registerLoop<TLoopState extends object>(
+    name: string,
+    loopConfig: ProgramLoopConfig<TState, TLoopState>,
+  ): ProgramLoop<TState, TConnectors, TLoopState> {
+    assertProgramNodeInvariants(name, loopConfig, `${label} loop`);
+    assertProgramLoopConfigInvariants(loopConfig, `${label} loop ${name}`);
+    assertProgramEffectDependencies(loopConfig.dependsOn, `${label} loop ${name} dependsOn`);
+    const effects: Array<{
+      name: string;
+      description: string;
+      dependsOn?: readonly string[];
+      run: (
+        input: WorkflowRuntimeInput<TState, TConnectors>,
+        loop: WorkflowLoopRuntime<object>,
+      ) => MaybePromise<WorkflowPatch<TState> | void>;
+    }> = [];
+
+    registerNode({
+      kind: "loop",
+      name,
+      stage: "afterPatch",
+      description: loopConfig.description,
+      ...(loopConfig.dependsOn !== undefined ? { dependsOn: [...loopConfig.dependsOn] } : {}),
+      maxRuns: loopConfig.maxRuns,
+      instruction: loopConfig.instruction,
+      ...(loopConfig.model !== undefined ? { model: loopConfig.model } : {}),
+      stateSchema: loopConfig.stateSchema,
+      effects,
+    });
+
+    function loopEffect(effectName: string, effectConfig: ProgramLoopEffectConfig<TState, TConnectors, TLoopState>): void;
+    function loopEffect(
+      effectName: string,
+      dependsOn: ProgramLoopEffectDependencies,
+      effectConfig: ProgramLoopEffectConfig<TState, TConnectors, TLoopState>,
+    ): void;
+    function loopEffect(
+      effectName: string,
+      dependenciesOrConfig:
+        | ProgramLoopEffectDependencies
+        | ProgramLoopEffectConfig<TState, TConnectors, TLoopState>,
+      maybeConfig?: ProgramLoopEffectConfig<TState, TConnectors, TLoopState>,
+    ): void {
+      const normalized = normalizeLoopEffectConfig(dependenciesOrConfig, maybeConfig);
+      assertProgramNodeInvariants(effectName, normalized, `${label} loop ${name} effect`);
+      assertProgramLoopEffectDependencies(
+        normalized.dependsOn,
+        `${label} loop ${name} effect ${effectName} dependsOn`,
+      );
+      if (effects.some((existing) => existing.name === effectName)) {
+        throw new Error(`Duplicate workflow loop effect: ${name}.${effectName}`);
+      }
+      effects.push({
+        name: effectName,
+        description: normalized.description,
+        ...(normalized.dependsOn !== undefined ? { dependsOn: [...normalized.dependsOn] } : {}),
+        run: async (input, loopRuntime) => {
+          const result = await normalized.run(
+            input.state,
+            input.context,
+            {
+              ...toProgramRuntime(input),
+              loop: loopRuntime as WorkflowLoopRuntime<TLoopState>,
+            },
+            input.step,
+          );
+          return programStatePatchToWorkflowPatch(result);
+        },
+      });
+    }
+
+    return { effect: loopEffect };
   }
 
   function registerNode(node: WorkflowNode<TState, TConnectors>): void {
@@ -428,17 +541,11 @@ function toProgramRuntime<
 >(
   input: WorkflowRuntimeInput<TState, TConnectors>,
 ): ProgramRuntime {
-  const runtime: ProgramRuntime = {
+  return {
     session: input.session,
     turn: input.turn,
     step: input.step,
   };
-
-  if (input.message !== undefined) {
-    runtime.message = input.message;
-  }
-
-  return runtime;
 }
 
 function normalizeEffectConfig<
@@ -462,6 +569,59 @@ function normalizeEffectConfig<
   }
 
   return dependenciesOrConfig;
+}
+
+function normalizeLoopEffectConfig<
+  TState extends object,
+  TConnectors extends ConnectorCatalog,
+  TLoopState extends object,
+>(
+  dependenciesOrConfig:
+    | ProgramLoopEffectDependencies
+    | ProgramLoopEffectConfig<TState, TConnectors, TLoopState>,
+  maybeConfig?: ProgramLoopEffectConfig<TState, TConnectors, TLoopState>,
+): ProgramLoopEffectConfig<TState, TConnectors, TLoopState> {
+  if (isLoopEffectDependencies(dependenciesOrConfig)) {
+    if (!maybeConfig) {
+      throw new Error("Workflow loop effect dependencies must be followed by an effect config");
+    }
+
+    return {
+      ...maybeConfig,
+      dependsOn: dependenciesOrConfig,
+    };
+  }
+
+  return dependenciesOrConfig;
+}
+
+function isLoopEffectDependencies<
+  TState extends object,
+  TConnectors extends ConnectorCatalog,
+  TLoopState extends object,
+>(
+  value:
+    | ProgramLoopEffectDependencies
+    | ProgramLoopEffectConfig<TState, TConnectors, TLoopState>,
+): value is ProgramLoopEffectDependencies {
+  return Array.isArray(value);
+}
+
+function programStatePatchToWorkflowPatch<TState extends object>(
+  result: ProgramStatePatch<TState> | void,
+): WorkflowPatch<TState> | undefined {
+  if (!result) return undefined;
+
+  const { messages, ...statePatch } = result;
+  const patch: WorkflowPatch<TState> = {};
+  if (Object.keys(statePatch).length > 0) {
+    // `messages` is a reserved runtime append channel; the remaining keys are workflow state fields.
+    patch.state = statePatch as WorkflowStatePatch<TState>;
+  }
+  if (messages && messages.length > 0) {
+    patch.messages = messages;
+  }
+  return Object.keys(patch).length > 0 ? patch : undefined;
 }
 
 function isEffectDependencies<
