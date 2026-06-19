@@ -251,6 +251,9 @@ const noopStepController: WorkflowStepController = {
     return {
       id: "noop",
       label,
+      child(childLabel) {
+        return noopStepController.start(childLabel);
+      },
       end() {
         return undefined;
       },

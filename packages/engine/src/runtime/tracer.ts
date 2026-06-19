@@ -13,6 +13,7 @@ export interface RuntimeStepDetail {
   node: string;
   stage: string;
   stepId: string;
+  parentStepId?: string;
   label: string;
   status?: "done" | "error";
   durationMs?: number;
@@ -107,6 +108,7 @@ export class RuntimeTracer {
         node: detail.node,
         stage: detail.stage,
         stepId: detail.stepId,
+        ...(detail.parentStepId === undefined ? {} : { parentStepId: detail.parentStepId }),
         label: detail.label,
         ...(detail.detail === undefined ? {} : { detail: detail.detail }),
       },
@@ -131,6 +133,7 @@ export class RuntimeTracer {
         node: detail.node,
         stage: detail.stage,
         stepId: detail.stepId,
+        ...(detail.parentStepId === undefined ? {} : { parentStepId: detail.parentStepId }),
         label: detail.label,
         ...(detail.status === undefined ? {} : { status: detail.status }),
         ...(detail.durationMs === undefined ? {} : { durationMs: detail.durationMs }),

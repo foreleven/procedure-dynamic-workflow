@@ -83,7 +83,9 @@ Behavior:
 - `dependsOn: []` runs once for the workflow instance;
 - the `run` callback receives `runtime.step` and a fourth `step` argument, both implementing `WorkflowStepController`;
 - `const loading = step.start("label"); ...; loading.end();` emits `node.step.start` and `node.step.end` trace events without mutating workflow state;
+- `const child = loading.child("child label"); ...; child.end();` emits child lifecycle events with `parentStepId` pointing at the parent step;
 - multiple step handles can be open at the same time, so workflow code can wrap parallel connector calls with independent loading steps.
+- ending a parent step closes any still-open descendants first, so stream consumers receive a complete child-to-parent completion order.
 
 Boundary:
 - dependency fields are workflow state keys, not context or prefetch keys;
@@ -317,7 +319,7 @@ Behavior:
 - rejects raw or parsed workflow default states that define reserved runtime fields such as `messages`;
 - rejects duplicate workflow ids during construction;
 - serializes logger diagnostics defensively so non-serializable runtime values do not crash execution;
-- emits `node.step.start` and `node.step.end` traces for workflow-owned loading steps;
+- emits `node.step.start` and `node.step.end` traces for workflow-owned loading steps, including `parentStepId` for nested child steps;
 - routes new sessions through a structured workflow-level route gate before running any workflow;
 - routes existing sessions through protocol fast path or a structured route gate that can continue, switch, run parallel workflows, clarify, or select no workflow;
 - keeps short replies that resolve an active workflow acknowledgement on the active workflow without calling the route gate;
@@ -383,7 +385,7 @@ Behavior:
 - shares the same execution path and validation as `engine.invoke(...)`;
 - exposes an `AsyncIterable<EngineStreamPayload>` where each payload is either `{ message }` or `{ event }`;
 - emits `{ event: AssistantMessageEvent }` for assistant text deltas;
-- emits `{ event: WorkflowStepEvent }` for workflow progress, step start, and step end events;
+- emits `{ event: WorkflowStepEvent }` for workflow progress, step start, and step end events; nested step start/end events include `parentStepId`;
 - emits `{ event: EngineTraceStreamEvent }` for runtime diagnostics that `engine.invoke(...)` returns in `events`;
 - emits `{ message }` for assistant output messages as they become available;
 - emits `{ event: EngineTurnDoneEvent }` after the turn completes and successful output messages have been committed to the session.

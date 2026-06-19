@@ -19,6 +19,7 @@ import {
   type WorkflowPatch,
   type WorkflowRuntimeInput,
   type WorkflowStepController,
+  type WorkflowStepHandle,
   type WorkflowToolMessage,
 } from "@pac/workflow";
 import { z } from "zod";
@@ -734,59 +735,108 @@ export class WorkflowNodeRunner {
     let stepIndex = 0;
     const openSteps = new Map<string, TrackedStep>();
 
+    const isDescendantOf = (candidateStepId: string, ancestorStepId: string): boolean => {
+      let step = openSteps.get(candidateStepId);
+      while (step?.parentStepId !== undefined) {
+        if (step.parentStepId === ancestorStepId) return true;
+        step = openSteps.get(step.parentStepId);
+      }
+
+      return false;
+    };
+
+    const closeTrackedStep = (
+      stepId: string,
+      openStep: TrackedStep,
+      status: "done" | "error",
+      detail?: unknown,
+    ): void => {
+      openSteps.delete(stepId);
+      this.tracer.stepEnd(instance.id, {
+        node: node.name,
+        stage: node.stage,
+        stepId,
+        ...(openStep.parentStepId === undefined ? {} : { parentStepId: openStep.parentStepId }),
+        label: openStep.label,
+        status,
+        durationMs: Date.now() - openStep.startedAt,
+        ...(detail !== undefined ? { detail } : {}),
+      }, events);
+    };
+
+    // A parent handle owns the lifetime of still-open descendants so stream consumers
+    // never see a completed parent with dangling child steps.
+    const closeStepTree = (
+      rootStepId: string,
+      status: "done" | "error",
+      detail?: unknown,
+    ): void => {
+      const stepsToClose = [...openSteps.entries()]
+        .filter(([stepId]) => stepId === rootStepId || isDescendantOf(stepId, rootStepId))
+        .sort(([, left], [, right]) => right.depth - left.depth);
+
+      for (const [stepId] of stepsToClose) {
+        const openStep = openSteps.get(stepId);
+        if (!openStep) continue;
+        const stepDetail = stepId === rootStepId ? detail : { autoEnded: true, parentStepId: rootStepId };
+        closeTrackedStep(stepId, openStep, status, stepDetail);
+      }
+    };
+
+    const startStep = (
+      label: string,
+      detail?: unknown,
+      parentStepId?: string,
+    ): WorkflowStepHandle => {
+      if (!isNonEmptyString(label)) {
+        throw new Error(`Workflow ${instance.id} step label must be a non-empty string`);
+      }
+
+      const parentStep = parentStepId === undefined ? undefined : openSteps.get(parentStepId);
+      if (parentStepId !== undefined && parentStep === undefined) {
+        throw new Error(`Workflow ${instance.id} parent step ${parentStepId} is not open`);
+      }
+
+      stepIndex += 1;
+      const stepId = `${node.name}:${stepIndex}`;
+      const trackedStep: TrackedStep = {
+        label,
+        startedAt: Date.now(),
+        depth: parentStep === undefined ? 0 : parentStep.depth + 1,
+        ...(parentStepId === undefined ? {} : { parentStepId }),
+      };
+      openSteps.set(stepId, trackedStep);
+      this.tracer.stepStart(instance.id, {
+        node: node.name,
+        stage: node.stage,
+        stepId,
+        ...(parentStepId === undefined ? {} : { parentStepId }),
+        label,
+        ...(detail !== undefined ? { detail } : {}),
+      }, events);
+
+      return {
+        id: stepId,
+        label,
+        child: (childLabel, childDetail) => startStep(childLabel, childDetail, stepId),
+        end: (endDetail?: unknown) => closeStepTree(stepId, "done", endDetail),
+      };
+    };
+
     const controller: WorkflowStepController = {
-      start: (label, detail) => {
-        if (!isNonEmptyString(label)) {
-          throw new Error(`Workflow ${instance.id} step label must be a non-empty string`);
-        }
-
-        stepIndex += 1;
-        const stepId = `${node.name}:${stepIndex}`;
-        const trackedStep = { label, startedAt: Date.now() };
-        openSteps.set(stepId, trackedStep);
-        this.tracer.stepStart(instance.id, {
-          node: node.name,
-          stage: node.stage,
-          stepId,
-          label,
-          ...(detail !== undefined ? { detail } : {}),
-        }, events);
-
-        return {
-          id: stepId,
-          label,
-          end: (endDetail?: unknown) => {
-            const openStep = openSteps.get(stepId);
-            if (!openStep) return;
-            openSteps.delete(stepId);
-            this.tracer.stepEnd(instance.id, {
-              node: node.name,
-              stage: node.stage,
-              stepId,
-              label: openStep.label,
-              status: "done",
-              durationMs: Date.now() - openStep.startedAt,
-              ...(endDetail !== undefined ? { detail: endDetail } : {}),
-            }, events);
-          },
-        };
-      },
+      start: (label, detail) => startStep(label, detail),
     };
 
     return {
       controller,
       closeOpenSteps: (status, detail) => {
-        for (const [stepId, openStep] of [...openSteps.entries()]) {
-          openSteps.delete(stepId);
-          this.tracer.stepEnd(instance.id, {
-            node: node.name,
-            stage: node.stage,
-            stepId,
-            label: openStep.label,
-            status,
-            durationMs: Date.now() - openStep.startedAt,
-            ...(detail !== undefined ? { detail } : {}),
-          }, events);
+        const stepsToClose = [...openSteps.entries()]
+          .sort(([, left], [, right]) => right.depth - left.depth);
+
+        for (const [stepId] of stepsToClose) {
+          const openStep = openSteps.get(stepId);
+          if (!openStep) continue;
+          closeTrackedStep(stepId, openStep, status, detail);
         }
       },
     };
@@ -836,6 +886,8 @@ interface EffectDependencyState {
 interface TrackedStep {
   label: string;
   startedAt: number;
+  parentStepId?: string;
+  depth: number;
 }
 
 interface WorkflowStepScope {
@@ -848,6 +900,9 @@ const noopStepController: WorkflowStepController = {
     return {
       id: "noop",
       label,
+      child(childLabel) {
+        return noopStepController.start(childLabel);
+      },
       end() {
         return undefined;
       },

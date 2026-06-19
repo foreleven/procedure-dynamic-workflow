@@ -365,14 +365,18 @@ test("createLogger prints node step loading events in non-debug mode", () => {
 
   try {
     const logger = createLogger(false);
-    logger('[engine] flow node.step.start event {"label":"Load connector"}');
-    logger('[engine] flow node.step.end event {"label":"Load connector","status":"done","durationMs":12}');
+    logger('[engine] flow node.step.start event {"stepId":"load:1","label":"Load connector"}');
+    logger('[engine] flow node.step.start event {"stepId":"load:2","parentStepId":"load:1","label":"Load child connector"}');
+    logger('[engine] flow node.step.end event {"stepId":"load:2","parentStepId":"load:1","label":"Load child connector","status":"done","durationMs":4}');
+    logger('[engine] flow node.step.end event {"stepId":"load:1","label":"Load connector","status":"done","durationMs":12}');
   } finally {
     console.log = originalLog;
   }
 
   assert.deepEqual(output, [
     "  - Load connector ...",
+    "    - Load child connector ...",
+    "    - Load child connector done (4ms)",
     "  - Load connector done (12ms)",
   ]);
 });

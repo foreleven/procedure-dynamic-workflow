@@ -95,6 +95,12 @@ export interface WorkflowPatch<TState extends object> {
 export interface WorkflowStepHandle {
   readonly id: string;
   readonly label: string;
+  /**
+   * Starts a loading step nested under this still-open step.
+   * Input: child loading label plus optional diagnostic detail.
+   * Output: a child handle whose trace events reference this step as parent.
+   */
+  child(label: string, detail?: unknown): WorkflowStepHandle;
   end(detail?: unknown): void;
 }
 

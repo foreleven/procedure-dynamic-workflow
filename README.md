@@ -190,7 +190,7 @@ Keep workflow instructions focused:
 - render instruction only describes how to reply;
 - effect and command callbacks return partial state directly, for example `{ bookingDraft, status }`;
 - effect and command callbacks return connector facts for render as `messages: [new ToolMessage({ name, call, result })]`;
-- effect callbacks put business guard logic at the start of `run` and use `step.start(...)` / `step.end(...)` for loading UI;
+- effect callbacks put business guard logic at the start of `run` and use `step.start(...)` / `step.end(...)` for loading UI, with `loading.child(...)` for nested progress;
 - irreversible external actions belong in `command`;
 - read-only or idempotent state-dependent work belongs in `effect`;
 - baseline reads belong in `prefetch`.

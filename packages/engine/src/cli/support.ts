@@ -140,6 +140,8 @@ export function createLogger(debug: boolean): (line: string) => void {
     return (line) => console.log(line);
   }
 
+  const stepDepths = new Map<string, number>();
+
   return (line) => {
     const routing = routingActiveWorkflowsFromLogLine(line);
     if (routing) {
@@ -153,7 +155,7 @@ export function createLogger(debug: boolean): (line: string) => void {
       return;
     }
 
-    const step = stepFromLogLine(line);
+    const step = stepFromLogLine(line, stepDepths);
     if (step) {
       console.log(step);
       return;
@@ -268,22 +270,37 @@ function progressFromLogLine(line: string): string | undefined {
   }
 }
 
-function stepFromLogLine(line: string): string | undefined {
+function stepFromLogLine(line: string, stepDepths: Map<string, number>): string | undefined {
   if (line.includes(" node.step.start event ")) {
     const detail = parseLogDetail(line);
-    return typeof detail?.label === "string" ? `  - ${detail.label} ...` : undefined;
+    if (typeof detail?.label !== "string") return undefined;
+
+    const stepId = typeof detail.stepId === "string" ? detail.stepId : undefined;
+    const parentStepId = typeof detail.parentStepId === "string" ? detail.parentStepId : undefined;
+    const depth = parentStepId === undefined ? 0 : (stepDepths.get(parentStepId) ?? 0) + 1;
+    if (stepId !== undefined) stepDepths.set(stepId, depth);
+
+    return `${stepIndent(depth)}- ${detail.label} ...`;
   }
 
   if (line.includes(" node.step.end event ")) {
     const detail = parseLogDetail(line);
     if (typeof detail?.label !== "string") return undefined;
 
+    const stepId = typeof detail.stepId === "string" ? detail.stepId : undefined;
+    const depth = stepId === undefined ? 0 : stepDepths.get(stepId) ?? 0;
     const duration = typeof detail.durationMs === "number" ? ` (${detail.durationMs}ms)` : "";
     const suffix = detail.status === "error" ? " failed" : " done";
-    return `  - ${detail.label}${suffix}${duration}`;
+    if (stepId !== undefined) stepDepths.delete(stepId);
+
+    return `${stepIndent(depth)}- ${detail.label}${suffix}${duration}`;
   }
 
   return undefined;
+}
+
+function stepIndent(depth: number): string {
+  return "  ".repeat(depth + 1);
 }
 
 function routingActiveWorkflowsFromLogLine(line: string): string | undefined {

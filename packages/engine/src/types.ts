@@ -183,6 +183,7 @@ export interface WorkflowStepLifecycleEvent {
   node: string;
   stage: string;
   stepId: string;
+  parentStepId?: string;
   label: string;
   status?: "done" | "error";
   durationMs?: number;

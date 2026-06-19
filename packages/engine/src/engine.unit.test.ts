@@ -12,7 +12,14 @@ import {
 } from "@pac/workflow";
 import { WorkflowEngine } from "./engine.js";
 import type { LlmClient, LlmStructuredRequest, LlmTextRequest } from "./llm/client.js";
-import { EngineInvokeResult, EngineStreamPayload, EngineTraceEvent, WorkflowDefinitionInput } from "./types.js";
+import type {
+  EngineInvokeResult,
+  EngineStreamPayload,
+  EngineTraceEvent,
+  WorkflowDefinitionInput,
+  WorkflowStepLifecycleEvent,
+  WorkflowStepEvent,
+} from "./types.js";
 
 interface TestState {
   selected: string | null;
@@ -897,20 +904,35 @@ test("WorkflowEngine runs dependency-gated effects once per dependency snapshot 
   assert.equal(primaryText(second), "selected=alpha; runs=1");
   assert.equal(primaryText(third), "selected=alpha; runs=1");
   assert.equal(primaryText(fourth), "selected=beta; runs=2");
-  assert.equal(traceEvents(first).filter((trace) => trace.phase === "node.step.start").length, 2);
-  assert.equal(traceEvents(first).filter((trace) => trace.phase === "node.step.end").length, 2);
+  assert.equal(traceEvents(first).filter((trace) => trace.phase === "node.step.start").length, 3);
+  assert.equal(traceEvents(first).filter((trace) => trace.phase === "node.step.end").length, 3);
   assert.ok(firstStream.payloads.some((payload) =>
     "event" in payload &&
     payload.event.type === "engine.trace" &&
     payload.event.trace.phase === "node.step.start",
   ));
-  assert.deepEqual(workflowStepEventTypes(firstStream.payloads), [
+  const stepEvents = workflowStepEvents(firstStream.payloads);
+  assert.deepEqual(stepEvents.map((event) => event.type), [
     "workflow.step.progress",
     "workflow.step.start",
     "workflow.step.start",
+    "workflow.step.start",
+    "workflow.step.end",
     "workflow.step.end",
     "workflow.step.end",
   ]);
+  const stepStarts = stepEvents.filter((event): event is WorkflowStepLifecycleEvent =>
+    event.type === "workflow.step.start",
+  );
+  const parentStart = stepStarts.find((event) =>
+    event.type === "workflow.step.start" && event.label === "Load primary connector",
+  );
+  const childStart = stepStarts.find((event) =>
+    event.type === "workflow.step.start" && event.label === "Load primary connector detail",
+  );
+  assert.ok(parentStart);
+  assert.ok(childStart);
+  assert.equal(childStart.parentStepId, parentStart.stepId);
   assert.ok(traceEvents(second).some((trace) =>
     trace.phase === "node.afterPatch.load_selected.skip" &&
     isTraceReason(trace.detail, "dependencies"),
@@ -2405,10 +2427,14 @@ function createEffectDependencyWorkflow(): WorkflowDefinition<EffectDependencySt
         when: ({ state }) => state.selected !== null,
         run: async ({ state, step }) => {
           const primary = step.start("Load primary connector");
+          const primaryDetail = primary.child("Load primary connector detail");
           const secondary = step.start("Load secondary connector");
 
           await Promise.all([
-            delay(1).then(() => primary.end({ connector: "primary" })),
+            delay(1).then(() => {
+              primaryDetail.end({ connector: "primary", detail: true });
+              primary.end({ connector: "primary" });
+            }),
             delay(1).then(() => secondary.end({ connector: "secondary" })),
           ]);
 
@@ -2768,10 +2794,10 @@ function assistantMessageContents(payloads: readonly EngineStreamPayload[]): str
   });
 }
 
-function workflowStepEventTypes(payloads: readonly EngineStreamPayload[]): string[] {
+function workflowStepEvents(payloads: readonly EngineStreamPayload[]): WorkflowStepEvent[] {
   return payloads.flatMap((payload) => {
     if (!("event" in payload) || !payload.event.type.startsWith("workflow.step.")) return [];
-    return [payload.event.type];
+    return [payload.event as WorkflowStepEvent];
   });
 }
 

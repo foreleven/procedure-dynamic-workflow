@@ -62,7 +62,7 @@ When a workflow file is loaded through an agent manifest, `agent.yaml` supplies 
 - `defineRouting(...)` normalizes routing metadata.
 - `defineConnectorRef(...)`, `defineConnectorTool(...)`, and `createConnectorRegistry(...)` define schema-validated integration boundaries.
 - `WorkflowContextStore` provides per-workflow runtime context for in-memory coordination, optional cached connector calls through `context.call(id, input, { cache: true })`, and same-process checkpoint/restore used by the engine's turn rollback.
-- `WorkflowStepController` lets effect and command callbacks emit nested loading steps while async connector work is running.
+- `WorkflowStepController` lets effect and command callbacks emit loading steps while async connector work is running; step handles can create child steps for nested progress output.
 
 See the repository [API reference](https://github.com/foreleven/procedure-dynamic-workflow/blob/main/docs/API.md) for the full public API reference.
 
